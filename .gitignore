@@ -1,0 +1,14 @@
+.venv/
+.build/
+build/
+dist/
+__pycache__/
+*.pyc
+*.egg-info/
+*.air
+*.metallib
+*.dylib
+*.so
+*.o
+.DS_Store
+.pytest_cache/

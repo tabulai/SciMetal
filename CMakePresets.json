@@ -1,0 +1,62 @@
+{
+  "version": 5,
+  "cmakeMinimumRequired": {"major": 3, "minor": 24, "patch": 0},
+  "configurePresets": [
+    {
+      "name": "metal",
+      "displayName": "Metal (RelWithDebInfo)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/.build/metal",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "RelWithDebInfo", "MS_ENABLE_METAL": "ON"}
+    },
+    {
+      "name": "metal-asan-ubsan",
+      "displayName": "Metal with AddressSanitizer and UndefinedBehaviorSanitizer",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/.build/metal-asan-ubsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "MS_ENABLE_METAL": "ON",
+        "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined",
+        "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=address,undefined"
+      }
+    },
+    {
+      "name": "metal-tsan",
+      "displayName": "Metal with ThreadSanitizer",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/.build/metal-tsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "MS_ENABLE_METAL": "ON",
+        "CMAKE_C_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
+        "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread",
+        "CMAKE_SHARED_LINKER_FLAGS": "-fsanitize=thread"
+      }
+    },
+    {
+      "name": "cpu-only",
+      "displayName": "CPU storage only (no Metal); proves the core builds and runs without Metal",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/.build/cpu-only",
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "RelWithDebInfo", "MS_ENABLE_METAL": "OFF"}
+    }
+  ],
+  "buildPresets": [
+    {"name": "metal", "configurePreset": "metal"},
+    {"name": "metal-asan-ubsan", "configurePreset": "metal-asan-ubsan"},
+    {"name": "metal-tsan", "configurePreset": "metal-tsan"},
+    {"name": "cpu-only", "configurePreset": "cpu-only"}
+  ],
+  "testPresets": [
+    {"name": "metal", "configurePreset": "metal", "output": {"outputOnFailure": true}},
+    {"name": "metal-asan-ubsan", "configurePreset": "metal-asan-ubsan", "output": {"outputOnFailure": true},
+     "environment": {"ASAN_OPTIONS": "detect_leaks=0:abort_on_error=1", "UBSAN_OPTIONS": "print_stacktrace=1:halt_on_error=1"}},
+    {"name": "metal-tsan", "configurePreset": "metal-tsan", "output": {"outputOnFailure": true},
+     "environment": {"TSAN_OPTIONS": "halt_on_error=1"}},
+    {"name": "cpu-only", "configurePreset": "cpu-only", "output": {"outputOnFailure": true}}
+  ]
+}

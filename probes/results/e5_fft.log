@@ -1,0 +1,134 @@
+built: build/mlx_fft.metallib build/e5_ext.metallib build/libe5fft.dylib
+[   0.2s] correctness: c2c power-of-two 2^10..2^24 (fwd + inv)
+[   3.4s] stretch coverage
+[   4.8s] speed
+[   4.8s] speed n=2^16     ours 0.349 ms (mlx-plan) | mlx 0.363 ms [ok] | scipy w1 0.27 ms
+[   5.2s] speed n=2^20     ours 0.394 ms (mlx-plan) | mlx 0.439 ms [ok] | scipy w1 10.03 ms
+[   7.1s] speed n=2^22     ours 0.909 ms (ms2048x2048) | mlx RAISES | scipy w1 61.05 ms
+[  16.3s] speed n=2^24     ours 2.467 ms (ms16x32x32x32x32) | mlx 3.116 ms [WRONG_RESULT] | scipy w1 300.13 ms
+[  17.5s] speed 4096x4096  ours 0.693 ms (mlx-plan) | mlx 0.736 ms [ok] | scipy w1 31.31 ms
+[  17.6s] plan alternatives at 2^24
+
+== correctness: c2c power-of-two, relative L2 error vs scipy.fft (complex128) ==
+log2n dir  our plan             passes ours       | MLX mx.fft                   | ours vs MLX
+10    fwd  mlx-plan             1      5.35e-07   | 5.35e-07                     | bitwise identical
+10    inv  mlx-plan             1      5.39e-07   | 5.39e-07                     | bitwise identical
+11    fwd  mlx-plan             1      5.86e-07   | 5.86e-07                     | bitwise identical
+11    inv  mlx-plan             1      6.07e-07   | 6.07e-07                     | bitwise identical
+12    fwd  mlx-plan             1      6.86e-07   | 6.86e-07                     | bitwise identical
+12    inv  mlx-plan             1      7.00e-07   | 7.00e-07                     | bitwise identical
+13    fwd  mlx-plan             2      3.33e-07   | 3.33e-07                     | bitwise identical
+13    inv  mlx-plan             2      3.35e-07   | 3.35e-07                     | bitwise identical
+14    fwd  mlx-plan             2      3.59e-07   | 3.59e-07                     | bitwise identical
+14    inv  mlx-plan             2      3.59e-07   | 3.59e-07                     | bitwise identical
+15    fwd  mlx-plan             2      5.61e-07   | 5.61e-07                     | bitwise identical
+15    inv  mlx-plan             2      5.64e-07   | 5.64e-07                     | bitwise identical
+16    fwd  mlx-plan             2      6.83e-07   | 6.83e-07                     | bitwise identical
+16    inv  mlx-plan             2      6.80e-07   | 6.80e-07                     | bitwise identical
+17    fwd  mlx-plan             2      7.22e-07   | 7.22e-07                     | bitwise identical
+17    inv  mlx-plan             2      7.23e-07   | 7.23e-07                     | bitwise identical
+18    fwd  mlx-plan             2      7.43e-07   | 7.43e-07                     | bitwise identical
+18    inv  mlx-plan             2      7.44e-07   | 7.44e-07                     | bitwise identical
+19    fwd  mlx-plan             2      9.26e-07   | 9.26e-07                     | bitwise identical
+19    inv  mlx-plan             2      9.25e-07   | 9.25e-07                     | bitwise identical
+20    fwd  mlx-plan             2      1.04e-06   | 1.04e-06                     | bitwise identical
+20    inv  mlx-plan             2      1.04e-06   | 1.04e-06                     | bitwise identical
+21    fwd  ms1024x2048          2      1.09e-06   | RAISES                       | port of MLX plan: same error
+21    inv  ms1024x2048          2      1.09e-06   | RAISES                       | port of MLX plan: same error
+22    fwd  ms2048x2048          2      1.15e-06   | RAISES                       | port of MLX plan: same error
+22    inv  ms2048x2048          2      1.15e-06   | RAISES                       | port of MLX plan: same error
+23    fwd  ms16x32x32x32x16     5      5.75e-07   | 1.41e+00 WRONG               | port of MLX plan reproduces MLX's wrong output bitwise: True
+23    inv  ms16x32x32x32x16     5      5.75e-07   | 1.00e+00 WRONG               | port of MLX plan reproduces MLX's wrong output bitwise: True
+24    fwd  ms16x32x32x32x32     5      6.20e-07   | 1.41e+00 WRONG               | port of MLX plan reproduces MLX's wrong output bitwise: True
+24    inv  ms16x32x32x32x32     5      6.20e-07   | 1.00e+00 WRONG               | port of MLX plan reproduces MLX's wrong output bitwise: True
+
+== stretch coverage ==
+rfft  n=1024     rows=3 mlx-plan          fft           passes=1 relerr 5.51e-07 ok           bitwise identical to MLX 
+irfft n=1024     rows=3 mlx-plan          fft           passes=1 relerr 5.23e-07 ok           bitwise identical to MLX 
+rfft  n=4096     rows=3 mlx-plan          fft           passes=1 relerr 6.93e-07 ok           bitwise identical to MLX 
+irfft n=4096     rows=3 mlx-plan          fft           passes=1 relerr 6.84e-07 ok           bitwise identical to MLX 
+rfft  n=65536    rows=3 mlx-plan          four_step     passes=2 relerr 6.80e-07 ok           bitwise identical to MLX 
+irfft n=65536    rows=3 mlx-plan          four_step     passes=2 relerr 6.32e-07 ok           bitwise identical to MLX 
+rfft  n=1048576  rows=3 mlx-plan          four_step     passes=2 relerr 1.04e-06 ok           bitwise identical to MLX 
+irfft n=1048576  rows=3 mlx-plan          four_step     passes=2 relerr 9.83e-07 ok           bitwise identical to MLX 
+rfft  n=4194304  rows=1 ms2048x2048       four_step     passes=2 relerr 1.15e-06 ok           MLX raises 
+irfft n=4194304  rows=1 ms2048x2048       four_step     passes=2 relerr 1.08e-06 ok           MLX raises 
+rfft  n=16777216 rows=1 ms16x32x32x32x32  four_step     passes=5 relerr 6.20e-07 ok           MLX result WRONG (relerr 1.2e+00) 
+irfft n=16777216 rows=1 ms16x32x32x32x32  four_step     passes=5 relerr 6.01e-07 ok           MLX result WRONG (relerr 1.1e+00) 
+fft   n=1000     rows=5 mlx-plan          fft           passes=1 relerr 8.13e-07 ok           bitwise identical to MLX 
+ifft  n=1000     rows=2 mlx-plan          fft           passes=1 relerr 8.31e-07 ok           bitwise identical to MLX 
+fft   n=2187     rows=5 mlx-plan          fft           passes=1 relerr 6.22e-07 ok           bitwise identical to MLX 
+ifft  n=2187     rows=2 mlx-plan          fft           passes=1 relerr 6.26e-07 ok           bitwise identical to MLX 
+fft   n=3003     rows=5 mlx-plan          fft           passes=1 relerr 1.41e-06 ok           bitwise identical to MLX 
+ifft  n=3003     rows=2 mlx-plan          fft           passes=1 relerr 1.41e-06 ok           bitwise identical to MLX 
+fft   n=4095     rows=5 mlx-plan          fft           passes=1 relerr 1.13e-06 ok           bitwise identical to MLX 
+ifft  n=4095     rows=2 mlx-plan          fft           passes=1 relerr 1.14e-06 ok           bitwise identical to MLX 
+rfft  n=1000     rows=3 mlx-plan          fft           passes=1 relerr 8.55e-07 ok           bitwise identical to MLX 
+irfft n=1000     rows=3 mlx-plan          fft           passes=1 relerr 8.23e-07 ok           bitwise identical to MLX 
+fft   n=17       rows=5 mlx-plan          rader_fft     passes=1 relerr 1.43e-07 ok           vs MLX: L2 reldiff 1.1e-07 (MLX relerr 1.5e-07) 
+ifft  n=17       rows=2 mlx-plan          rader_fft     passes=1 relerr 1.29e-07 ok           vs MLX: L2 reldiff 1.2e-07 (MLX relerr 1.4e-07) 
+fft   n=1009     rows=5 mlx-plan          rader_fft     passes=1 relerr 1.46e-06 ok           vs MLX: L2 reldiff 2.1e-07 (MLX relerr 1.5e-06) 
+ifft  n=1009     rows=2 mlx-plan          rader_fft     passes=1 relerr 1.45e-06 ok           vs MLX: L2 reldiff 2.1e-07 (MLX relerr 1.5e-06) 
+fft   n=2003     rows=5 mlx-plan          rader_fft     passes=1 relerr 2.14e-06 ok           vs MLX: L2 reldiff 2.5e-07 (MLX relerr 2.1e-06) 
+ifft  n=2003     rows=2 mlx-plan          rader_fft     passes=1 relerr 2.18e-06 ok           vs MLX: L2 reldiff 2.5e-07 (MLX relerr 2.2e-06) 
+rfft  n=1009     rows=3 mlx-plan          rader_fft     passes=1 relerr 1.45e-06 ok           vs MLX: L2 reldiff 2.1e-07 (MLX relerr 1.5e-06) 
+fft   n=47       rows=5 mlx-plan          bluestein_fft passes=1 relerr 2.91e-07 ok           vs MLX: L2 reldiff 1.2e-07 (MLX relerr 3.0e-07) 
+ifft  n=47       rows=2 mlx-plan          bluestein_fft passes=1 relerr 2.69e-07 ok           vs MLX: L2 reldiff 1.2e-07 (MLX relerr 2.9e-07) 
+fft   n=1021     rows=5 mlx-plan          bluestein_fft passes=1 relerr 1.07e-06 ok           vs MLX: L2 reldiff 1.9e-07 (MLX relerr 1.1e-06) 
+ifft  n=1021     rows=2 mlx-plan          bluestein_fft passes=1 relerr 1.06e-06 ok           vs MLX: L2 reldiff 1.9e-07 (MLX relerr 1.1e-06) 
+fft   n=2038     rows=5 mlx-plan          bluestein_fft passes=1 relerr 1.26e-06 ok           vs MLX: L2 reldiff 2.0e-07 (MLX relerr 1.3e-06) 
+ifft  n=2038     rows=2 mlx-plan          bluestein_fft passes=1 relerr 1.26e-06 ok           vs MLX: L2 reldiff 2.0e-07 (MLX relerr 1.3e-06) 
+rfft  n=1021     rows=3 mlx-plan          bluestein_fft passes=1 relerr 1.07e-06 ok           vs MLX: L2 reldiff 2.0e-07 (MLX relerr 1.1e-06) 
+irfft n=1021     rows=3 mlx-plan          bluestein_fft passes=1 relerr 3.52e-02 WRONG_RESULT vs MLX: L2 reldiff 2.0e-07 (MLX relerr 3.5e-02) [same answer as MLX: MLX's Bluestein irfft kernel does not dr...]
+irfft n=1021     rows=3 mlx-plan          bluestein_fft passes=1 relerr 1.09e-06 ok           vs MLX: L2 reldiff 1.9e-07 (MLX relerr 1.1e-06) x[0] real
+fft   n=3001     rows=2 NOT COVERED (multi-upload Bluestein (non power-of-two n > 2048 with unsup)
+fft   n=5000     rows=2 NOT COVERED (multi-upload Bluestein (non power-of-two n > 2048 with unsup)
+fft   n=6000     rows=3 ms60x100          four_step     passes=2 relerr 6.99e-07 ok           vs MLX: L2 reldiff 6.6e-07 (MLX relerr 6.9e-07) 
+fft   n=1000000  rows=1 ms1000x1000       four_step     passes=2 relerr 1.43e-06 ok           MLX raises 
+ifft  n=1000000  rows=1 ms100x100x100     four_step     passes=3 relerr 1.13e-06 ok           MLX raises 
+
+== speed, complex64 forward, median ms [min ms] (lower is better) ==
+case       | ours (plan)       wall                gpu | MLX mx.eval              |  scipy w1 scipy w16 | vDSP (best variant)
+n=2^16     | mlx-plan          0.349 [0.326]     0.060 | 0.363 [0.333]            |      0.27      0.25 | 0.07 (DFT_zop_split)
+n=2^20     | mlx-plan          0.394 [0.336]     0.099 | 0.439 [0.373]            |     10.03      9.81 | 4.21 (fft_zop_split)
+n=2^22     | ms2048x2048       0.909 [0.674]     0.635 | RAISES                   |     61.05     60.63 | 24.06 (DFT_zop_split)
+n=2^24     | ms16x32x32x32x32  2.467 [2.392]     2.072 | 3.116 [2.822] WRONG      |    300.13    299.28 | 116.71 (DFT_zop_split)
+4096x4096  | mlx-plan          0.693 [0.626]     0.387 | 0.736 [0.661]            |     31.31      3.42 | 4.07 (DFT_interleaved_rowloop_16thr)
+fixed overhead (n=1024): ours 0.282 [min 0.247] ms (gpu 0.020) | MLX 0.308 [min 0.269] ms | empty command buffer 0.027 ms | scipy 0.0057 ms
+shipped-metallib A/B: {"path_suffix": "site-packages/mlx/lib/mlx.metallib", "n": 1048576, "bitwise_equal_outputs": true, "our_offline_compile_ms": 0.3404, "wheel_metallib_ms": 0.338}
+load average at start/end: [4.88, 4.61, 8.09] [4.32, 4.51, 7.97] (high values = other jobs running; timings are then noisy)
+
+== plan alternatives at n = 2^24 (our runtime) ==
+port of MLX plan (WRONG RESULT)    passes=3 wall 2.745 ms gpu 2.374 ms per-pass gpu [0.41, 0.37, 1.55]
+16x32x32x32x32                     passes=5 wall 2.399 ms gpu 2.070 ms per-pass gpu [0.37, 0.46, 0.43, 0.43, 0.4]
+16^6                               passes=6 wall 2.621 ms gpu 2.246 ms per-pass gpu [0.37, 0.37, 0.38, 0.38, 0.38, 0.37]
+16x2048x512                        passes=3 wall 5.218 ms gpu 4.844 ms per-pass gpu [0.37, 2.77, 1.67]
+256x256x256                        passes=3 wall 7.829 ms gpu 7.453 ms per-pass gpu [4.06, 1.67, 1.67]
+4096x4096 (coalesce 1)             passes=2 wall 11.451 ms gpu 11.005 ms per-pass gpu [10.74, 3.71]
+
+== gate: >= 80% of MLX's speed at n = 2^24 complex64 ==
+{
+ "threshold": 0.8,
+ "definition": "speed ratio = mlx_ms / ours_ms (medians)",
+ "n=2^24": {
+  "ours_ms": 2.4673,
+  "ours_relerr": 6.203328847866683e-07,
+  "ours_plan": "ms16x32x32x32x32",
+  "mlx_status": "WRONG_RESULT",
+  "mlx_ms": 3.1164,
+  "mlx_relerr": 1.4144086106411262,
+  "ratio_ours_correct_vs_mlx": 1.263,
+  "ratio_min_based": 1.179,
+  "ratio_same_plan_as_mlx": 0.963,
+  "same_plan_bitwise_equal_to_mlx": true
+ },
+ "n=2^20_largest_size_mlx_gets_right": {
+  "ours_ms": 0.3939,
+  "mlx_ms": 0.4388,
+  "ratio": 1.114,
+  "bitwise_equal_to_mlx": true
+ },
+ "verdict": "PASS on speed (but MLX's own 2^24 output is wrong, so this compares our correct transform with MLX's incorrect one)"
+}
+
+RESULT {"probe":"e5_fft","device":"Apple M1 Ultra","versions":{"numpy":"2.5.5","scipy":"1.18.1","mlx":"0.31.1","python":"3.14.2"},"loadavg_start":[4.88,4.61,8.09],"correctness_c2c_pow2":{"columns":["log2n","dir","plan","passes","temps","relerr_vs_scipy_c128","mlx_status","mlx_relerr_vs_scipy_c128","ours_bitwise_equal_to_mlx","port_of_mlx_plan"],"rows":[[10,"fwd","mlx-plan",1,0,5.347e-07,"ok",5.347e-07,true,"bitwise_equal_to_mlx"],[10,"inv","mlx-plan",1,0,5.385e-07,"ok",5.385e-07,true,"bitwise_equal_to_mlx"],[11,"fwd","mlx-plan",1,0,5.863e-07,"ok",5.863e-07,true,"bitwise_equal_to_mlx"],[11,"inv","mlx-plan",1,0,6.069e-07,"ok",6.069e-07,true,"bitwise_equal_to_mlx"],[12,"fwd","mlx-plan",1,0,6.863e-07,"ok",6.863e-07,true,"bitwise_equal_to_mlx"],[12,"inv","mlx-plan",1,0,6.998e-07,"ok",6.998e-07,true,"bitwise_equal_to_mlx"],[13,"fwd","mlx-plan",2,1,3.327e-07,"ok",3.327e-07,true,"bitwise_equal_to_mlx"],[13,"inv","mlx-plan",2,1,3.346e-07,"ok",3.346e-07,true,"bitwise_equal_to_mlx"],[14,"fwd","mlx-plan",2,1,3.585e-07,"ok",3.585e-07,true,"bitwise_equal_to_mlx"],[14,"inv","mlx-plan",2,1,3.587e-07,"ok",3.587e-07,true,"bitwise_equal_to_mlx"],[15,"fwd","mlx-plan",2,1,5.615e-07,"ok",5.615e-07,true,"bitwise_equal_to_mlx"],[15,"inv","mlx-plan",2,1,5.635e-07,"ok",5.635e-07,true,"bitwise_equal_to_mlx"],[16,"fwd","mlx-plan",2,1,6.83e-07,"ok",6.83e-07,true,"bitwise_equal_to_mlx"],[16,"inv","mlx-plan",2,1,6.8e-07,"ok",6.8e-07,true,"bitwise_equal_to_mlx"],[17,"fwd","mlx-plan",2,1,7.222e-07,"ok",7.222e-07,true,"bitwise_equal_to_mlx"],[17,"inv","mlx-plan",2,1,7.227e-07,"ok",7.227e-07,true,"bitwise_equal_to_mlx"],[18,"fwd","mlx-plan",2,1,7.431e-07,"ok",7.431e-07,true,"bitwise_equal_to_mlx"],[18,"inv","mlx-plan",2,1,7.441e-07,"ok",7.441e-07,true,"bitwise_equal_to_mlx"],[19,"fwd","mlx-plan",2,1,9.259e-07,"ok",9.259e-07,true,"bitwise_equal_to_mlx"],[19,"inv","mlx-plan",2,1,9.246e-07,"ok",9.246e-07,true,"bitwise_equal_to_mlx"],[20,"fwd","mlx-plan",2,1,1.037e-06,"ok",1.037e-06,true,"bitwise_equal_to_mlx"],[20,"inv","mlx-plan",2,1,1.036e-06,"ok",1.036e-06,true,"bitwise_equal_to_mlx"],[21,"fwd","ms1024x2048",2,1,1.092e-06,"RAISES",null,null,"same_error_as_mlx"],[21,"inv","ms1024x2048",2,1,1.091e-06,"RAISES",null,null,"same_error_as_mlx"],[22,"fwd","ms2048x2048",2,1,1.148e-06,"RAISES",null,null,"same_error_as_mlx"],[22,"inv","ms2048x2048",2,1,1.149e-06,"RAISES",null,null,"same_error_as_mlx"],[23,"fwd","ms16x32x32x32x16",5,1,5.754e-07,"WRONG_RESULT",1.414,null,"bitwise_equal_to_mlx(both wrong)"],[23,"inv","ms16x32x32x32x16",5,1,5.753e-07,"WRONG_RESULT",1.0,null,"bitwise_equal_to_mlx(both wrong)"],[24,"fwd","ms16x32x32x32x32",5,1,6.204e-07,"WRONG_RESULT",1.414,null,"bitwise_equal_to_mlx(both wrong)"],[24,"inv","ms16x32x32x32x32",5,1,6.204e-07,"WRONG_RESULT",1.0,null,"bitwise_equal_to_mlx(both wrong)"]]},"stretch":{"columns":["op","n","rows","status","plan","kernel","passes","relerr_vs_scipy","mlx_relerr_vs_scipy","bitwise_equal_to_mlx","l2_reldiff_vs_mlx","note"],"rows":[["rfft",1024,3,"ok","mlx-plan","fft",1,5.507e-07,5.507e-07,true,0.0,null],["irfft",1024,3,"ok","mlx-plan","fft",1,5.232e-07,5.232e-07,true,0.0,null],["rfft",4096,3,"ok","mlx-plan","fft",1,6.93e-07,6.93e-07,true,0.0,null],["irfft",4096,3,"ok","mlx-plan","fft",1,6.841e-07,6.841e-07,true,0.0,null],["rfft",65536,3,"ok","mlx-plan","four_step",2,6.803e-07,6.803e-07,true,0.0,null],["irfft",65536,3,"ok","mlx-plan","four_step",2,6.321e-07,6.321e-07,true,0.0,null],["rfft",1048576,3,"ok","mlx-plan","four_step",2,1.036e-06,1.036e-06,true,0.0,null],["irfft",1048576,3,"ok","mlx-plan","four_step",2,9.833e-07,9.833e-07,true,0.0,null],["rfft",4194304,1,"ok","ms2048x2048","four_step",2,1.149e-06,null,null,null,"mlx raises"],["irfft",4194304,1,"ok","ms2048x2048","four_step",2,1.085e-06,null,null,null,"mlx raises"],["rfft",16777216,1,"ok","ms16x32x32x32x32","four_step",5,6.202e-07,1.231,false,1.716,null],["irfft",16777216,1,"ok","ms16x32x32x32x32","four_step",5,6.006e-07,1.118,false,2.234,null],["fft",1000,5,"ok","mlx-plan","fft",1,8.132e-07,8.132e-07,true,0.0,null],["ifft",1000,2,"ok","mlx-plan","fft",1,8.307e-07,8.307e-07,true,0.0,null],["fft",2187,5,"ok","mlx-plan","fft",1,6.224e-07,6.224e-07,true,0.0,null],["ifft",2187,2,"ok","mlx-plan","fft",1,6.257e-07,6.257e-07,true,0.0,null],["fft",3003,5,"ok","mlx-plan","fft",1,1.413e-06,1.413e-06,true,0.0,null],["ifft",3003,2,"ok","mlx-plan","fft",1,1.41e-06,1.41e-06,true,0.0,null],["fft",4095,5,"ok","mlx-plan","fft",1,1.127e-06,1.127e-06,true,0.0,null],["ifft",4095,2,"ok","mlx-plan","fft",1,1.14e-06,1.14e-06,true,0.0,null],["rfft",1000,3,"ok","mlx-plan","fft",1,8.547e-07,8.547e-07,true,0.0,null],["irfft",1000,3,"ok","mlx-plan","fft",1,8.229e-07,8.229e-07,true,0.0,null],["fft",17,5,"ok","mlx-plan","rader_fft",1,1.425e-07,1.538e-07,false,1.062e-07,null],["ifft",17,2,"ok","mlx-plan","rader_fft",1,1.29e-07,1.367e-07,false,1.23e-07,null],["fft",1009,5,"ok","mlx-plan","rader_fft",1,1.456e-06,1.483e-06,false,2.086e-07,null],["ifft",1009,2,"ok","mlx-plan","rader_fft",1,1.454e-06,1.486e-06,false,2.082e-07,null],["fft",2003,5,"ok","mlx-plan","rader_fft",1,2.139e-06,2.144e-06,false,2.458e-07,null],["ifft",2003,2,"ok","mlx-plan","rader_fft",1,2.177e-06,2.189e-06,false,2.46e-07,null],["rfft",1009,3,"ok","mlx-plan","rader_fft",1,1.452e-06,1.471e-06,false,2.057e-07,null],["fft",47,5,"ok","mlx-plan","bluestein_fft",1,2.915e-07,2.99e-07,false,1.207e-07,null],["ifft",47,2,"ok","mlx-plan","bluestein_fft",1,2.69e-07,2.916e-07,false,1.191e-07,null],["fft",1021,5,"ok","mlx-plan","bluestein_fft",1,1.073e-06,1.103e-06,false,1.916e-07,null],["ifft",1021,2,"ok","mlx-plan","bluestein_fft",1,1.061e-06,1.084e-06,false,1.945e-07,null],["fft",2038,5,"ok","mlx-plan","bluestein_fft",1,1.258e-06,1.292e-06,false,2.019e-07,null],["ifft",2038,2,"ok","mlx-plan","bluestein_fft",1,1.26e-06,1.293e-06,false,2.033e-07,null],["rfft",1021,3,"ok","mlx-plan","bluestein_fft",1,1.071e-06,1.093e-06,false,1.962e-07,null],["irfft",1021,3,"WRONG_RESULT","mlx-plan","bluestein_fft",1,0.03515,0.03515,false,1.968e-07,"same answer as MLX: MLX's Bluestein irfft kernel does not drop imag(x[0]) the way NumPy/SciPy do, so non-Hermitian-consistent input differs"],["irfft",1021,3,"ok","mlx-plan","bluestein_fft",1,1.094e-06,1.124e-06,false,1.915e-07,"x[0] real"],["fft",3001,2,"NOT_COVERED",null,null,null,null,null,null,null,"multi-upload Bluestein (non power-of-two n > 2048 with unsupported factors, or any non power-of-two n > 4096) "],["fft",5000,2,"NOT_COVERED",null,null,null,null,null,null,null,"multi-upload Bluestein (non power-of-two n > 2048 with unsupported factors, or any non power-of-two n > 4096) "],["fft",6000,3,"ok","ms60x100","four_step",2,6.995e-07,6.922e-07,false,6.605e-07,null],["fft",1000000,1,"ok","ms1000x1000","four_step",2,1.433e-06,null,null,null,"mlx raises"],["ifft",1000000,1,"ok","ms100x100x100","four_step",3,1.132e-06,null,null,null,"mlx raises"]]},"speed":{"n=2^16":{"rows":1,"n":65536,"ours":{"plan":"mlx-plan","passes":2,"temps":1,"relerr":6.785e-07,"bitwise_equal_to_mlx":true,"ms":0.3492,"min_ms":0.3258,"gpu_ms":0.0602,"per_pass_gpu_ms":[0.045,0.019]},"mlx":{"relerr":6.785e-07,"status":"ok","ms":0.3632,"min_ms":0.3327},"scipy_workers1":{"ms":0.2673,"relerr":1.494e-07},"scipy_workers16":{"ms":0.2487},"vdsp":{"fft_zop_split":{"ms":0.0777,"relerr":2.026e-07},"ctoz+fft_zop+ztoc":{"ms":0.1198,"relerr":2.026e-07},"DFT_zop_split":{"ms":0.0723,"relerr":2.026e-07},"DFT_interleaved":{"status":"unsupported length (setup returned NULL)"}}},"n=2^20":{"rows":1,"n":1048576,"ours":{"plan":"mlx-plan","passes":2,"temps":1,"relerr":1.037e-06,"bitwise_equal_to_mlx":true,"ms":0.3939,"min_ms":0.3362,"gpu_ms":0.0988,"per_pass_gpu_ms":[0.056,0.041]},"mlx":{"relerr":1.037e-06,"status":"ok","ms":0.4388,"min_ms":0.3732},"scipy_workers1":{"ms":10.03,"relerr":1.69e-07},"scipy_workers16":{"ms":9.812},"vdsp":{"fft_zop_split":{"ms":4.213,"relerr":2.281e-07},"ctoz+fft_zop+ztoc":{"ms":5.091,"relerr":2.281e-07},"DFT_zop_split":{"ms":4.52,"relerr":2.28e-07},"DFT_interleaved":{"status":"unsupported length (setup returned NULL)"}}},"n=2^22":{"rows":1,"n":4194304,"ours":{"plan":"ms2048x2048","passes":2,"temps":1,"relerr":1.149e-06,"ms":0.9091,"min_ms":0.6739,"gpu_ms":0.6355,"per_pass_gpu_ms":[0.276,0.118]},"ours_port_of_mlx_plan":{"error":"Unable to load function four_step_mem_16384_float2_float2_0_false: Function four_step_mem_16384_float2_float2_0_false wa"},"mlx":{"status":"RAISES","error":"[metal::Device] Unable to load function four_step_mem_16384_float2_float2_0_false"},"scipy_workers1":{"ms":61.05,"relerr":1.794e-07},"scipy_workers16":{"ms":60.63},"vdsp":{"fft_zop_split":{"ms":24.12,"relerr":2.348e-07},"ctoz+fft_zop+ztoc":{"ms":27.54,"relerr":2.348e-07},"DFT_zop_split":{"ms":24.06,"relerr":2.343e-07},"DFT_interleaved":{"status":"unsupported length (setup returned NULL)"}}},"n=2^24":{"rows":1,"n":16777216,"ours":{"plan":"ms16x32x32x32x32","passes":5,"temps":1,"relerr":6.203e-07,"bitwise_equal_to_mlx":false,"ms":2.467,"min_ms":2.392,"gpu_ms":2.072,"per_pass_gpu_ms":[0.372,0.456,0.434,0.433,0.397],"dispatches":[{"kernel":"four_step_mem_256_float2_float2_0_false_n16_inv_0","grid":[65536,16,4],"group":[1,16,4]},{"kernel":"ms_mid_mem_512_n32","grid":[32768,16,8],"group":[1,16,8]},{"kernel":"ms_mid_mem_512_n32","grid":[32768,16,8],"group":[1,16,8]},{"kernel":"ms_mid_mem_512_n32","grid":[32768,16,8],"group":[1,16,8]},{"kernel":"four_step_mem_512_float2_float2_1_false_n32_inv_0","grid":[32768,16,8],"group":[1,16,8]}]},"ours_port_of_mlx_plan":{"passes":3,"temps":2,"relerr":1.414,"bitwise_equal_to_mlx":true,"ms":3.238,"min_ms":3.088,"gpu_ms":2.812},"mlx":{"relerr":1.414,"status":"WRONG_RESULT","ms":3.116,"min_ms":2.822},"scipy_workers1":{"ms":300.1,"relerr":1.869e-07},"scipy_workers16":{"ms":299.3},"vdsp":{"fft_zop_split":{"ms":125.6,"relerr":2.506e-07},"ctoz+fft_zop+ztoc":{"ms":138.9,"relerr":2.506e-07},"DFT_zop_split":{"ms":116.7,"relerr":2.505e-07},"DFT_interleaved":{"status":"unsupported length (setup returned NULL)"}}},"4096x4096":{"rows":4096,"n":4096,"ours":{"plan":"mlx-plan","passes":1,"temps":0,"relerr":6.926e-07,"bitwise_equal_to_mlx":true,"ms":0.6925,"min_ms":0.6265,"gpu_ms":0.3866,"per_pass_gpu_ms":[0.381]},"mlx":{"relerr":6.926e-07,"status":"ok","ms":0.736,"min_ms":0.6613},"scipy_workers1":{"ms":31.31,"relerr":1.26e-07},"scipy_workers16":{"ms":3.422},"vdsp":{"ctoz+fft_zop+ztoc_rowloop_1thr":{"ms":26.05,"relerr":1.736e-07},"ctoz+fft_zop+ztoc_rowloop_16thr":{"ms":5.004,"relerr":1.736e-07},"DFT_interleaved_rowloop_1thr":{"ms":20.69,"relerr":1.735e-07},"DFT_interleaved_rowloop_16thr":{"ms":4.068,"relerr":1.735e-07}}}},"fixed_overhead_n1024":{"n":1024,"ours_ms":0.2824,"ours_min_ms":0.2471,"ours_gpu_ms":0.0202,"mlx_ms":0.3077,"mlx_min_ms":0.2692,"empty_command_buffer_roundtrip_ms":0.0272,"scipy_workers1_ms":0.0057},"plan_alternatives_2p24":[{"plan":"port of MLX plan (WRONG RESULT)","passes":3,"ms":2.745,"gpu_ms":2.374,"per_pass_gpu_ms":[0.41,0.37,1.55]},{"plan":"16x32x32x32x32","passes":5,"ms":2.399,"gpu_ms":2.07,"per_pass_gpu_ms":[0.37,0.46,0.43,0.43,0.4]},{"plan":"16^6","passes":6,"ms":2.621,"gpu_ms":2.246,"per_pass_gpu_ms":[0.37,0.37,0.38,0.38,0.38,0.37]},{"plan":"16x2048x512","passes":3,"ms":5.218,"gpu_ms":4.844,"per_pass_gpu_ms":[0.37,2.77,1.67]},{"plan":"256x256x256","passes":3,"ms":7.829,"gpu_ms":7.453,"per_pass_gpu_ms":[4.06,1.67,1.67]},{"plan":"4096x4096 (coalesce 1)","passes":2,"ms":11.45,"gpu_ms":11.0,"per_pass_gpu_ms":[10.74,3.71]}],"shipped_metallib_check":{"path_suffix":"site-packages/mlx/lib/mlx.metallib","n":1048576,"bitwise_equal_outputs":true,"our_offline_compile_ms":0.3404,"wheel_metallib_ms":0.338},"pipelines":{"built":91,"total_build_s":0.015},"gate":{"threshold":0.8,"definition":"speed ratio = mlx_ms / ours_ms (medians)","n=2^24":{"ours_ms":2.467,"ours_relerr":6.203e-07,"ours_plan":"ms16x32x32x32x32","mlx_status":"WRONG_RESULT","mlx_ms":3.116,"mlx_relerr":1.414,"ratio_ours_correct_vs_mlx":1.263,"ratio_min_based":1.179,"ratio_same_plan_as_mlx":0.963,"same_plan_bitwise_equal_to_mlx":true},"n=2^20_largest_size_mlx_gets_right":{"ours_ms":0.3939,"mlx_ms":0.4388,"ratio":1.114,"bitwise_equal_to_mlx":true},"verdict":"PASS on speed (but MLX's own 2^24 output is wrong, so this compares our correct transform with MLX's incorrect one)"},"loadavg_end":[4.32,4.51,7.97],"wall_s":18.3}
