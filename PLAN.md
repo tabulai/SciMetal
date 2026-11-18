@@ -58,8 +58,8 @@ mirrors SciPy's namespaces.
 - **Never modify** `/Users/tunguz/Programming/scipy` (SciPy 2.0.0.dev0 checkout, reference
   only) or `/Users/tunguz/Programming/metal-arrow` (the user's own project, source of the
   vendored runtime). Read them freely.
-- **Version control:** `metal-sci` is deliberately not a git repository yet. Do not run
-  `git init`, commit or push unless the user asks.
+- **Version control:** a local git repository on `main` with no remote. Commit only when
+  the user asks; never add a remote or push unless asked.
 - **Privacy:** do not send the user's name, email address or project details to any
   external service.
 - **Never slower than SciPy.** A call the native route cannot win declines to SciPy.
@@ -459,7 +459,7 @@ Not verified at hand-off:
   CPU-minutes inside the first test; see 6.8 and 9.2.
 - The exhaustive FFT length sweep (`METAL_SCI_FFT_EXHAUSTIVE=1`) passed mid-afternoon but
   was not re-run after the final host-loader, routing and capacity-fitting changes.
-- Nothing is under version control.
+- The tree is committed locally (`main`); there is no remote and nothing has been pushed.
 
 Leftovers that are safe to delete: build trees `.build/ndimage`, `.build/fft`,
 `.build/fft-all`, `.build/fft-cpu`, `.build/fft-asan`, `.build/wheel` (all ignored by
@@ -1244,7 +1244,7 @@ of this document, and report to the user with the gates that passed and failed.
 
 ### 9.3 Questions for the user
 
-1. **Version control.** The folder is not a git repository. Initialise one and commit?
+1. **Remote.** The repository is local only. Push it somewhere, and where?
 2. **`lstsq`.** The default driver returns singular values, which a fast QR path cannot.
    Accelerate only `gelsy`, or change the default in `metal_sci.linalg.lstsq`?
 3. **Warning by default.** Should the one-time `PrecisionWarning` be on by default under
