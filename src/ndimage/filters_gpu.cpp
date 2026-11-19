@@ -7,11 +7,14 @@
 // the widened result directly, so no pass ever reads a float64 and no separate
 // conversion pass runs (probes/README.md, rules 1 and 2).
 #include "filters.hpp"
+#include "ms/detail/parallel.hpp"
 #include "ndimage_kernels.h"
 #include "runtime/metal_compute.hpp"
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
+#include <string>
 #include <vector>
 
 namespace ms::detail::ndimage {
@@ -79,14 +82,173 @@ uint32_t symmetry_index(Symmetry symmetry) {
     default: return MS_NDIMAGE_SYMMETRY_NONE;
     }
 }
+constexpr double float32_overflow_threshold = 0x1.ffffffp127;
+
+bool overflows_float32(double value) noexcept {
+    return std::isfinite(value) && std::fabs(value) >= float32_overflow_threshold;
+}
+
+std::string check_passes_parameters_range(const std::vector<Pass>& passes) {
+    for (const Pass& pass : passes) {
+        if (pass.mode == MS_NDIMAGE_CONSTANT && overflows_float32(pass.cval)) {
+            return "constant cval exceeds single-precision range; re-routed to CPU";
+        }
+        if (pass.kind == MS_NDIMAGE_CORRELATE) {
+            for (uint64_t j = 0; j < pass.size; ++j) {
+                if (overflows_float32(pass.weights[j])) {
+                    return "filter weights exceed single-precision range; re-routed to CPU";
+                }
+            }
+        }
+    }
+    return {};
+}
+
+std::string check_parameters_range(const Plan& plan) {
+    return check_passes_parameters_range(plan.passes);
+}
+
+std::string check_chain_gain_range(const std::vector<Pass>& passes, const array::ConvertReport& report,
+                                   bool input_is_double, double& out_m, double& out_e) {
+    if (report.overflowed) {
+        return "float64 input overflowed float32; re-routed to CPU";
+    }
+    constexpr double u = 0x1p-24;
+    double m = std::fabs(static_cast<double>(static_cast<float>(report.max_finite)));
+    double e = u * m;
+    for (const Pass& pass : passes) {
+        if (pass.mode == MS_NDIMAGE_CONSTANT && std::isfinite(pass.cval)) {
+            const double c = std::fabs(static_cast<double>(static_cast<float>(pass.cval)));
+            if (c > m) {
+                m = c;
+            }
+            e = std::max(e, u * c);
+        }
+        // Symmetric and antisymmetric kernels (including odd-sized uniform passes)
+        // evaluate (below +- above) in float32 before multiplying by the tap weight.
+        if (pass.size > 1 && pass.symmetry != Symmetry::none &&
+            (!std::isfinite(m + e) || 2.0 * (m + e) >= float32_overflow_threshold)) {
+            return input_is_double
+                       ? "float64 symmetric filter pair sum overflowed float32; re-routed to CPU"
+                       : "mixed-precision symmetric filter pair sum overflowed float32; re-routed to CPU";
+        }
+        double gain = 0.0;
+        if (pass.kind == MS_NDIMAGE_UNIFORM) {
+            const double w = std::fabs(static_cast<double>(static_cast<float>(1.0 / static_cast<double>(pass.size))));
+            gain = static_cast<double>(pass.size) * w;
+        } else {
+            for (uint64_t j = 0; j < pass.size; ++j) {
+                const double aw = std::fabs(static_cast<double>(static_cast<float>(pass.weights[j])));
+                if (std::isfinite(aw)) gain += aw;
+            }
+        }
+        e = gain * e + static_cast<double>(pass.size + 3) * u * gain * m;
+        m *= gain;
+        if (!std::isfinite(m + e) || m + e >= float32_overflow_threshold) {
+            return input_is_double
+                       ? "float64 filter gain overflowed float32; re-routed to CPU"
+                       : "mixed-precision filter gain overflowed float32; re-routed to CPU";
+        }
+    }
+    out_m = m;
+    out_e = e;
+    return {};
+}
+
+std::string check_gain_range(const Plan& plan, const array::ConvertReport& report, bool input_is_double) {
+    double m = 0.0, e = 0.0;
+    return check_chain_gain_range(plan.passes, report, input_is_double, m, e);
+}
+
+std::string check_composite_gain_range(const CompositePlan& plan, const array::ConvertReport& report,
+                                       bool input_is_double) {
+    if (report.overflowed) {
+        return "float64 input overflowed float32; re-routed to CPU";
+    }
+    constexpr double u = 0x1p-24;
+    const size_t k_count = plan.chains.size();
+    double sum_m = 0.0, sum_e = 0.0, sq_sum = 0.0;
+    for (size_t k = 0; k < k_count; ++k) {
+        double mk = 0.0, ek = 0.0;
+        std::string err = check_chain_gain_range(plan.chains[k], report, input_is_double, mk, ek);
+        if (!err.empty()) return err;
+        sum_m += mk;
+        sum_e += ek;
+        const double bound_k = mk + ek;
+        sq_sum += bound_k * bound_k;
+    }
+    if (plan.combine_op == MS_NDIMAGE_COMBINE_SUM) {
+        sum_e += static_cast<double>(k_count > 0 ? k_count - 1 : 0) * u * sum_m;
+        if (!std::isfinite(sum_m + sum_e) || sum_m + sum_e >= float32_overflow_threshold) {
+            return input_is_double
+                       ? "float64 composite filter sum overflowed float32; re-routed to CPU"
+                       : "mixed-precision composite filter sum overflowed float32; re-routed to CPU";
+        }
+    } else {
+        if (!std::isfinite(sq_sum) ||
+            sq_sum * (1.0 + static_cast<double>(k_count + 1) * u) >= float32_overflow_threshold) {
+            return input_is_double
+                       ? "float64 composite gradient square sum overflowed float32; re-routed to CPU"
+                       : "mixed-precision composite gradient square sum overflowed float32; re-routed to CPU";
+        }
+    }
+    return {};
+}
+
+double scan_max_finite(const ms_buffer* single_buf, ms_context* context, uint64_t elements) {
+    const float* p = reinterpret_cast<const float*>(read(single_buf, context).data);
+    double lane_max[parallel::max_lanes] = {};
+    parallel::parallel_for(elements, uint64_t{1} << 18, [&](unsigned lane, uint64_t begin, uint64_t end) {
+        float lm = 0.0f;
+        for (uint64_t i = begin; i < end; ++i) {
+            const float v = std::fabs(p[i]);
+            if (std::isfinite(v) && v > lm) lm = v;
+        }
+        lane_max[lane] = static_cast<double>(lm);
+    });
+    double max_fin = 0.0;
+    for (unsigned l = 0; l < parallel::max_lanes; ++l) {
+        if (lane_max[l] > max_fin) max_fin = lane_max[l];
+    }
+    return max_fin;
+}
 } // namespace
 
-BufferPtr run_gpu(ms_context* context, const Plan& plan, const ms_array& input) {
+BufferPtr run_gpu(ms_context* context, const Plan& plan, const ms_array& input, bool allow_cpu_fallback,
+                  std::string& overflow_reason) {
     static std::atomic<uint32_t> capacities[2][3] = {};
-    GpuOperationScope operation(context, true);
+    overflow_reason = check_parameters_range(plan);
+    if (!overflow_reason.empty()) {
+        if (!allow_cpu_fallback) {
+            throw Error(MS_ENOTSUP, "values exceed single-precision range; forced GPU cannot fall back to CPU");
+        }
+        return BufferPtr{};
+    }
+
     const size_t count = plan.passes.size();
     const uint64_t elements = plan.shape.elements;
-    const bool widen = plan.dtype == MS_FLOAT64;
+    const bool input_is_double = plan.dtype == MS_FLOAT64;
+    const uint32_t out_dtype = plan.out_dtype ? plan.out_dtype : plan.dtype;
+    const bool widen = out_dtype == MS_FLOAT64;
+
+    array::ConvertReport report;
+    BufferPtr single[2];
+    single[0] = array::load_single(context, input, plan.shape, input_is_double ? &report : nullptr);
+    if (input_is_double || widen) {
+        if (!input_is_double) {
+            report.max_finite = scan_max_finite(single[0].get(), context, elements);
+        }
+        overflow_reason = check_gain_range(plan, report, input_is_double);
+        if (!overflow_reason.empty()) {
+            single[0].reset();
+            if (!allow_cpu_fallback) {
+                throw Error(MS_ENOTSUP, "values exceed single-precision range; forced GPU cannot fall back to CPU");
+            }
+            return BufferPtr{};
+        }
+    }
+
+    GpuOperationScope operation(context, true);
 
     // All passes' weights in one small buffer, narrowed like the data.
     uint64_t total_taps = 0;
@@ -106,8 +268,6 @@ BufferPtr run_gpu(ms_context* context, const Plan& plan, const ms_array& input) 
 
     // Pass i reads buffer i % 2 and writes the other one; a float64 result has
     // its own buffer, written by the last pass.
-    BufferPtr single[2];
-    single[0] = array::load_single(context, input, plan.shape);
     if (count > 1 || !widen) single[1] = array::allocate(context, elements * sizeof(float));
     BufferPtr wide = widen ? array::allocate(context, elements * sizeof(double)) : BufferPtr();
 
@@ -138,5 +298,164 @@ BufferPtr run_gpu(ms_context* context, const Plan& plan, const ms_array& input) 
     batch.commit_and_wait();
     operation.complete();
     return widen ? std::move(wide) : std::move(single[count % 2]);
+}
+
+BufferPtr run_gpu_composite(ms_context* context, const CompositePlan& plan, const ms_array& input,
+                            bool allow_cpu_fallback, std::string& overflow_reason) {
+    static std::atomic<uint32_t> capacities[2][3] = {};
+    for (const auto& chain : plan.chains) {
+        overflow_reason = check_passes_parameters_range(chain);
+        if (!overflow_reason.empty()) {
+            if (!allow_cpu_fallback) {
+                throw Error(MS_ENOTSUP, "values exceed single-precision range; forced GPU cannot fall back to CPU");
+            }
+            return BufferPtr{};
+        }
+    }
+
+    const uint64_t elements = plan.shape.elements;
+    const bool input_is_double = plan.in_dtype == MS_FLOAT64;
+    const bool widen_out = plan.out_dtype == MS_FLOAT64;
+
+    array::ConvertReport report;
+    BufferPtr single_in = array::load_single(context, input, plan.shape, input_is_double ? &report : nullptr);
+    if (input_is_double || widen_out) {
+        if (!input_is_double) {
+            report.max_finite = scan_max_finite(single_in.get(), context, elements);
+        }
+        overflow_reason = check_composite_gain_range(plan, report, input_is_double);
+        if (!overflow_reason.empty()) {
+            single_in.reset();
+            if (!allow_cpu_fallback) {
+                throw Error(MS_ENOTSUP, "values exceed single-precision range; forced GPU cannot fall back to CPU");
+            }
+            return BufferPtr{};
+        }
+    }
+
+    GpuOperationScope operation(context, true);
+
+    uint64_t total_taps = 0;
+    size_t max_passes = 0;
+    for (const auto& chain : plan.chains) {
+        max_passes = std::max(max_passes, chain.size());
+        for (const Pass& pass : chain) total_taps += pass.size;
+    }
+    BufferPtr weights = total_taps ? array::allocate(context, total_taps * sizeof(float)) : BufferPtr();
+    if (total_taps) {
+        float* w = reinterpret_cast<float*>(mutable_data(weights.get()));
+        for (const auto& chain : plan.chains) {
+            for (const Pass& pass : chain) {
+                if (pass.kind == MS_NDIMAGE_UNIFORM) {
+                    std::fill_n(w, pass.size, static_cast<float>(1.0 / static_cast<double>(pass.size)));
+                } else {
+                    for (uint64_t j = 0; j < pass.size; ++j) w[j] = static_cast<float>(pass.weights[j]);
+                }
+                w += pass.size;
+            }
+        }
+    }
+
+    const size_t k_count = plan.chains.size();
+    const bool is_grad = plan.combine_op == MS_NDIMAGE_COMBINE_SQRT_SUM_SQ;
+    const uint64_t f32_bytes = elements * sizeof(float);
+
+    BufferPtr ping = (max_passes >= 2) ? array::allocate(context, f32_bytes) : BufferPtr();
+    BufferPtr pong = (max_passes >= 3) ? array::allocate(context, f32_bytes) : BufferPtr();
+    BufferPtr res0 = ((k_count >= 2 || (k_count == 1 && is_grad)) && !plan.chains[0].empty())
+                         ? array::allocate(context, f32_bytes)
+                         : BufferPtr();
+    BufferPtr res1;
+    if (k_count >= 2) {
+        bool need_res1 = false;
+        for (size_t k = 1; k < k_count; ++k) {
+            if (!plan.chains[k].empty()) {
+                need_res1 = true;
+                break;
+            }
+        }
+        if (need_res1) res1 = array::allocate(context, f32_bytes);
+    }
+    BufferPtr acc = (k_count >= 3) ? array::allocate(context, f32_bytes) : BufferPtr();
+    BufferPtr out_buf = array::allocate(context, elements * array::dtype_size(plan.out_dtype));
+
+    gpu::Batch batch(context);
+    uint32_t weight_offset = 0;
+
+    auto encode_chain = [&](const std::vector<Pass>& chain, const ms_buffer* dst_buf, bool widen_last) -> const ms_buffer* {
+        if (chain.empty()) return single_in.get();
+        const size_t count = chain.size();
+        const ms_buffer* src = single_in.get();
+        for (size_t i = 0; i < count; ++i) {
+            const Pass& pass = chain[i];
+            const bool last = (i + 1 == count);
+            const uint32_t wide_store = (last && widen_last) ? 1u : 0u;
+            const uint32_t order = symmetry_index(pass.symmetry);
+            const char* kernel = kernels[wide_store][order];
+            const uint32_t capacity = threadgroup_capacity(kernel, capacities[wide_store][order]);
+            MSNdimageCorrelateParams params{};
+            const gpu::Grid grid = grid_for(pass, capacity, params);
+            params.length = static_cast<uint32_t>(pass.length);
+            params.stride = static_cast<uint32_t>(pass.inner);
+            params.taps = static_cast<uint32_t>(pass.size);
+            params.weight_offset = weight_offset;
+            params.before = static_cast<uint32_t>(pass.before);
+            params.mode = pass.mode;
+            params.cval = static_cast<float>(pass.cval);
+            const ms_buffer* dst = last ? dst_buf : (((count - 1 - i) % 2 == 1) ? ping.get() : pong.get());
+            batch.dispatch(kernel, params,
+                           {gpu::bind(src, context), gpu::bind(dst, context), gpu::bind(weights.get(), context)},
+                           grid);
+            weight_offset += params.taps;
+            src = dst;
+        }
+        return dst_buf;
+    };
+
+    auto encode_combine = [&](uint32_t op, const ms_buffer* a, const ms_buffer* b, const ms_buffer* dst, bool widen_store) {
+        const char* kernel = widen_store ? "ms_ndimage_combine_f64" : "ms_ndimage_combine_f32";
+        MSNdimageCombineParams params{};
+        params.elements = static_cast<ms_u32>(elements);
+        params.op = op;
+        const uint64_t groups = (elements + MS_GPU_THREADS - 1) / MS_GPU_THREADS;
+        batch.dispatch(kernel, params,
+                       {gpu::bind(a, context), gpu::bind(b, context), gpu::bind(dst, context)}, groups);
+    };
+
+    if (k_count == 1) {
+        if (plan.chains[0].empty()) {
+            const uint32_t op = is_grad ? MS_NDIMAGE_COMBINE_OP_SQRT_SQ1 : MS_NDIMAGE_COMBINE_OP_COPY;
+            encode_combine(op, single_in.get(), single_in.get(), out_buf.get(), widen_out);
+        } else if (!is_grad) {
+            encode_chain(plan.chains[0], out_buf.get(), widen_out);
+        } else {
+            const ms_buffer* buf0 = encode_chain(plan.chains[0], res0.get(), false);
+            encode_combine(MS_NDIMAGE_COMBINE_OP_SQRT_SQ1, buf0, buf0, out_buf.get(), widen_out);
+        }
+    } else if (k_count == 2) {
+        const ms_buffer* buf0 = encode_chain(plan.chains[0], res0.get(), false);
+        const ms_buffer* buf1 = encode_chain(plan.chains[1], res1.get(), false);
+        const uint32_t op = is_grad ? MS_NDIMAGE_COMBINE_OP_SQRT_SUM_SQ2 : MS_NDIMAGE_COMBINE_OP_SUM2;
+        encode_combine(op, buf0, buf1, out_buf.get(), widen_out);
+    } else {
+        const ms_buffer* buf0 = encode_chain(plan.chains[0], res0.get(), false);
+        const ms_buffer* buf1 = encode_chain(plan.chains[1], res1.get(), false);
+        encode_combine(is_grad ? MS_NDIMAGE_COMBINE_OP_SUM_SQ2 : MS_NDIMAGE_COMBINE_OP_SUM2,
+                       buf0, buf1, acc.get(), false);
+        for (size_t k = 2; k < k_count; ++k) {
+            const ms_buffer* bufk = encode_chain(plan.chains[k], res1.get(), false);
+            if (k + 1 < k_count) {
+                encode_combine(is_grad ? MS_NDIMAGE_COMBINE_OP_ADD_SQ : MS_NDIMAGE_COMBINE_OP_SUM2,
+                               acc.get(), bufk, acc.get(), false);
+            } else {
+                encode_combine(is_grad ? MS_NDIMAGE_COMBINE_OP_SQRT_ADD_SQ : MS_NDIMAGE_COMBINE_OP_SUM2,
+                               acc.get(), bufk, out_buf.get(), widen_out);
+            }
+        }
+    }
+
+    batch.commit_and_wait();
+    operation.complete();
+    return out_buf;
 }
 } // namespace ms::detail::ndimage

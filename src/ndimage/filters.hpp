@@ -9,6 +9,7 @@
 #include "core/array.hpp"
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace ms::detail::ndimage {
@@ -30,8 +31,17 @@ struct Pass {
 
 struct Plan {
     array::Shape shape;
-    uint32_t dtype = 0;  // MS_FLOAT32 or MS_FLOAT64: input, intermediates and result
+    uint32_t dtype = 0;      // MS_FLOAT32 or MS_FLOAT64 (input)
+    uint32_t out_dtype = 0;  // 0 (same as dtype), MS_FLOAT32 or MS_FLOAT64
     std::vector<Pass> passes;
+};
+
+struct CompositePlan {
+    array::Shape shape;
+    uint32_t in_dtype = 0;
+    uint32_t out_dtype = 0;
+    uint32_t combine_op = 0; // MS_NDIMAGE_COMBINE_SUM or MS_NDIMAGE_COMBINE_SQRT_SUM_SQ
+    std::vector<std::vector<Pass>> chains;
 };
 
 // The line element an extension position outside [0, length) repeats, or -1
@@ -65,9 +75,18 @@ inline int64_t extend(int64_t position, int64_t length, uint32_t mode) noexcept 
 
 // CPU engine: every pass in double precision on the performance cores.
 BufferPtr run_cpu(ms_context*, const Plan&, const void* input);
+BufferPtr run_cpu_composite(ms_context*, const CompositePlan&, const void* input);
 
 // GPU engine: single precision, one command buffer. gpu_supports says whether
 // the plan fits the kernels' 32-bit indexing and the single-buffer time budget.
+// If narrowing or filter-gain amplification overflows float32: when
+// `allow_cpu_fallback` is true (MS_EXECUTION_AUTO), returns null and writes the
+// reason to `overflow_reason` before any GPU operation begins; when false
+// (MS_EXECUTION_GPU), throws MS_ENOTSUP.
 bool gpu_supports(const Plan&) noexcept;
-BufferPtr run_gpu(ms_context*, const Plan&, const ms_array& input);
+bool gpu_supports_composite(const CompositePlan&) noexcept;
+BufferPtr run_gpu(ms_context*, const Plan&, const ms_array& input, bool allow_cpu_fallback,
+                  std::string& overflow_reason);
+BufferPtr run_gpu_composite(ms_context*, const CompositePlan&, const ms_array& input, bool allow_cpu_fallback,
+                            std::string& overflow_reason);
 } // namespace ms::detail::ndimage

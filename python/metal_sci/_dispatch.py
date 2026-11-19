@@ -12,13 +12,63 @@ import contextvars
 import dataclasses
 import functools
 import importlib
+import inspect
+import sys
+import warnings
 
-__all__ = ["NotAccelerated", "Route", "accelerated", "counters", "explain", "last_route", "record",
-           "registry"]
+import numpy as np
+
+__all__ = ["NotAccelerated", "PrecisionWarning", "Route", "accelerated", "counters", "explain",
+           "last_route", "record", "registry", "warn_precision_once"]
+
+
+class PrecisionWarning(UserWarning):
+    """Emitted once by default when a double-precision input is computed in single precision."""
+
+
+warnings.filterwarnings("once", category=PrecisionWarning, append=True)
+
+_PRECISION_WARNING_MESSAGE = (
+    "metal-sci computed a double-precision input in single precision. "
+    "Use metal_sci.set_precision('strict') for exact double-precision results, "
+    "or silence this warning with "
+    "warnings.filterwarnings('ignore', category=metal_sci.PrecisionWarning)."
+)
+
+
+def _caller_stacklevel() -> int:
+    try:
+        frame = sys._getframe(1)
+    except (AttributeError, ValueError):
+        return 2
+    level = 1
+    while frame is not None:
+        name = frame.f_globals.get("__name__") or ""
+        if (name != "metal_sci" and not name.startswith("metal_sci.")
+                and not name.startswith("scipy._lib") and not name.startswith("scipy.fft")):
+            return level
+        frame = frame.f_back
+        level += 1
+    return 2
+
+
+def warn_precision_once(input_dtype, compute_dtype: str) -> None:
+    """Emit PrecisionWarning once when a float64/complex128 input runs in float32/complex64."""
+    if input_dtype is None or compute_dtype not in ("float32", "complex64"):
+        return
+    if np.dtype(input_dtype).name not in ("float64", "complex128"):
+        return
+    warnings.warn(_PRECISION_WARNING_MESSAGE, PrecisionWarning, stacklevel=_caller_stacklevel())
 
 
 class NotAccelerated(Exception):
     """Raised by a native route to hand the call to stock SciPy."""
+
+    def __init__(self, reason: str, *, context=None, **overrides):
+        super().__init__(reason)
+        self.reason = reason
+        self.context = context
+        self.overrides = overrides
 
 
 @dataclasses.dataclass(frozen=True)
@@ -67,6 +117,7 @@ def accelerated(qualified_name: str):
         from ._config import get_precision
 
         tally = counters.setdefault(qualified_name, [0, 0])
+        signature = inspect.signature(impl)
 
         @functools.wraps(reference)
         def wrapper(*args, **kwargs):
@@ -75,6 +126,21 @@ def accelerated(qualified_name: str):
             except NotAccelerated as why:
                 tally[1] += 1
                 record(Route(qualified_name, "scipy", "as given", get_precision(), str(why)))
+                ctx = (
+                    why.context
+                    if hasattr(why.context, "__enter__")
+                    else (why.context() if callable(why.context) else why.context)
+                )
+                if why.overrides:
+                    bound = signature.bind_partial(*args, **kwargs)
+                    bound.arguments.update(why.overrides)
+                    if ctx is not None:
+                        with ctx:
+                            return reference(*bound.args, **bound.kwargs)
+                    return reference(*bound.args, **bound.kwargs)
+                if ctx is not None:
+                    with ctx:
+                        return reference(*args, **kwargs)
                 return reference(*args, **kwargs)
             tally[0] += 1
             return result

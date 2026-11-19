@@ -149,6 +149,9 @@ struct BatchSubmission final : AsyncSync {
 
 void require_runtime() { runtime(); }
 void warm_pipeline(const char* kernel, const Specialization* specialization) { pipeline(kernel, specialization); }
+MTL::ComputePipelineState* resolve_pipeline(const char* kernel, const Specialization* specialization) {
+    return pipeline(kernel, specialization);
+}
 uint32_t max_threads_per_group(const char* kernel, const Specialization* specialization) {
     return static_cast<uint32_t>(pipeline(kernel, specialization)->maxTotalThreadsPerThreadgroup());
 }
@@ -180,9 +183,10 @@ Grid Grid::linear(uint64_t threadgroups) {
     grid.threads[0] = MS_GPU_THREADS;
     return grid;
 }
-void Batch::dispatch(const char* kernel, const void* params, size_t bytes, const Binding* buffers, size_t count,
-                     const Grid& grid) {
+void Batch::dispatch(MTL::ComputePipelineState* state, const void* params, size_t bytes, const Binding* buffers,
+                     size_t count, const Grid& grid) {
     if (committed_) throw Error(MS_ESTATE, "GPU batch used after commit");
+    if (!state) throw Error(MS_EBACKEND, "GPU dispatch has a null pipeline");
     if (count > max_bound_buffers) throw Error(MS_EBACKEND, "GPU dispatch binds more than 30 buffers");
     if (bytes % 8 || bytes > max_params_bytes)
         throw Error(MS_EBACKEND, "GPU dispatch parameters must be a multiple of 8 bytes and at most 4 KiB");
@@ -191,7 +195,6 @@ void Batch::dispatch(const char* kernel, const void* params, size_t bytes, const
         if (grid.groups[axis] > UINT32_MAX) throw Error(MS_ENOTSUP, "GPU dispatch exceeds the threadgroup grid limit");
         if (!grid.threads[axis]) throw Error(MS_EBACKEND, "GPU dispatch has an empty threadgroup");
     }
-    MTL::ComputePipelineState* state = pipeline(kernel);
     if (grid.threads_per_group() > state->maxTotalThreadsPerThreadgroup())
         throw Error(MS_ENOTSUP, "this Metal device's threadgroup capacity is too small for the kernel");
     const size_t param_offset = param_storage_.size();
@@ -202,10 +205,15 @@ void Batch::dispatch(const char* kernel, const void* params, size_t bytes, const
     commands_.push_back({state, param_offset, bytes, binding_offset, count, grid, false, 0, 0});
     ++dispatches_;
 }
-void Batch::dispatch_indexed(const char* kernel, const Specialization* specialization,
+void Batch::dispatch(const char* kernel, const void* params, size_t bytes, const Binding* buffers, size_t count,
+                     const Grid& grid) {
+    dispatch(pipeline(kernel), params, bytes, buffers, count, grid);
+}
+void Batch::dispatch_indexed(MTL::ComputePipelineState* state,
                              const IndexedBuffer* buffers, size_t buffer_count,
                              const IndexedBytes* bytes, size_t bytes_count, const Grid& grid) {
     if (committed_) throw Error(MS_ESTATE, "GPU batch used after commit");
+    if (!state) throw Error(MS_EBACKEND, "GPU dispatch has a null pipeline");
     uint64_t used = 0;
     const auto claim = [&](uint32_t index) {
         if (index > max_bound_buffers) throw Error(MS_EBACKEND, "GPU dispatch argument index exceeds the buffer table");
@@ -223,7 +231,6 @@ void Batch::dispatch_indexed(const char* kernel, const Specialization* specializ
         if (grid.groups[axis] > UINT32_MAX) throw Error(MS_ENOTSUP, "GPU dispatch exceeds the threadgroup grid limit");
         if (!grid.threads[axis]) throw Error(MS_EBACKEND, "GPU dispatch has an empty threadgroup");
     }
-    MTL::ComputePipelineState* state = pipeline(kernel, specialization);
     if (grid.threads_per_group() > state->maxTotalThreadsPerThreadgroup())
         throw Error(MS_ENOTSUP, "this Metal device's threadgroup capacity is too small for the kernel");
     RecordedDispatch command;
@@ -246,6 +253,11 @@ void Batch::dispatch_indexed(const char* kernel, const Specialization* specializ
     }
     commands_.push_back(command);
     ++dispatches_;
+}
+void Batch::dispatch_indexed(const char* kernel, const Specialization* specialization,
+                             const IndexedBuffer* buffers, size_t buffer_count,
+                             const IndexedBytes* bytes, size_t bytes_count, const Grid& grid) {
+    dispatch_indexed(pipeline(kernel, specialization), buffers, buffer_count, bytes, bytes_count, grid);
 }
 void Batch::fill(const ms_buffer* buffer, uint64_t byte_offset, uint64_t bytes, uint8_t value) {
     if (committed_) throw Error(MS_ESTATE, "GPU batch used after commit");
@@ -342,15 +354,16 @@ PreparedGpuBatch Batch::encode_batch(const ms_buffer* const* outputs, size_t out
     encoder_ = nullptr;
     return prepared;
 }
-void Batch::commit_and_wait() {
+void Batch::commit_and_wait(Timing* timing) {
     if (committed_) throw Error(MS_ESTATE, "GPU batch committed twice");
     auto& state = runtime();
     PreparedGpuBatch prepared;
-    std::chrono::steady_clock::time_point submitted;
+    std::chrono::steady_clock::time_point entered, submitted;
+    if (timing) entered = std::chrono::steady_clock::now();
     {
         AutoreleasePool pool;
         std::lock_guard submit_lock(state.submit_mutex);
-        command_ = state.queue->commandBuffer();
+        command_ = state.queue->commandBufferWithUnretainedReferences();
         if (!command_) throw Error(MS_EBACKEND, "Metal command buffer creation failed");
         command_->retain();
         prepared = encode_batch(nullptr, 0);
@@ -359,13 +372,25 @@ void Batch::commit_and_wait() {
         command_->commit();
     }
     command_->waitUntilCompleted();
-    record_host_wait(context_, static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                                   std::chrono::steady_clock::now() - submitted).count()));
+    const auto waited = std::chrono::steady_clock::now();
+    const uint64_t host_wait_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(waited - submitted).count());
+    record_host_wait(context_, host_wait_ns);
     const double seconds = command_->GPUEndTime() - command_->GPUStartTime();
-    record_gpu(context_, 0, 1, dispatches_, seconds > 0 ? static_cast<uint64_t>(seconds * 1e9) : 0);
+    const uint64_t gpu_ns = seconds > 0 ? static_cast<uint64_t>(seconds * 1e9) : 0;
+    record_gpu(context_, 0, 1, dispatches_, gpu_ns);
     if (command_->status() != MTL::CommandBufferStatusCompleted)
         throw Error(MS_EBACKEND, "Metal command buffer failed: " + describe(command_->error()));
     complete_sync_gpu_batch(context_, prepared);
+    if (timing) {
+        const auto done = std::chrono::steady_clock::now();
+        timing->encode_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(submitted - entered).count());
+        timing->gpu_ns = gpu_ns;
+        timing->host_wait_ns = host_wait_ns;
+        timing->complete_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(done - waited).count());
+    }
 }
 void Batch::commit_async(std::initializer_list<const ms_buffer*> outputs) {
     commit_async_impl(outputs.begin(), outputs.size());

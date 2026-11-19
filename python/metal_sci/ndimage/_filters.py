@@ -1,24 +1,25 @@
-"""Native routes for scipy.ndimage's separable filters.
+"""Native routes for scipy.ndimage's separable, dense, and composite filters.
 
-Every function here turns its arguments into a list of 1-D passes for the
-native core (``ms_ndimage_separable_filter``) exactly as SciPy turns them into
-calls of its C routines: the same weights, the same axis order, the same
-origins and boundary modes. A call these routes do not cover raises
+Every function here turns its arguments into native filter calls (``ms_ndimage_separable_filter``,
+``ms_ndimage_dense_filter``, or ``ms_ndimage_composite_filter``) matching SciPy's exact
+weights, axis order, origins, and boundary modes. A call these routes do not cover raises
 ``NotAccelerated`` before anything is computed, and the ``accelerated`` wrapper
 hands it to SciPy with the caller's arguments untouched. That includes every
 call SciPy would reject, so the exception a caller sees is SciPy's own.
 
 Handled natively: float32 and float64 ``numpy.ndarray`` inputs of rank 1 to 8
-with at least one element; ``output`` None, a dtype equal to the input's, or an
-array of the input's dtype and shape (the input itself for in-place use, or
-memory that does not overlap it). Declined: any other input type or dtype
-(integers, complex, lists, array subclasses, other array libraries, byte-swapped
-or unaligned data), empty and 0-d arrays, an ``output`` of another dtype or
-shape or one that partly overlaps the input, complex weights, and invalid
-arguments of any kind.
+with at least one element; ``output`` None, a float32/float64 dtype (type,
+``np.dtype``, or string), or a writeable float32/float64 array of the
+matching shape (the input itself for in-place use, or memory that does not
+overlap it). Declined: any other input type or dtype (integers, complex, lists,
+array subclasses, other array libraries, byte-swapped or unaligned data), empty
+and 0-d arrays, an ``output`` of a non-float32/float64 dtype (integer, boolean,
+complex, float16, longdouble), wrong shape, or partial/cross-dtype overlap,
+complex weights, and invalid arguments of any kind.
 """
 from __future__ import annotations
 
+import contextvars
 import numbers
 import operator
 
@@ -29,8 +30,37 @@ from .._config import get_precision
 from .._dispatch import NotAccelerated, Route, accelerated, record
 from . import _native_ndimage as _nd
 
-__all__ = ["correlate1d", "convolve1d", "gaussian_filter1d", "gaussian_filter", "uniform_filter1d",
-           "uniform_filter", "prewitt", "sobel"]
+__all__ = ["convolve", "convolve1d", "correlate", "correlate1d", "gaussian_filter", "gaussian_filter1d",
+           "gaussian_gradient_magnitude", "gaussian_laplace", "generic_gradient_magnitude",
+           "generic_laplace", "laplace", "prewitt", "sobel", "uniform_filter", "uniform_filter1d"]
+
+_trace_var: contextvars.ContextVar[object | None] = contextvars.ContextVar("metal_sci_ndimage_trace", default=None)
+
+
+class _TraceToken:
+    """Symbolic array token passed to generic_laplace / generic_gradient_magnitude callbacks."""
+
+    __slots__ = ("session", "ndim", "shape", "dtype", "size", "passes", "casted")
+
+    def __init__(self, session: object, ndim: int, shape: tuple[int, ...], dtype: np.dtype,
+                 passes: tuple = (), casted: bool = False):
+        self.session = session
+        self.ndim = ndim
+        self.shape = shape
+        self.dtype = dtype
+        self.size = int(np.prod(shape))
+        self.passes = passes
+        self.casted = casted
+
+
+class _TraceOutput(_TraceToken):
+    """Symbolic output token passed on the first axis of generic_laplace / generic_gradient_magnitude."""
+
+    __slots__ = ("written",)
+
+    def __init__(self, session: object, ndim: int, shape: tuple[int, ...], dtype: np.dtype):
+        super().__init__(session, ndim, shape, dtype, ())
+        self.written = False
 
 # SciPy's mode names for these filters. Its line-extension code treats
 # 'grid-wrap' as 'wrap' and 'grid-constant' as 'constant', and 'grid-mirror'
@@ -52,7 +82,14 @@ def _decline(reason: str):
     raise NotAccelerated(reason)
 
 
-def _input(input) -> np.ndarray:
+def _input(input):
+    if isinstance(input, _TraceToken):
+        session = _trace_var.get()
+        if session is None or input.session is not session:
+            _decline("invalid trace token")
+        if isinstance(input, _TraceOutput) and not input.written:
+            _decline("unwritten trace output cannot be read")
+        return input
     if type(input) is not np.ndarray:
         _decline("input is not a plain NumPy array")
     if input.dtype.char not in _FLOAT_CHARS or not input.dtype.isnative:
@@ -65,29 +102,50 @@ def _input(input) -> np.ndarray:
     return input
 
 
-def _output(output, input: np.ndarray):
-    """None for a new result array, or the caller's array to fill and return."""
+def _output(output, input):
+    """Return ``(target, out_dtype)``: ``target`` is None for a new array or the caller's array to fill."""
+    if isinstance(input, _TraceToken):
+        if input.casted:
+            _decline("intermediate trace cast cannot be fused")
+        if output is None:
+            return None, input.dtype
+        if isinstance(output, _TraceOutput) and output.session is input.session:
+            if input.passes and output.dtype.char != input.dtype.char:
+                _decline("intermediate trace dtype differs from output dtype")
+            return output, output.dtype
+        if isinstance(output, (type, np.dtype, str)):
+            try:
+                dtype = np.dtype(output)
+            except TypeError:
+                _decline("output is not a dtype")
+            if dtype.char not in _FLOAT_CHARS or not dtype.isnative:
+                _decline(f"no native filter output for dtype {dtype}")
+            if input.passes and dtype.char != input.dtype.char:
+                _decline("intermediate trace dtype differs from output dtype")
+            return None, dtype
+        _decline("unsupported output during callback tracing")
     if output is None:
-        return None
+        return None, input.dtype
     if isinstance(output, np.ndarray):
-        if (type(output) is not np.ndarray or output.dtype.char != input.dtype.char
+        if (type(output) is not np.ndarray or output.dtype.char not in _FLOAT_CHARS
                 or not output.dtype.isnative or output.shape != input.shape):
             _decline("output array of another type, dtype or shape")
         if not output.flags.writeable:
             _decline("output array is read-only")
-        same_view = (output is input or
-                     (output.ctypes.data == input.ctypes.data and output.strides == input.strides))
+        same_view = (output.dtype.char == input.dtype.char and
+                     (output is input or
+                      (output.ctypes.data == input.ctypes.data and output.strides == input.strides)))
         if not same_view and np.may_share_memory(output, input):
             _decline("output overlaps the input")
-        return output
+        return output, output.dtype
     if isinstance(output, (type, np.dtype, str)):
         try:
             dtype = np.dtype(output)
         except TypeError:
             _decline("output is not a dtype")
-        if dtype.char != input.dtype.char or not dtype.isnative:
-            _decline("output dtype differs from the input's")
-        return None
+        if dtype.char not in _FLOAT_CHARS or not dtype.isnative:
+            _decline(f"no native filter output for dtype {dtype}")
+        return None, dtype
     _decline("output is neither an array nor a dtype")
 
 
@@ -229,13 +287,32 @@ def _gaussian_pass(ndim: int, sigma, axis, order, mode, cval, truncate, radius) 
     return _correlate_pass(ndim, weights, axis, mode, cval, 0)
 
 
-def _run(function: str, array: np.ndarray, passes: list, target):
+def _run(function: str, array, passes: list, target, out_dtype=None):
+    if out_dtype is None:
+        out_dtype = array.dtype
+    if isinstance(array, _TraceToken):
+        combined = array.passes + tuple(passes)
+        casted = array.casted or (not passes and np.dtype(out_dtype).char != array.dtype.char)
+        if isinstance(target, _TraceOutput):
+            target.passes = combined
+            target.written = True
+            target.casted = casted
+            return target
+        return _TraceToken(array.session, array.ndim, array.shape, out_dtype, combined, casted)
     if passes:
-        result = _nd.separable_filter(function, array, passes)
+        result = _nd.separable_filter(function, array, passes, out_dtype=out_dtype)
     else:
-        # Nothing to filter (every sigma or size is trivial): SciPy copies the input.
-        result = _native.astype(array, array.dtype)
-        record(Route(function, "cpu", array.dtype.name, get_precision(), "no axis to filter: copied"))
+        # Nothing to filter (every sigma or size is trivial): SciPy copies/casts the input.
+        result = _native.astype(array, out_dtype)
+        record(Route(function, "cpu", np.dtype(out_dtype).name, get_precision(), "no axis to filter: copied"))
+    if target is None:
+        return result
+    target[...] = result
+    return target
+
+
+def _run_composite(function: str, array: np.ndarray, chains: list, combine_op: int, target, out_dtype=None):
+    result = _nd.composite_filter(function, array, chains, combine_op, out_dtype=out_dtype)
     if target is None:
         return result
     target[...] = result
@@ -245,15 +322,15 @@ def _run(function: str, array: np.ndarray, passes: list, target):
 @accelerated("ndimage.correlate1d")
 def correlate1d(input, weights, axis=-1, output=None, mode="reflect", cval=0.0, origin=0):
     array = _input(input)
-    target = _output(output, array)
+    target, out_dtype = _output(output, array)
     passes = [_correlate_pass(array.ndim, weights, axis, mode, cval, origin)]
-    return _run("ndimage.correlate1d", array, passes, target)
+    return _run("ndimage.correlate1d", array, passes, target, out_dtype)
 
 
 @accelerated("ndimage.convolve1d")
 def convolve1d(input, weights, axis=-1, output=None, mode="reflect", cval=0.0, origin=0):
     array = _input(input)
-    target = _output(output, array)
+    target, out_dtype = _output(output, array)
     weights = _weights(weights)
     # Convolution is correlation with the reversed weights; an even window's
     # centre moves by one when it is reversed.
@@ -261,23 +338,23 @@ def convolve1d(input, weights, axis=-1, output=None, mode="reflect", cval=0.0, o
     if not weights.shape[0] & 1:
         origin -= 1
     passes = [_correlate_pass(array.ndim, weights[::-1], axis, mode, cval, origin)]
-    return _run("ndimage.convolve1d", array, passes, target)
+    return _run("ndimage.convolve1d", array, passes, target, out_dtype)
 
 
 @accelerated("ndimage.gaussian_filter1d")
 def gaussian_filter1d(input, sigma, axis=-1, order=0, output=None, mode="reflect", cval=0.0, truncate=4.0,
                       *, radius=None):
     array = _input(input)
-    target = _output(output, array)
+    target, out_dtype = _output(output, array)
     passes = [_gaussian_pass(array.ndim, sigma, axis, order, mode, cval, truncate, radius)]
-    return _run("ndimage.gaussian_filter1d", array, passes, target)
+    return _run("ndimage.gaussian_filter1d", array, passes, target, out_dtype)
 
 
 @accelerated("ndimage.gaussian_filter")
 def gaussian_filter(input, sigma, order=0, output=None, mode="reflect", cval=0.0, truncate=4.0, *,
                     radius=None, axes=None):
     array = _input(input)
-    target = _output(output, array)
+    target, out_dtype = _output(output, array)
     axes = _axes(axes, array.ndim)
     count = len(axes)
     orders, sigmas = _sequence(order, count), _sequence(sigma, count)
@@ -288,21 +365,21 @@ def gaussian_filter(input, sigma, order=0, output=None, mode="reflect", cval=0.0
         _decline("sigma is not a real number")
     passes = [_gaussian_pass(array.ndim, sigmas[i], axes[i], orders[i], modes[i], cval, truncate, radiuses[i])
               for i in active]
-    return _run("ndimage.gaussian_filter", array, passes, target)
+    return _run("ndimage.gaussian_filter", array, passes, target, out_dtype)
 
 
 @accelerated("ndimage.uniform_filter1d")
 def uniform_filter1d(input, size, axis=-1, output=None, mode="reflect", cval=0.0, origin=0):
     array = _input(input)
-    target = _output(output, array)
+    target, out_dtype = _output(output, array)
     passes = [_uniform_pass(array.ndim, size, axis, mode, cval, origin)]
-    return _run("ndimage.uniform_filter1d", array, passes, target)
+    return _run("ndimage.uniform_filter1d", array, passes, target, out_dtype)
 
 
 @accelerated("ndimage.uniform_filter")
 def uniform_filter(input, size=3, output=None, mode="reflect", cval=0.0, origin=0, *, axes=None):
     array = _input(input)
-    target = _output(output, array)
+    target, out_dtype = _output(output, array)
     axes = _axes(axes, array.ndim)
     count = len(axes)
     sizes, origins, modes = _sequence(size, count), _sequence(origin, count), _sequence(mode, count)
@@ -312,19 +389,19 @@ def uniform_filter(input, size=3, output=None, mode="reflect", cval=0.0, origin=
     except Exception:
         _decline("size is not a real number")
     passes = [_uniform_pass(array.ndim, size, axes[i], modes[i], cval, origins[i]) for i, size in active]
-    return _run("ndimage.uniform_filter", array, passes, target)
+    return _run("ndimage.uniform_filter", array, passes, target, out_dtype)
 
 
 def _derivative(function: str, smoothing, input, axis, output, mode, cval):
     """prewitt and sobel: a central difference along `axis`, then `smoothing` along every other axis."""
     array = _input(input)
     axis = _axis(axis, array.ndim)
-    target = _output(output, array)
+    target, out_dtype = _output(output, array)
     modes = _sequence(mode, array.ndim)
     passes = [_correlate_pass(array.ndim, [-1, 0, 1], axis, modes[axis], cval, 0)]
     passes += [_correlate_pass(array.ndim, smoothing, other, modes[other], cval, 0)
                for other in range(array.ndim) if other != axis]
-    return _run(function, array, passes, target)
+    return _run(function, array, passes, target, out_dtype)
 
 
 @accelerated("ndimage.prewitt")
@@ -335,3 +412,206 @@ def prewitt(input, axis=-1, output=None, mode="reflect", cval=0.0):
 @accelerated("ndimage.sobel")
 def sobel(input, axis=-1, output=None, mode="reflect", cval=0.0):
     return _derivative("ndimage.sobel", [1, 2, 1], input, axis, output, mode, cval)
+
+
+def _dense_weights(weights) -> np.ndarray:
+    try:
+        w = np.asarray(weights)
+        if w.dtype.kind == "c":
+            _decline("complex weights")
+        w = np.asarray(w, dtype=np.float64)
+    except NotAccelerated:
+        raise
+    except Exception:
+        _decline("weights are not real numbers")
+    return w
+
+
+def _correlate_or_convolve(function: str, input, weights, output, mode, cval, origin, convolution: bool, axes):
+    array = _input(input)
+    target, out_dtype = _output(output, array)
+    axes = _axes(axes, array.ndim)
+    w = _dense_weights(weights)
+    num_axes = len(axes)
+    if num_axes < array.ndim:
+        if w.ndim != num_axes:
+            _decline("weights.ndim must match len(axes)")
+        w = np.expand_dims(w, tuple(ax for ax in range(array.ndim) if ax not in axes))
+    wshape = [s for s in w.shape if s > 0]
+    if len(wshape) != array.ndim:
+        _decline("weights.ndim must match input.ndim with positive extents")
+    origins = [_index(o, "origin") for o in _sequence(origin, num_axes)]
+    if num_axes < array.ndim:
+        origins_temp = [0] * array.ndim
+        for o, ax in zip(origins, axes):
+            origins_temp[ax] = o
+        origins = origins_temp
+    if convolution:
+        w = w[(slice(None, None, -1),) * w.ndim]
+        for ii in range(len(origins)):
+            origins[ii] = -origins[ii]
+            if not w.shape[ii] & 1:
+                origins[ii] -= 1
+    for o, lenw in zip(origins, wshape):
+        if o < -(lenw // 2) or o > (lenw - 1) // 2:
+            _decline("invalid origin")
+        if lenw > _nd.MS_NDIMAGE_MAX_WINDOW:
+            _decline("more weights than the native filter takes")
+    mode_code = _mode(mode)
+    cval_f = _cval(cval)
+    result = _nd.dense_filter(function, array, w, origins, mode_code, cval_f, out_dtype=out_dtype)
+    if target is None:
+        return result
+    target[...] = result
+    return target
+
+
+@accelerated("ndimage.correlate")
+def correlate(input, weights, output=None, mode='reflect', cval=0.0, origin=0, *, axes=None):
+    return _correlate_or_convolve("ndimage.correlate", input, weights, output, mode, cval, origin, False, axes)
+
+
+@accelerated("ndimage.convolve")
+def convolve(input, weights, output=None, mode='reflect', cval=0.0, origin=0, *, axes=None):
+    return _correlate_or_convolve("ndimage.convolve", input, weights, output, mode, cval, origin, True, axes)
+
+
+@accelerated("ndimage.laplace")
+def laplace(input, output=None, mode="reflect", cval=0.0, *, axes=None):
+    array = _input(input)
+    target, out_dtype = _output(output, array)
+    axes = _axes(axes, array.ndim)
+    if not axes:
+        return _run("ndimage.laplace", array, [], target, out_dtype)
+    modes = _sequence(mode, len(axes))
+    chains = [[_correlate_pass(array.ndim, [1, -2, 1], ax, modes[i], cval, 0)] for i, ax in enumerate(axes)]
+    return _run_composite("ndimage.laplace", array, chains, _nd.COMBINE_SUM, target, out_dtype)
+
+
+def _gaussian_kwargs(kwargs: dict):
+    kw = dict(kwargs)
+    truncate = kw.pop("truncate", 4.0)
+    radius = kw.pop("radius", None)
+    if kw:
+        _decline(f"unsupported keyword argument(s): {', '.join(kw)}")
+    return truncate, radius
+
+
+@accelerated("ndimage.gaussian_laplace")
+def gaussian_laplace(input, sigma, output=None, mode="reflect", cval=0.0, *, axes=None, **kwargs):
+    truncate, radius = _gaussian_kwargs(kwargs)
+    array = _input(input)
+    target, out_dtype = _output(output, array)
+    axes = _axes(axes, array.ndim)
+    num_axes = len(axes)
+    sigmas = _sequence(sigma, num_axes)
+    if not axes:
+        _sequence(mode, 0)
+        return _run("ndimage.gaussian_laplace", array, [], target, out_dtype)
+    modes = _sequence(mode, num_axes)
+    if num_axes < array.ndim:
+        sigma_temp = [0] * array.ndim
+        for s, ax in zip(sigmas, axes):
+            sigma_temp[ax] = s
+        sigmas_full = sigma_temp
+    else:
+        sigmas_full = sigmas
+    radiuses = _sequence(radius, array.ndim)
+    try:
+        active_axes = [j for j in range(array.ndim) if sigmas_full[j] > 1e-15]
+    except Exception:
+        _decline("sigma is not a real number")
+    chains = [
+        [_gaussian_pass(array.ndim, sigmas_full[j], j, 2 if j == ax else 0, modes[i], cval, truncate, radiuses[j])
+         for j in active_axes]
+        for i, ax in enumerate(axes)
+    ]
+    return _run_composite("ndimage.gaussian_laplace", array, chains, _nd.COMBINE_SUM, target, out_dtype)
+
+
+@accelerated("ndimage.gaussian_gradient_magnitude")
+def gaussian_gradient_magnitude(input, sigma, output=None, mode="reflect", cval=0.0, *, axes=None, **kwargs):
+    truncate, radius = _gaussian_kwargs(kwargs)
+    array = _input(input)
+    target, out_dtype = _output(output, array)
+    axes = _axes(axes, array.ndim)
+    if not axes:
+        _sequence(mode, 0)
+        return _run("ndimage.gaussian_gradient_magnitude", array, [], target, out_dtype)
+    modes = _sequence(mode, len(axes))
+    sigmas_full = _sequence(sigma, array.ndim)
+    radiuses = _sequence(radius, array.ndim)
+    try:
+        active_axes = [j for j in range(array.ndim) if sigmas_full[j] > 1e-15]
+    except Exception:
+        _decline("sigma is not a real number")
+    chains = [
+        [_gaussian_pass(array.ndim, sigmas_full[j], j, 1 if j == ax else 0, modes[i], cval, truncate, radiuses[j])
+         for j in active_axes]
+        for i, ax in enumerate(axes)
+    ]
+    return _run_composite("ndimage.gaussian_gradient_magnitude", array, chains, _nd.COMBINE_SQRT_SUM_SQ, target,
+                          out_dtype)
+
+
+def _trace_generic(function: str, input, derivative, output, mode, cval,
+                   extra_arguments, extra_keywords, axes, combine_op: int):
+    if extra_keywords is None:
+        extra_keywords = {}
+    if not callable(derivative) or not isinstance(extra_keywords, dict):
+        _decline("derivative must be callable and extra_keywords must be a dict")
+    array = _input(input)
+    target, out_dtype = _output(output, array)
+    axes = _axes(axes, array.ndim)
+    if not axes:
+        return _run(function, array, [], target, out_dtype)
+    modes = _sequence(mode, len(axes))
+    cval_f = _cval(cval)
+    for m in modes:
+        _mode(m)
+
+    chains = []
+    try:
+        for i, ax in enumerate(axes):
+            axis_session = object()
+            in_tok = _TraceToken(axis_session, array.ndim, array.shape, array.dtype, ())
+            out_arg = (_TraceOutput(axis_session, array.ndim, array.shape, out_dtype)
+                       if i == 0 else np.dtype(out_dtype))
+            var_token = _trace_var.set(axis_session)
+            try:
+                ret = derivative(in_tok, ax, out_arg, modes[i], cval_f, *extra_arguments, **extra_keywords)
+            finally:
+                _trace_var.reset(var_token)
+            if i == 0:
+                if out_arg.written and (ret is None or ret is out_arg):
+                    chains.append(list(out_arg.passes))
+                else:
+                    _decline("callback did not write into axis-0 output buffer")
+            elif ret is in_tok:
+                _decline("callback returned unmodified input token")
+            elif isinstance(ret, _TraceToken) and ret.session is axis_session:
+                if np.dtype(ret.dtype).char != np.dtype(out_dtype).char:
+                    _decline("callback return dtype differs from output dtype")
+                chains.append(list(ret.passes))
+            else:
+                _decline("callback did not return a traceable native separable filter")
+    except NotAccelerated:
+        raise
+    except Exception:
+        _decline("callback raised or performed non-traceable operations")
+
+    return _run_composite(function, array, chains, combine_op, target, out_dtype)
+
+
+@accelerated("ndimage.generic_laplace")
+def generic_laplace(input, derivative2, output=None, mode="reflect", cval=0.0,
+                    extra_arguments=(), extra_keywords=None, *, axes=None):
+    return _trace_generic("ndimage.generic_laplace", input, derivative2, output, mode, cval,
+                          extra_arguments, extra_keywords, axes, _nd.COMBINE_SUM)
+
+
+@accelerated("ndimage.generic_gradient_magnitude")
+def generic_gradient_magnitude(input, derivative, output=None, mode="reflect", cval=0.0,
+                               extra_arguments=(), extra_keywords=None, *, axes=None):
+    return _trace_generic("ndimage.generic_gradient_magnitude", input, derivative, output, mode, cval,
+                          extra_arguments, extra_keywords, axes, _nd.COMBINE_SQRT_SUM_SQ)

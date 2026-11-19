@@ -1,0 +1,247 @@
+// GPU engine of the shared dense N-D correlation primitive.
+#include "dense_correlate.hpp"
+#include "dense_correlate_kernels.h"
+#include "ms/detail/parallel.hpp"
+#include "runtime/metal_compute.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <string>
+
+namespace ms::detail::dense_correlate {
+namespace {
+
+constexpr double float32_overflow_threshold = 0x1.ffffffp127;
+// Cap tap-elements so one command buffer does not hold the GPU too long.
+constexpr uint64_t gpu_max_tap_elements = uint64_t{1} << 38;
+
+bool overflows_float32(double value) noexcept {
+    return std::isfinite(value) && std::fabs(value) >= float32_overflow_threshold;
+}
+
+std::string check_parameters_range(const StencilSpec& spec, const TapTable& taps) {
+    bool has_constant_boundary = false;
+    for (uint32_t d = 0; d < spec.out_shape.ndim; ++d) {
+        if (spec.mode[d] == Constant) {
+            has_constant_boundary = true;
+            break;
+        }
+    }
+    if (has_constant_boundary &&
+        (overflows_float32(spec.cval_real) ||
+         (array::is_complex(spec.in_dtype) && overflows_float32(spec.cval_imag)))) {
+        return "constant cval exceeds single-precision range; re-routed to CPU";
+    }
+    if (taps.weights_overflow_f32) {
+        return "filter weights exceed single-precision range; re-routed to CPU";
+    }
+    return {};
+}
+
+std::string check_gain_range(const StencilSpec& spec, const TapTable& taps, const array::ConvertReport& report) {
+    if (report.overflowed) {
+        return "float64 input overflowed float32; re-routed to CPU";
+    }
+    constexpr double u = 0x1p-24;
+    double m = std::fabs(static_cast<double>(static_cast<float>(report.max_finite)));
+    double e = u * m;
+    bool has_constant_boundary = false;
+    for (uint32_t d = 0; d < spec.out_shape.ndim; ++d) {
+        if (spec.mode[d] == Constant) {
+            has_constant_boundary = true;
+            break;
+        }
+    }
+    if (has_constant_boundary) {
+        if (std::isfinite(spec.cval_real)) {
+            const double cr = std::fabs(static_cast<double>(static_cast<float>(spec.cval_real)));
+            if (cr > m) m = cr;
+            e = std::max(e, u * cr);
+        }
+        if (array::is_complex(spec.in_dtype) && std::isfinite(spec.cval_imag)) {
+            const double ci = std::fabs(static_cast<double>(static_cast<float>(spec.cval_imag)));
+            if (ci > m) m = ci;
+            e = std::max(e, u * ci);
+        }
+    }
+
+    double gain = 0.0;
+    for (const Tap& t : taps.taps) {
+        const double awr = std::fabs(static_cast<double>(t.weight_re_f32));
+        if (std::isfinite(awr)) gain += awr;
+        if (taps.is_complex_weights) {
+            const double awi = std::fabs(static_cast<double>(t.weight_im_f32));
+            if (std::isfinite(awi)) gain += awi;
+        }
+    }
+    e = gain * e + static_cast<double>(taps.taps.size() + 3) * u * gain * m;
+    m *= gain;
+    if (!std::isfinite(m + e) || m + e >= float32_overflow_threshold) {
+        return array::is_double(spec.in_dtype)
+                   ? "float64 dense filter gain overflowed float32; re-routed to CPU"
+                   : "mixed-precision dense filter gain overflowed float32; re-routed to CPU";
+    }
+    return {};
+}
+
+const char* kernel_for(const StencilSpec& spec) {
+    const bool in_c = array::is_complex(spec.in_dtype);
+    const bool out_d = array::is_double(spec.out_dtype);
+    if (!in_c) {
+        return out_d ? "ms_dense_correlate_f32_f64" : "ms_dense_correlate_f32_f32";
+    }
+    return out_d ? "ms_dense_correlate_c64_c128" : "ms_dense_correlate_c64_c64";
+}
+
+} // namespace
+
+bool gpu_supports(const StencilSpec& spec, const TapTable& taps) noexcept {
+    if (spec.in_shape.ndim < 1 || spec.in_shape.ndim > MS_MAX_NDIM || spec.out_shape.ndim != spec.in_shape.ndim)
+        return false;
+    if (taps.is_complex_weights && !array::is_complex(spec.in_dtype)) return false;
+    if (array::is_complex(spec.in_dtype) != array::is_complex(spec.out_dtype)) return false;
+    if (spec.in_shape.elements > INT32_MAX || spec.out_shape.elements > INT32_MAX) return false;
+    if (taps.taps.size() > MS_DENSE_GPU_MAX_TAPS) return false;
+    for (uint32_t d = 0; d < spec.in_shape.ndim; ++d) {
+        if (spec.in_shape.dims[d] > MS_DENSE_GPU_MAX_EXTENT || spec.out_shape.dims[d] > MS_DENSE_GPU_MAX_EXTENT)
+            return false;
+    }
+    for (const Tap& tap : taps.taps) {
+        if (tap.linear_offset < INT32_MIN || tap.linear_offset > INT32_MAX) return false;
+        for (uint32_t d = 0; d < spec.in_shape.ndim; ++d) {
+            if (tap.coord[d] < -static_cast<int64_t>(MS_DENSE_GPU_MAX_EXTENT) ||
+                tap.coord[d] > static_cast<int64_t>(MS_DENSE_GPU_MAX_EXTENT))
+                return false;
+        }
+    }
+    uint64_t tap_elements = 0;
+    if (ms_checked_mul(spec.out_shape.elements, static_cast<uint64_t>(taps.taps.size()), &tap_elements) != MS_OK)
+        return false;
+    return tap_elements <= gpu_max_tap_elements;
+}
+
+BufferPtr encode_gpu(ms_context* ctx, gpu::Batch& batch, const StencilSpec& spec,
+                     const TapTable& taps, const ms_buffer* single_input, const ms_buffer* output_buf) {
+    if (spec.out_shape.elements == 0) return BufferPtr{};
+    if (taps.taps.empty()) {
+        batch.fill(output_buf, 0, spec.out_shape.elements * array::dtype_size(spec.out_dtype), 0);
+        return BufferPtr{};
+    }
+
+    BufferPtr tap_buf = array::allocate(ctx, taps.taps.size() * sizeof(MSDenseTap));
+    {
+        MSDenseTap* dst = reinterpret_cast<MSDenseTap*>(mutable_data(tap_buf.get()));
+        for (size_t i = 0; i < taps.taps.size(); ++i) {
+            const Tap& t = taps.taps[i];
+            MSDenseTap& dt = dst[i];
+            dt = MSDenseTap{};
+            for (uint32_t d = 0; d < spec.in_shape.ndim; ++d) dt.coord[d] = static_cast<ms_i32>(t.coord[d]);
+            dt.linear_offset = static_cast<ms_i32>(t.linear_offset);
+            dt.weight_re = t.weight_re_f32;
+            dt.weight_im = t.weight_im_f32;
+        }
+    }
+
+    const uint32_t ndim = spec.out_shape.ndim;
+    MSDenseCorrelateParams params{};
+    params.ndim = ndim;
+    params.num_taps = static_cast<ms_u32>(taps.taps.size());
+    params.out_elements = static_cast<ms_u32>(spec.out_shape.elements);
+    params.all_interior = taps.all_interior ? 1u : 0u;
+    params.cval_re = static_cast<float>(spec.cval_real);
+    params.cval_im = static_cast<float>(spec.cval_imag);
+
+    uint32_t out_s = 1, in_s = 1;
+    for (int32_t d = static_cast<int32_t>(ndim) - 1; d >= 0; --d) {
+        params.out_shape[d] = static_cast<ms_u32>(spec.out_shape.dims[d]);
+        params.in_shape[d] = static_cast<ms_u32>(spec.in_shape.dims[d]);
+        params.out_stride[d] = out_s;
+        params.in_stride[d] = in_s;
+        params.mode[d] = spec.mode[d];
+        params.interior_lo[d] = static_cast<ms_i32>(taps.interior_lo[d]);
+        params.interior_hi[d] = static_cast<ms_i32>(taps.interior_hi[d]);
+        out_s *= static_cast<uint32_t>(spec.out_shape.dims[d]);
+        in_s *= static_cast<uint32_t>(spec.in_shape.dims[d]);
+    }
+
+    if (!array::is_complex(spec.in_dtype) && ndim == 2) {
+        const char* kernel = array::is_double(spec.out_dtype) ? "ms_dense_correlate2d_f32_f64"
+                                                              : "ms_dense_correlate2d_f32_f32";
+        const uint32_t w = static_cast<uint32_t>(spec.out_shape.dims[1]);
+        const uint32_t h = static_cast<uint32_t>(spec.out_shape.dims[0]);
+        gpu::Grid grid;
+        grid.threads[0] = std::min<uint32_t>(32, std::max<uint32_t>(1, w));
+        grid.threads[1] = std::min<uint32_t>(8, std::max<uint32_t>(1, h));
+        grid.threads[2] = 1;
+        grid.groups[0] = (w + grid.threads[0] - 1) / grid.threads[0];
+        grid.groups[1] = (h + grid.threads[1] - 1) / grid.threads[1];
+        grid.groups[2] = 1;
+        batch.dispatch(kernel, params,
+                       {gpu::bind(single_input, ctx), gpu::bind(output_buf, ctx), gpu::bind(tap_buf.get(), ctx)},
+                       grid);
+        return tap_buf;
+    }
+
+    const char* kernel = kernel_for(spec);
+    const uint64_t threadgroups = (spec.out_shape.elements + MS_GPU_THREADS - 1) / MS_GPU_THREADS;
+    batch.dispatch(kernel, params,
+                   {gpu::bind(single_input, ctx), gpu::bind(output_buf, ctx), gpu::bind(tap_buf.get(), ctx)},
+                   threadgroups);
+    return tap_buf;
+}
+
+BufferPtr run_gpu(ms_context* ctx, const StencilSpec& spec, const TapTable& taps,
+                  const ms_array& input, bool allow_cpu_fallback, std::string& overflow_reason) {
+    overflow_reason = check_parameters_range(spec, taps);
+    if (!overflow_reason.empty()) {
+        if (!allow_cpu_fallback) {
+            throw Error(MS_ENOTSUP, "values exceed single-precision range; forced GPU cannot fall back to CPU");
+        }
+        return BufferPtr{};
+    }
+
+    const bool input_is_double = array::is_double(spec.in_dtype);
+    const bool output_is_double = array::is_double(spec.out_dtype);
+    array::ConvertReport report;
+    BufferPtr single_in = array::load_single(ctx, input, spec.in_shape, input_is_double ? &report : nullptr);
+    if (input_is_double || output_is_double) {
+        if (!input_is_double) {
+            const float* p = reinterpret_cast<const float*>(read(single_in.get(), ctx).data);
+            const uint64_t nscal = spec.in_shape.elements * (array::is_complex(spec.in_dtype) ? 2 : 1);
+            double lane_max[parallel::max_lanes] = {};
+            parallel::parallel_for(nscal, uint64_t{1} << 18, [&](unsigned lane, uint64_t begin, uint64_t end) {
+                float lm = 0.0f;
+                for (uint64_t i = begin; i < end; ++i) {
+                    const float v = std::fabs(p[i]);
+                    if (std::isfinite(v) && v > lm) lm = v;
+                }
+                lane_max[lane] = static_cast<double>(lm);
+            });
+            double max_fin = 0.0;
+            for (unsigned l = 0; l < parallel::max_lanes; ++l) {
+                if (lane_max[l] > max_fin) max_fin = lane_max[l];
+            }
+            report.max_finite = max_fin;
+        }
+        overflow_reason = check_gain_range(spec, taps, report);
+        if (!overflow_reason.empty()) {
+            single_in.reset();
+            if (!allow_cpu_fallback) {
+                throw Error(MS_ENOTSUP, "values exceed single-precision range; forced GPU cannot fall back to CPU");
+            }
+            return BufferPtr{};
+        }
+    }
+
+    GpuOperationScope operation(ctx, true);
+    BufferPtr output = array::allocate(ctx, spec.out_shape.elements * array::dtype_size(spec.out_dtype));
+    gpu::Batch batch(ctx);
+    BufferPtr tap_buf = encode_gpu(ctx, batch, spec, taps, single_in.get(), output.get());
+    batch.commit_and_wait();
+    operation.complete();
+    return output;
+}
+
+} // namespace ms::detail::dense_correlate

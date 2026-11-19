@@ -1,0 +1,10 @@
+# scipy.signal native tests (PLAIN and VALIDATED).
+add_executable(ms_signal_convolve_test tests/native/signal_convolve_test.cpp)
+target_include_directories(ms_signal_convolve_test PRIVATE src)
+target_link_libraries(ms_signal_convolve_test PRIVATE mscore Threads::Threads)
+if(MS_ENABLE_METAL)
+  target_compile_definitions(ms_signal_convolve_test PRIVATE MS_TEST_METAL=1)
+  target_include_directories(ms_signal_convolve_test SYSTEM PRIVATE "${MS_METAL_CPP_DIR}")
+  target_link_libraries(ms_signal_convolve_test PRIVATE "-framework Metal" "-framework Foundation")
+endif()
+ms_add_gpu_test(signal_convolve ms_signal_convolve_test PLAIN VALIDATED)

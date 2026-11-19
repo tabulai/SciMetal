@@ -1,0 +1,1551 @@
+{
+  "benchmark": "fft crossover",
+  "machine": {
+    "cpu": "Apple M1 Ultra",
+    "performance_cores": "16",
+    "memory_gb": 128,
+    "macos": "26.5.1",
+    "python": "3.14.2",
+    "numpy": "2.5.5",
+    "scipy": "1.18.1",
+    "loadavg": [
+      1.79,
+      1.75,
+      1.77
+    ]
+  },
+  "rows": [
+    {
+      "function": "fft",
+      "shape": [
+        4096
+      ],
+      "dtype": "complex64",
+      "points": 4096,
+      "work": 49152,
+      "gpu_ms": 0.311,
+      "scipy_ms": 0.0153,
+      "ratio": 0.05
+    },
+    {
+      "function": "fft",
+      "shape": [
+        8192
+      ],
+      "dtype": "complex64",
+      "points": 8192,
+      "work": 106496,
+      "gpu_ms": 0.3215,
+      "scipy_ms": 0.0248,
+      "ratio": 0.08
+    },
+    {
+      "function": "fft",
+      "shape": [
+        16384
+      ],
+      "dtype": "complex64",
+      "points": 16384,
+      "work": 229376,
+      "gpu_ms": 0.3304,
+      "scipy_ms": 0.0475,
+      "ratio": 0.14
+    },
+    {
+      "function": "fft",
+      "shape": [
+        32768
+      ],
+      "dtype": "complex64",
+      "points": 32768,
+      "work": 491520,
+      "gpu_ms": 0.3432,
+      "scipy_ms": 0.1048,
+      "ratio": 0.31
+    },
+    {
+      "function": "fft",
+      "shape": [
+        65536
+      ],
+      "dtype": "complex64",
+      "points": 65536,
+      "work": 1048576,
+      "gpu_ms": 0.3755,
+      "scipy_ms": 0.2523,
+      "ratio": 0.67
+    },
+    {
+      "function": "fft",
+      "shape": [
+        131072
+      ],
+      "dtype": "complex64",
+      "points": 131072,
+      "work": 2228224,
+      "gpu_ms": 0.384,
+      "scipy_ms": 0.6398,
+      "ratio": 1.67
+    },
+    {
+      "function": "fft",
+      "shape": [
+        262144
+      ],
+      "dtype": "complex64",
+      "points": 262144,
+      "work": 4718592,
+      "gpu_ms": 0.4543,
+      "scipy_ms": 1.3125,
+      "ratio": 2.89
+    },
+    {
+      "function": "fft",
+      "shape": [
+        524288
+      ],
+      "dtype": "complex64",
+      "points": 524288,
+      "work": 9961472,
+      "gpu_ms": 0.9368,
+      "scipy_ms": 3.0827,
+      "ratio": 3.29
+    },
+    {
+      "function": "fft",
+      "shape": [
+        1048576
+      ],
+      "dtype": "complex64",
+      "points": 1048576,
+      "work": 20971520,
+      "gpu_ms": 1.1139,
+      "scipy_ms": 6.7149,
+      "ratio": 6.03
+    },
+    {
+      "function": "fft",
+      "shape": [
+        512,
+        16
+      ],
+      "dtype": "complex64",
+      "points": 8192,
+      "work": 32768,
+      "gpu_ms": 0.2954,
+      "scipy_ms": 0.0153,
+      "ratio": 0.05
+    },
+    {
+      "function": "fft",
+      "shape": [
+        1024,
+        16
+      ],
+      "dtype": "complex64",
+      "points": 16384,
+      "work": 65536,
+      "gpu_ms": 0.3025,
+      "scipy_ms": 0.025,
+      "ratio": 0.08
+    },
+    {
+      "function": "fft",
+      "shape": [
+        2048,
+        16
+      ],
+      "dtype": "complex64",
+      "points": 32768,
+      "work": 131072,
+      "gpu_ms": 0.3181,
+      "scipy_ms": 0.0427,
+      "ratio": 0.13
+    },
+    {
+      "function": "fft",
+      "shape": [
+        4096,
+        16
+      ],
+      "dtype": "complex64",
+      "points": 65536,
+      "work": 262144,
+      "gpu_ms": 0.351,
+      "scipy_ms": 0.079,
+      "ratio": 0.23
+    },
+    {
+      "function": "fft",
+      "shape": [
+        8192,
+        16
+      ],
+      "dtype": "complex64",
+      "points": 131072,
+      "work": 524288,
+      "gpu_ms": 0.407,
+      "scipy_ms": 0.1515,
+      "ratio": 0.37
+    },
+    {
+      "function": "fft",
+      "shape": [
+        16384,
+        16
+      ],
+      "dtype": "complex64",
+      "points": 262144,
+      "work": 1048576,
+      "gpu_ms": 0.4717,
+      "scipy_ms": 0.2997,
+      "ratio": 0.64
+    },
+    {
+      "function": "fft",
+      "shape": [
+        32768,
+        16
+      ],
+      "dtype": "complex64",
+      "points": 524288,
+      "work": 2097152,
+      "gpu_ms": 0.6459,
+      "scipy_ms": 0.6095,
+      "ratio": 0.94
+    },
+    {
+      "function": "fft",
+      "shape": [
+        65536,
+        16
+      ],
+      "dtype": "complex64",
+      "points": 1048576,
+      "work": 4194304,
+      "gpu_ms": 0.7517,
+      "scipy_ms": 1.2343,
+      "ratio": 1.64
+    },
+    {
+      "function": "fft",
+      "shape": [
+        131072,
+        16
+      ],
+      "dtype": "complex64",
+      "points": 2097152,
+      "work": 8388608,
+      "gpu_ms": 1.1527,
+      "scipy_ms": 2.4375,
+      "ratio": 2.11
+    },
+    {
+      "function": "fft",
+      "shape": [
+        128,
+        64
+      ],
+      "dtype": "complex64",
+      "points": 8192,
+      "work": 49152,
+      "gpu_ms": 0.2977,
+      "scipy_ms": 0.0153,
+      "ratio": 0.05
+    },
+    {
+      "function": "fft",
+      "shape": [
+        256,
+        64
+      ],
+      "dtype": "complex64",
+      "points": 16384,
+      "work": 98304,
+      "gpu_ms": 0.3011,
+      "scipy_ms": 0.0231,
+      "ratio": 0.08
+    },
+    {
+      "function": "fft",
+      "shape": [
+        512,
+        64
+      ],
+      "dtype": "complex64",
+      "points": 32768,
+      "work": 196608,
+      "gpu_ms": 0.3107,
+      "scipy_ms": 0.0393,
+      "ratio": 0.13
+    },
+    {
+      "function": "fft",
+      "shape": [
+        1024,
+        64
+      ],
+      "dtype": "complex64",
+      "points": 65536,
+      "work": 393216,
+      "gpu_ms": 0.3289,
+      "scipy_ms": 0.0717,
+      "ratio": 0.22
+    },
+    {
+      "function": "fft",
+      "shape": [
+        2048,
+        64
+      ],
+      "dtype": "complex64",
+      "points": 131072,
+      "work": 786432,
+      "gpu_ms": 0.3581,
+      "scipy_ms": 0.1369,
+      "ratio": 0.38
+    },
+    {
+      "function": "fft",
+      "shape": [
+        4096,
+        64
+      ],
+      "dtype": "complex64",
+      "points": 262144,
+      "work": 1572864,
+      "gpu_ms": 0.4346,
+      "scipy_ms": 0.2719,
+      "ratio": 0.63
+    },
+    {
+      "function": "fft",
+      "shape": [
+        8192,
+        64
+      ],
+      "dtype": "complex64",
+      "points": 524288,
+      "work": 3145728,
+      "gpu_ms": 0.6017,
+      "scipy_ms": 0.5643,
+      "ratio": 0.94
+    },
+    {
+      "function": "fft",
+      "shape": [
+        16384,
+        64
+      ],
+      "dtype": "complex64",
+      "points": 1048576,
+      "work": 6291456,
+      "gpu_ms": 0.7443,
+      "scipy_ms": 1.1222,
+      "ratio": 1.51
+    },
+    {
+      "function": "fft",
+      "shape": [
+        32768,
+        64
+      ],
+      "dtype": "complex64",
+      "points": 2097152,
+      "work": 12582912,
+      "gpu_ms": 1.1544,
+      "scipy_ms": 2.1864,
+      "ratio": 1.89
+    },
+    {
+      "function": "fft",
+      "shape": [
+        32,
+        256
+      ],
+      "dtype": "complex64",
+      "points": 8192,
+      "work": 65536,
+      "gpu_ms": 0.3046,
+      "scipy_ms": 0.0158,
+      "ratio": 0.05
+    },
+    {
+      "function": "fft",
+      "shape": [
+        64,
+        256
+      ],
+      "dtype": "complex64",
+      "points": 16384,
+      "work": 131072,
+      "gpu_ms": 0.2987,
+      "scipy_ms": 0.0254,
+      "ratio": 0.09
+    },
+    {
+      "function": "fft",
+      "shape": [
+        128,
+        256
+      ],
+      "dtype": "complex64",
+      "points": 32768,
+      "work": 262144,
+      "gpu_ms": 0.3051,
+      "scipy_ms": 0.0441,
+      "ratio": 0.14
+    },
+    {
+      "function": "fft2",
+      "shape": [
+        256,
+        256
+      ],
+      "dtype": "complex64",
+      "points": 65536,
+      "work": 1048576,
+      "gpu_ms": 0.3761,
+      "scipy_ms": 0.1707,
+      "ratio": 0.45
+    },
+    {
+      "function": "fft",
+      "shape": [
+        512,
+        256
+      ],
+      "dtype": "complex64",
+      "points": 131072,
+      "work": 1048576,
+      "gpu_ms": 0.3482,
+      "scipy_ms": 0.157,
+      "ratio": 0.45
+    },
+    {
+      "function": "fft",
+      "shape": [
+        1024,
+        256
+      ],
+      "dtype": "complex64",
+      "points": 262144,
+      "work": 2097152,
+      "gpu_ms": 0.4278,
+      "scipy_ms": 0.3152,
+      "ratio": 0.74
+    },
+    {
+      "function": "fft",
+      "shape": [
+        2048,
+        256
+      ],
+      "dtype": "complex64",
+      "points": 524288,
+      "work": 4194304,
+      "gpu_ms": 0.595,
+      "scipy_ms": 0.6616,
+      "ratio": 1.11
+    },
+    {
+      "function": "fft",
+      "shape": [
+        4096,
+        256
+      ],
+      "dtype": "complex64",
+      "points": 1048576,
+      "work": 8388608,
+      "gpu_ms": 0.732,
+      "scipy_ms": 1.3162,
+      "ratio": 1.8
+    },
+    {
+      "function": "fft",
+      "shape": [
+        8192,
+        256
+      ],
+      "dtype": "complex64",
+      "points": 2097152,
+      "work": 16777216,
+      "gpu_ms": 1.1726,
+      "scipy_ms": 2.6279,
+      "ratio": 2.24
+    },
+    {
+      "function": "fft",
+      "shape": [
+        8,
+        1024
+      ],
+      "dtype": "complex64",
+      "points": 8192,
+      "work": 81920,
+      "gpu_ms": 0.2992,
+      "scipy_ms": 0.0179,
+      "ratio": 0.06
+    },
+    {
+      "function": "fft",
+      "shape": [
+        16,
+        1024
+      ],
+      "dtype": "complex64",
+      "points": 16384,
+      "work": 163840,
+      "gpu_ms": 0.3034,
+      "scipy_ms": 0.0294,
+      "ratio": 0.1
+    },
+    {
+      "function": "fft",
+      "shape": [
+        32,
+        1024
+      ],
+      "dtype": "complex64",
+      "points": 32768,
+      "work": 327680,
+      "gpu_ms": 0.309,
+      "scipy_ms": 0.0519,
+      "ratio": 0.17
+    },
+    {
+      "function": "fft",
+      "shape": [
+        64,
+        1024
+      ],
+      "dtype": "complex64",
+      "points": 65536,
+      "work": 655360,
+      "gpu_ms": 0.3379,
+      "scipy_ms": 0.0977,
+      "ratio": 0.29
+    },
+    {
+      "function": "fft",
+      "shape": [
+        128,
+        1024
+      ],
+      "dtype": "complex64",
+      "points": 131072,
+      "work": 1310720,
+      "gpu_ms": 0.3839,
+      "scipy_ms": 0.1911,
+      "ratio": 0.5
+    },
+    {
+      "function": "fft",
+      "shape": [
+        256,
+        1024
+      ],
+      "dtype": "complex64",
+      "points": 262144,
+      "work": 2621440,
+      "gpu_ms": 0.4231,
+      "scipy_ms": 0.3812,
+      "ratio": 0.9
+    },
+    {
+      "function": "fft",
+      "shape": [
+        512,
+        1024
+      ],
+      "dtype": "complex64",
+      "points": 524288,
+      "work": 5242880,
+      "gpu_ms": 0.59,
+      "scipy_ms": 0.8406,
+      "ratio": 1.42
+    },
+    {
+      "function": "fft2",
+      "shape": [
+        1024,
+        1024
+      ],
+      "dtype": "complex64",
+      "points": 1048576,
+      "work": 20971520,
+      "gpu_ms": 1.1487,
+      "scipy_ms": 3.4945,
+      "ratio": 3.04
+    },
+    {
+      "function": "fft",
+      "shape": [
+        2048,
+        1024
+      ],
+      "dtype": "complex64",
+      "points": 2097152,
+      "work": 20971520,
+      "gpu_ms": 1.0633,
+      "scipy_ms": 3.4585,
+      "ratio": 3.25
+    },
+    {
+      "function": "fft",
+      "shape": [
+        2,
+        4096
+      ],
+      "dtype": "complex64",
+      "points": 8192,
+      "work": 98304,
+      "gpu_ms": 0.3171,
+      "scipy_ms": 0.0289,
+      "ratio": 0.09
+    },
+    {
+      "function": "fft",
+      "shape": [
+        4,
+        4096
+      ],
+      "dtype": "complex64",
+      "points": 16384,
+      "work": 196608,
+      "gpu_ms": 0.3109,
+      "scipy_ms": 0.0346,
+      "ratio": 0.11
+    },
+    {
+      "function": "fft",
+      "shape": [
+        8,
+        4096
+      ],
+      "dtype": "complex64",
+      "points": 32768,
+      "work": 393216,
+      "gpu_ms": 0.2949,
+      "scipy_ms": 0.0621,
+      "ratio": 0.21
+    },
+    {
+      "function": "fft",
+      "shape": [
+        16,
+        4096
+      ],
+      "dtype": "complex64",
+      "points": 65536,
+      "work": 786432,
+      "gpu_ms": 0.332,
+      "scipy_ms": 0.118,
+      "ratio": 0.36
+    },
+    {
+      "function": "fft",
+      "shape": [
+        32,
+        4096
+      ],
+      "dtype": "complex64",
+      "points": 131072,
+      "work": 1572864,
+      "gpu_ms": 0.3571,
+      "scipy_ms": 0.2331,
+      "ratio": 0.65
+    },
+    {
+      "function": "fft",
+      "shape": [
+        64,
+        4096
+      ],
+      "dtype": "complex64",
+      "points": 262144,
+      "work": 3145728,
+      "gpu_ms": 0.4082,
+      "scipy_ms": 0.4584,
+      "ratio": 1.12
+    },
+    {
+      "function": "fft",
+      "shape": [
+        128,
+        4096
+      ],
+      "dtype": "complex64",
+      "points": 524288,
+      "work": 6291456,
+      "gpu_ms": 0.5054,
+      "scipy_ms": 0.9467,
+      "ratio": 1.87
+    },
+    {
+      "function": "fft",
+      "shape": [
+        256,
+        4096
+      ],
+      "dtype": "complex64",
+      "points": 1048576,
+      "work": 12582912,
+      "gpu_ms": 0.8104,
+      "scipy_ms": 1.938,
+      "ratio": 2.39
+    },
+    {
+      "function": "fft",
+      "shape": [
+        512,
+        4096
+      ],
+      "dtype": "complex64",
+      "points": 2097152,
+      "work": 25165824,
+      "gpu_ms": 1.039,
+      "scipy_ms": 4.0038,
+      "ratio": 3.85
+    },
+    {
+      "function": "fft2",
+      "shape": [
+        64,
+        64
+      ],
+      "dtype": "complex64",
+      "points": 4096,
+      "work": 49152,
+      "gpu_ms": 0.3199,
+      "scipy_ms": 0.0178,
+      "ratio": 0.06
+    },
+    {
+      "function": "fft2",
+      "shape": [
+        128,
+        128
+      ],
+      "dtype": "complex64",
+      "points": 16384,
+      "work": 229376,
+      "gpu_ms": 0.3415,
+      "scipy_ms": 0.0472,
+      "ratio": 0.14
+    },
+    {
+      "function": "fft2",
+      "shape": [
+        256,
+        256
+      ],
+      "dtype": "complex64",
+      "points": 65536,
+      "work": 1048576,
+      "gpu_ms": 0.3714,
+      "scipy_ms": 0.1729,
+      "ratio": 0.47
+    },
+    {
+      "function": "fft2",
+      "shape": [
+        512,
+        512
+      ],
+      "dtype": "complex64",
+      "points": 262144,
+      "work": 4718592,
+      "gpu_ms": 0.5058,
+      "scipy_ms": 0.6811,
+      "ratio": 1.35
+    },
+    {
+      "function": "fft2",
+      "shape": [
+        1024,
+        1024
+      ],
+      "dtype": "complex64",
+      "points": 1048576,
+      "work": 20971520,
+      "gpu_ms": 1.1448,
+      "scipy_ms": 3.5474,
+      "ratio": 3.1
+    },
+    {
+      "function": "fft",
+      "shape": [
+        4096
+      ],
+      "dtype": "complex128",
+      "points": 4096,
+      "work": 49152,
+      "gpu_ms": 0.2997,
+      "scipy_ms": 0.0233,
+      "ratio": 0.08
+    },
+    {
+      "function": "fft",
+      "shape": [
+        8192
+      ],
+      "dtype": "complex128",
+      "points": 8192,
+      "work": 106496,
+      "gpu_ms": 0.3309,
+      "scipy_ms": 0.047,
+      "ratio": 0.14
+    },
+    {
+      "function": "fft",
+      "shape": [
+        16384
+      ],
+      "dtype": "complex128",
+      "points": 16384,
+      "work": 229376,
+      "gpu_ms": 0.3613,
+      "scipy_ms": 0.1487,
+      "ratio": 0.41
+    },
+    {
+      "function": "fft",
+      "shape": [
+        32768
+      ],
+      "dtype": "complex128",
+      "points": 32768,
+      "work": 491520,
+      "gpu_ms": 0.37,
+      "scipy_ms": 0.2934,
+      "ratio": 0.79
+    },
+    {
+      "function": "fft",
+      "shape": [
+        65536
+      ],
+      "dtype": "complex128",
+      "points": 65536,
+      "work": 1048576,
+      "gpu_ms": 0.4197,
+      "scipy_ms": 0.5878,
+      "ratio": 1.4
+    },
+    {
+      "function": "fft",
+      "shape": [
+        131072
+      ],
+      "dtype": "complex128",
+      "points": 131072,
+      "work": 2228224,
+      "gpu_ms": 0.5133,
+      "scipy_ms": 0.9788,
+      "ratio": 1.91
+    },
+    {
+      "function": "fft",
+      "shape": [
+        262144
+      ],
+      "dtype": "complex128",
+      "points": 262144,
+      "work": 4718592,
+      "gpu_ms": 1.0126,
+      "scipy_ms": 2.1117,
+      "ratio": 2.09
+    },
+    {
+      "function": "fft",
+      "shape": [
+        524288
+      ],
+      "dtype": "complex128",
+      "points": 524288,
+      "work": 9961472,
+      "gpu_ms": 1.2764,
+      "scipy_ms": 5.3476,
+      "ratio": 4.19
+    },
+    {
+      "function": "fft",
+      "shape": [
+        1048576
+      ],
+      "dtype": "complex128",
+      "points": 1048576,
+      "work": 20971520,
+      "gpu_ms": 1.5099,
+      "scipy_ms": 13.4839,
+      "ratio": 8.93
+    },
+    {
+      "function": "fft",
+      "shape": [
+        512,
+        16
+      ],
+      "dtype": "complex128",
+      "points": 8192,
+      "work": 32768,
+      "gpu_ms": 0.297,
+      "scipy_ms": 0.0212,
+      "ratio": 0.07
+    },
+    {
+      "function": "fft",
+      "shape": [
+        1024,
+        16
+      ],
+      "dtype": "complex128",
+      "points": 16384,
+      "work": 65536,
+      "gpu_ms": 0.3227,
+      "scipy_ms": 0.0356,
+      "ratio": 0.11
+    },
+    {
+      "function": "fft",
+      "shape": [
+        2048,
+        16
+      ],
+      "dtype": "complex128",
+      "points": 32768,
+      "work": 131072,
+      "gpu_ms": 0.3423,
+      "scipy_ms": 0.0651,
+      "ratio": 0.19
+    },
+    {
+      "function": "fft",
+      "shape": [
+        4096,
+        16
+      ],
+      "dtype": "complex128",
+      "points": 65536,
+      "work": 262144,
+      "gpu_ms": 0.3925,
+      "scipy_ms": 0.1242,
+      "ratio": 0.32
+    },
+    {
+      "function": "fft",
+      "shape": [
+        8192,
+        16
+      ],
+      "dtype": "complex128",
+      "points": 131072,
+      "work": 524288,
+      "gpu_ms": 0.5077,
+      "scipy_ms": 0.2451,
+      "ratio": 0.48
+    },
+    {
+      "function": "fft",
+      "shape": [
+        16384,
+        16
+      ],
+      "dtype": "complex128",
+      "points": 262144,
+      "work": 1048576,
+      "gpu_ms": 0.7112,
+      "scipy_ms": 0.4953,
+      "ratio": 0.7
+    },
+    {
+      "function": "fft",
+      "shape": [
+        32768,
+        16
+      ],
+      "dtype": "complex128",
+      "points": 524288,
+      "work": 2097152,
+      "gpu_ms": 0.9454,
+      "scipy_ms": 1.0027,
+      "ratio": 1.06
+    },
+    {
+      "function": "fft",
+      "shape": [
+        65536,
+        16
+      ],
+      "dtype": "complex128",
+      "points": 1048576,
+      "work": 4194304,
+      "gpu_ms": 2.0407,
+      "scipy_ms": 2.0339,
+      "ratio": 1.0
+    },
+    {
+      "function": "fft",
+      "shape": [
+        131072,
+        16
+      ],
+      "dtype": "complex128",
+      "points": 2097152,
+      "work": 8388608,
+      "gpu_ms": 3.1276,
+      "scipy_ms": 4.0495,
+      "ratio": 1.29
+    },
+    {
+      "function": "fft",
+      "shape": [
+        128,
+        64
+      ],
+      "dtype": "complex128",
+      "points": 8192,
+      "work": 49152,
+      "gpu_ms": 0.3118,
+      "scipy_ms": 0.0192,
+      "ratio": 0.06
+    },
+    {
+      "function": "fft",
+      "shape": [
+        256,
+        64
+      ],
+      "dtype": "complex128",
+      "points": 16384,
+      "work": 98304,
+      "gpu_ms": 0.3209,
+      "scipy_ms": 0.0315,
+      "ratio": 0.1
+    },
+    {
+      "function": "fft",
+      "shape": [
+        512,
+        64
+      ],
+      "dtype": "complex128",
+      "points": 32768,
+      "work": 196608,
+      "gpu_ms": 0.3376,
+      "scipy_ms": 0.0567,
+      "ratio": 0.17
+    },
+    {
+      "function": "fft",
+      "shape": [
+        1024,
+        64
+      ],
+      "dtype": "complex128",
+      "points": 65536,
+      "work": 393216,
+      "gpu_ms": 0.3766,
+      "scipy_ms": 0.1072,
+      "ratio": 0.28
+    },
+    {
+      "function": "fft",
+      "shape": [
+        2048,
+        64
+      ],
+      "dtype": "complex128",
+      "points": 131072,
+      "work": 786432,
+      "gpu_ms": 0.4566,
+      "scipy_ms": 0.2109,
+      "ratio": 0.46
+    },
+    {
+      "function": "fft",
+      "shape": [
+        4096,
+        64
+      ],
+      "dtype": "complex128",
+      "points": 262144,
+      "work": 1572864,
+      "gpu_ms": 0.644,
+      "scipy_ms": 0.4308,
+      "ratio": 0.67
+    },
+    {
+      "function": "fft",
+      "shape": [
+        8192,
+        64
+      ],
+      "dtype": "complex128",
+      "points": 524288,
+      "work": 3145728,
+      "gpu_ms": 0.9292,
+      "scipy_ms": 0.8826,
+      "ratio": 0.95
+    },
+    {
+      "function": "fft",
+      "shape": [
+        16384,
+        64
+      ],
+      "dtype": "complex128",
+      "points": 1048576,
+      "work": 6291456,
+      "gpu_ms": 1.5836,
+      "scipy_ms": 1.7567,
+      "ratio": 1.11
+    },
+    {
+      "function": "fft",
+      "shape": [
+        32768,
+        64
+      ],
+      "dtype": "complex128",
+      "points": 2097152,
+      "work": 12582912,
+      "gpu_ms": 2.0395,
+      "scipy_ms": 3.4605,
+      "ratio": 1.7
+    },
+    {
+      "function": "fft",
+      "shape": [
+        32,
+        256
+      ],
+      "dtype": "complex128",
+      "points": 8192,
+      "work": 65536,
+      "gpu_ms": 0.3136,
+      "scipy_ms": 0.0223,
+      "ratio": 0.07
+    },
+    {
+      "function": "fft",
+      "shape": [
+        64,
+        256
+      ],
+      "dtype": "complex128",
+      "points": 16384,
+      "work": 131072,
+      "gpu_ms": 0.3128,
+      "scipy_ms": 0.0373,
+      "ratio": 0.12
+    },
+    {
+      "function": "fft",
+      "shape": [
+        128,
+        256
+      ],
+      "dtype": "complex128",
+      "points": 32768,
+      "work": 262144,
+      "gpu_ms": 0.3286,
+      "scipy_ms": 0.0682,
+      "ratio": 0.21
+    },
+    {
+      "function": "fft2",
+      "shape": [
+        256,
+        256
+      ],
+      "dtype": "complex128",
+      "points": 65536,
+      "work": 1048576,
+      "gpu_ms": 0.4215,
+      "scipy_ms": 0.2763,
+      "ratio": 0.66
+    },
+    {
+      "function": "fft",
+      "shape": [
+        512,
+        256
+      ],
+      "dtype": "complex128",
+      "points": 131072,
+      "work": 1048576,
+      "gpu_ms": 0.5036,
+      "scipy_ms": 0.2875,
+      "ratio": 0.57
+    },
+    {
+      "function": "fft",
+      "shape": [
+        1024,
+        256
+      ],
+      "dtype": "complex128",
+      "points": 262144,
+      "work": 2097152,
+      "gpu_ms": 0.6551,
+      "scipy_ms": 0.5211,
+      "ratio": 0.8
+    },
+    {
+      "function": "fft",
+      "shape": [
+        2048,
+        256
+      ],
+      "dtype": "complex128",
+      "points": 524288,
+      "work": 4194304,
+      "gpu_ms": 0.913,
+      "scipy_ms": 1.0714,
+      "ratio": 1.17
+    },
+    {
+      "function": "fft",
+      "shape": [
+        4096,
+        256
+      ],
+      "dtype": "complex128",
+      "points": 1048576,
+      "work": 8388608,
+      "gpu_ms": 1.3939,
+      "scipy_ms": 2.1805,
+      "ratio": 1.56
+    },
+    {
+      "function": "fft",
+      "shape": [
+        8192,
+        256
+      ],
+      "dtype": "complex128",
+      "points": 2097152,
+      "work": 16777216,
+      "gpu_ms": 1.8064,
+      "scipy_ms": 4.2713,
+      "ratio": 2.36
+    },
+    {
+      "function": "fft",
+      "shape": [
+        8,
+        1024
+      ],
+      "dtype": "complex128",
+      "points": 8192,
+      "work": 81920,
+      "gpu_ms": 0.3068,
+      "scipy_ms": 0.0299,
+      "ratio": 0.1
+    },
+    {
+      "function": "fft",
+      "shape": [
+        16,
+        1024
+      ],
+      "dtype": "complex128",
+      "points": 16384,
+      "work": 163840,
+      "gpu_ms": 0.3212,
+      "scipy_ms": 0.0524,
+      "ratio": 0.16
+    },
+    {
+      "function": "fft",
+      "shape": [
+        32,
+        1024
+      ],
+      "dtype": "complex128",
+      "points": 32768,
+      "work": 327680,
+      "gpu_ms": 0.361,
+      "scipy_ms": 0.1055,
+      "ratio": 0.29
+    },
+    {
+      "function": "fft",
+      "shape": [
+        64,
+        1024
+      ],
+      "dtype": "complex128",
+      "points": 65536,
+      "work": 655360,
+      "gpu_ms": 0.3911,
+      "scipy_ms": 0.1892,
+      "ratio": 0.48
+    },
+    {
+      "function": "fft",
+      "shape": [
+        128,
+        1024
+      ],
+      "dtype": "complex128",
+      "points": 131072,
+      "work": 1310720,
+      "gpu_ms": 0.4422,
+      "scipy_ms": 0.3715,
+      "ratio": 0.84
+    },
+    {
+      "function": "fft",
+      "shape": [
+        256,
+        1024
+      ],
+      "dtype": "complex128",
+      "points": 262144,
+      "work": 2621440,
+      "gpu_ms": 0.6101,
+      "scipy_ms": 0.768,
+      "ratio": 1.26
+    },
+    {
+      "function": "fft",
+      "shape": [
+        512,
+        1024
+      ],
+      "dtype": "complex128",
+      "points": 524288,
+      "work": 5242880,
+      "gpu_ms": 1.1293,
+      "scipy_ms": 1.6059,
+      "ratio": 1.42
+    },
+    {
+      "function": "fft2",
+      "shape": [
+        1024,
+        1024
+      ],
+      "dtype": "complex128",
+      "points": 1048576,
+      "work": 20971520,
+      "gpu_ms": 1.4079,
+      "scipy_ms": 9.3839,
+      "ratio": 6.67
+    },
+    {
+      "function": "fft",
+      "shape": [
+        2048,
+        1024
+      ],
+      "dtype": "complex128",
+      "points": 2097152,
+      "work": 20971520,
+      "gpu_ms": 1.4162,
+      "scipy_ms": 7.1912,
+      "ratio": 5.08
+    },
+    {
+      "function": "fft",
+      "shape": [
+        2,
+        4096
+      ],
+      "dtype": "complex128",
+      "points": 8192,
+      "work": 98304,
+      "gpu_ms": 0.3096,
+      "scipy_ms": 0.032,
+      "ratio": 0.1
+    },
+    {
+      "function": "fft",
+      "shape": [
+        4,
+        4096
+      ],
+      "dtype": "complex128",
+      "points": 16384,
+      "work": 196608,
+      "gpu_ms": 0.3195,
+      "scipy_ms": 0.0578,
+      "ratio": 0.18
+    },
+    {
+      "function": "fft",
+      "shape": [
+        8,
+        4096
+      ],
+      "dtype": "complex128",
+      "points": 32768,
+      "work": 393216,
+      "gpu_ms": 0.3685,
+      "scipy_ms": 0.1176,
+      "ratio": 0.32
+    },
+    {
+      "function": "fft",
+      "shape": [
+        16,
+        4096
+      ],
+      "dtype": "complex128",
+      "points": 65536,
+      "work": 786432,
+      "gpu_ms": 0.37,
+      "scipy_ms": 0.2106,
+      "ratio": 0.57
+    },
+    {
+      "function": "fft",
+      "shape": [
+        32,
+        4096
+      ],
+      "dtype": "complex128",
+      "points": 131072,
+      "work": 1572864,
+      "gpu_ms": 0.4455,
+      "scipy_ms": 0.4177,
+      "ratio": 0.94
+    },
+    {
+      "function": "fft",
+      "shape": [
+        64,
+        4096
+      ],
+      "dtype": "complex128",
+      "points": 262144,
+      "work": 3145728,
+      "gpu_ms": 0.58,
+      "scipy_ms": 0.8493,
+      "ratio": 1.46
+    },
+    {
+      "function": "fft",
+      "shape": [
+        128,
+        4096
+      ],
+      "dtype": "complex128",
+      "points": 524288,
+      "work": 6291456,
+      "gpu_ms": 1.0786,
+      "scipy_ms": 1.7434,
+      "ratio": 1.62
+    },
+    {
+      "function": "fft",
+      "shape": [
+        256,
+        4096
+      ],
+      "dtype": "complex128",
+      "points": 1048576,
+      "work": 12582912,
+      "gpu_ms": 1.2843,
+      "scipy_ms": 3.7589,
+      "ratio": 2.93
+    },
+    {
+      "function": "fft",
+      "shape": [
+        512,
+        4096
+      ],
+      "dtype": "complex128",
+      "points": 2097152,
+      "work": 25165824,
+      "gpu_ms": 1.5058,
+      "scipy_ms": 7.5702,
+      "ratio": 5.03
+    },
+    {
+      "function": "fft2",
+      "shape": [
+        64,
+        64
+      ],
+      "dtype": "complex128",
+      "points": 4096,
+      "work": 49152,
+      "gpu_ms": 0.32,
+      "scipy_ms": 0.0229,
+      "ratio": 0.07
+    },
+    {
+      "function": "fft2",
+      "shape": [
+        128,
+        128
+      ],
+      "dtype": "complex128",
+      "points": 16384,
+      "work": 229376,
+      "gpu_ms": 0.3552,
+      "scipy_ms": 0.0744,
+      "ratio": 0.21
+    },
+    {
+      "function": "fft2",
+      "shape": [
+        256,
+        256
+      ],
+      "dtype": "complex128",
+      "points": 65536,
+      "work": 1048576,
+      "gpu_ms": 0.4199,
+      "scipy_ms": 0.2759,
+      "ratio": 0.66
+    },
+    {
+      "function": "fft2",
+      "shape": [
+        512,
+        512
+      ],
+      "dtype": "complex128",
+      "points": 262144,
+      "work": 4718592,
+      "gpu_ms": 0.7297,
+      "scipy_ms": 1.2539,
+      "ratio": 1.72
+    },
+    {
+      "function": "fft2",
+      "shape": [
+        1024,
+        1024
+      ],
+      "dtype": "complex128",
+      "points": 1048576,
+      "work": 20971520,
+      "gpu_ms": 1.5416,
+      "scipy_ms": 9.4466,
+      "ratio": 6.13
+    }
+  ],
+  "uptime": {
+    "before": "3:10  up 154 days, 15:52, 22 users, load averages: 1.27 1.65 1.73",
+    "after": "3:10  up 154 days, 15:52, 22 users, load averages: 1.79 1.75 1.77"
+  },
+  "loadavg": {
+    "before": [
+      1.272,
+      1.6509,
+      1.7329
+    ],
+    "after": [
+      1.7905,
+      1.7451,
+      1.7651
+    ]
+  }
+}

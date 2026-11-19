@@ -1,0 +1,477 @@
+{
+  "benchmark": "ndimage_filters",
+  "numpy": "2.5.5",
+  "scipy": "1.18.1",
+  "metal_sci": "0.1.0.dev0",
+  "machine": "arm64",
+  "macos": "26.5.1",
+  "workloads": [
+    {
+      "workload": "gaussian_filter 4096x4096 sigma=3",
+      "dtype": "float64",
+      "elements": 16777216,
+      "scipy_ms": 396.46,
+      "scipy_min_ms": 372.82,
+      "fast": {
+        "ms": 3.653,
+        "min_ms": 2.62,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 108.5,
+        "max_error_over_scale": 2.0309454689677332e-07,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 7.325,
+        "min_ms": 7.109,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 54.1,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "gaussian_filter 4096x4096 sigma=3",
+      "dtype": "float32",
+      "elements": 16777216,
+      "scipy_ms": 349.85,
+      "scipy_min_ms": 346.38,
+      "fast": {
+        "ms": 3.008,
+        "min_ms": 1.921,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 116.3,
+        "max_error_over_scale": 2.3096832546578227e-07,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 6.349,
+        "min_ms": 5.951,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 55.1,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "gaussian_filter 4096x4096 sigma=10",
+      "dtype": "float64",
+      "elements": 16777216,
+      "scipy_ms": 731.91,
+      "scipy_min_ms": 727.54,
+      "fast": {
+        "ms": 4.604,
+        "min_ms": 4.461,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 159.0,
+        "max_error_over_scale": 2.724599429260881e-07,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 17.401,
+        "min_ms": 17.23,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 42.1,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "gaussian_filter 4096x4096 sigma=10",
+      "dtype": "float32",
+      "elements": 16777216,
+      "scipy_ms": 700.01,
+      "scipy_min_ms": 695.35,
+      "fast": {
+        "ms": 5.045,
+        "min_ms": 4.259,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 138.8,
+        "max_error_over_scale": 2.3835875694319195e-07,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 16.558,
+        "min_ms": 16.472,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 42.3,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "gaussian_filter 512x512x512 sigma=2",
+      "dtype": "float64",
+      "elements": 134217728,
+      "scipy_ms": 3809.66,
+      "scipy_min_ms": 3774.85,
+      "fast": {
+        "ms": 25.612,
+        "min_ms": 23.232,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 148.7,
+        "max_error_over_scale": 2.196174781474203e-07,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 72.668,
+        "min_ms": 71.381,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 52.4,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "gaussian_filter 512x512x512 sigma=2",
+      "dtype": "float32",
+      "elements": 134217728,
+      "scipy_ms": 3296.17,
+      "scipy_min_ms": 3284.41,
+      "fast": {
+        "ms": 19.514,
+        "min_ms": 16.858,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 168.9,
+        "max_error_over_scale": 2.3506637059796104e-07,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 61.532,
+        "min_ms": 58.286,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 53.6,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "uniform_filter 4096x4096 size=9",
+      "dtype": "float64",
+      "elements": 16777216,
+      "scipy_ms": 339.45,
+      "scipy_min_ms": 338.42,
+      "fast": {
+        "ms": 2.407,
+        "min_ms": 2.275,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 141.0,
+        "max_error_over_scale": 1.8548665927912518e-07,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 3.651,
+        "min_ms": 3.479,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 93.0,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "uniform_filter 4096x4096 size=9",
+      "dtype": "float32",
+      "elements": 16777216,
+      "scipy_ms": 244.55,
+      "scipy_min_ms": 239.82,
+      "fast": {
+        "ms": 1.844,
+        "min_ms": 1.801,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 132.6,
+        "max_error_over_scale": 2.2764271566832942e-07,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 2.412,
+        "min_ms": 2.22,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 101.4,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "correlate1d 4096x4096 9 taps axis=-1",
+      "dtype": "float64",
+      "elements": 16777216,
+      "scipy_ms": 66.02,
+      "scipy_min_ms": 65.76,
+      "fast": {
+        "ms": 2.155,
+        "min_ms": 1.946,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 30.6,
+        "max_error_over_scale": 1.9379049582166446e-07,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 1.815,
+        "min_ms": 1.764,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 36.4,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "correlate1d 4096x4096 9 taps axis=-1",
+      "dtype": "float32",
+      "elements": 16777216,
+      "scipy_ms": 65.58,
+      "scipy_min_ms": 65.35,
+      "fast": {
+        "ms": 1.477,
+        "min_ms": 1.383,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 44.4,
+        "max_error_over_scale": 2.0616010517463927e-07,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 1.391,
+        "min_ms": 1.268,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 47.2,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "correlate1d 4096x4096 9 taps axis=0",
+      "dtype": "float64",
+      "elements": 16777216,
+      "scipy_ms": 277.57,
+      "scipy_min_ms": 269.81,
+      "fast": {
+        "ms": 2.066,
+        "min_ms": 1.957,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 134.3,
+        "max_error_over_scale": 1.844802892153908e-07,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 2.963,
+        "min_ms": 2.859,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 93.7,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "correlate1d 4096x4096 9 taps axis=0",
+      "dtype": "float32",
+      "elements": 16777216,
+      "scipy_ms": 231.61,
+      "scipy_min_ms": 228.98,
+      "fast": {
+        "ms": 1.423,
+        "min_ms": 1.361,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 162.8,
+        "max_error_over_scale": 2.0574009375164593e-07,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 2.078,
+        "min_ms": 2.048,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 111.4,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "correlate1d 8192x64 513 taps overhang",
+      "dtype": "float64",
+      "elements": 524288,
+      "scipy_ms": 315.25,
+      "scipy_min_ms": 314.7,
+      "fast": {
+        "ms": 1.56,
+        "min_ms": 1.528,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 202.1,
+        "max_error_over_scale": 1.203102680439273e-06,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 2.645,
+        "min_ms": 2.054,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 119.2,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "correlate1d 8192x64 513 taps overhang",
+      "dtype": "float32",
+      "elements": 524288,
+      "scipy_ms": 318.53,
+      "scipy_min_ms": 315.52,
+      "fast": {
+        "ms": 1.458,
+        "min_ms": 1.414,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 218.5,
+        "max_error_over_scale": 1.236338930334774e-06,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 1.985,
+        "min_ms": 1.947,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 160.5,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "gaussian_laplace 4096x4096 sigma=3",
+      "dtype": "float64",
+      "elements": 16777216,
+      "scipy_ms": 776.21,
+      "scipy_min_ms": 773.54,
+      "fast": {
+        "ms": 4.178,
+        "min_ms": 4.013,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 185.8,
+        "max_error_over_scale": 1.4385942772219093e-06,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 15.015,
+        "min_ms": 14.768,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 51.7,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "gaussian_laplace 4096x4096 sigma=3",
+      "dtype": "float32",
+      "elements": 16777216,
+      "scipy_ms": 723.03,
+      "scipy_min_ms": 697.47,
+      "fast": {
+        "ms": 3.565,
+        "min_ms": 3.235,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 202.8,
+        "max_error_over_scale": 1.6790857085370148e-06,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 12.301,
+        "min_ms": 11.916,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 58.8,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "correlate 4096x4096 5x5 dense",
+      "dtype": "float64",
+      "elements": 16777216,
+      "scipy_ms": 276.7,
+      "scipy_min_ms": 275.23,
+      "fast": {
+        "ms": 2.547,
+        "min_ms": 2.293,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 108.7,
+        "max_error_over_scale": 2.976777304191518e-07,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 4.698,
+        "min_ms": 4.556,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 58.9,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "correlate 4096x4096 5x5 dense",
+      "dtype": "float32",
+      "elements": 16777216,
+      "scipy_ms": 289.81,
+      "scipy_min_ms": 289.73,
+      "fast": {
+        "ms": 1.95,
+        "min_ms": 1.814,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 148.6,
+        "max_error_over_scale": 3.133449738902167e-07,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 4.017,
+        "min_ms": 3.744,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 72.1,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    }
+  ],
+  "wall_seconds": 62.0,
+  "uptime": {
+    "before": "13:44  up 155 days,  2:26, 22 users, load averages: 1.49 1.82 2.46",
+    "after": "13:45  up 155 days,  2:27, 22 users, load averages: 1.89 1.91 2.44"
+  },
+  "loadavg": {
+    "before": [
+      1.49,
+      1.82,
+      2.46
+    ],
+    "after": [
+      1.89,
+      1.91,
+      2.44
+    ]
+  }
+}

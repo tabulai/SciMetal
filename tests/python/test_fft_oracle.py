@@ -8,16 +8,8 @@ Two roles:
   with the GPU forced under the fast policy the only failures are SciPy tests
   that hold single-precision results to double-precision tolerances.
 
-- As a pytest plugin (``-p test_fft_oracle``, with tests/python on the path)
-  it makes those runs possible: SciPy's tests look every function they
-  exercise up in ``scipy._lib._array_api.xp_capabilities_table`` by identity,
-  so the wrappers the oracle patches into ``scipy.fft`` must be entered there
-  with the capabilities of the functions they replace. (The oracle plugin is
-  the place for this; until it does it for every namespace, this hook does it
-  for scipy.fft.)
-
     METAL_SCI_LIBRARY=... PYTHONPATH=python:tests/oracle:tests/python python -m pytest \
-        -p metal_sci_oracle -p test_fft_oracle --pyargs scipy.fft.tests.test_basic -q
+        -p metal_sci_oracle --pyargs scipy.fft.tests.test_basic -q
 """
 import os
 import pathlib
@@ -25,24 +17,8 @@ import re
 import subprocess
 import sys
 
-import pytest
-
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 NAMES = ["fft", "fft2", "fftn", "ifft", "ifft2", "ifftn", "irfft", "irfft2", "irfftn", "rfft", "rfft2", "rfftn"]
-
-
-@pytest.hookimpl(trylast=True)
-def pytest_configure(config):
-    if not config.pluginmanager.hasplugin("metal_sci_oracle"):
-        return
-    import scipy.fft
-    from scipy._lib._array_api import xp_capabilities_table
-
-    for name in NAMES:
-        patched = getattr(scipy.fft, name)
-        original = getattr(patched, "__wrapped__", None)
-        if original in xp_capabilities_table:
-            xp_capabilities_table[patched] = xp_capabilities_table[original]
 
 
 def run_oracle(**environment):
@@ -50,10 +26,10 @@ def run_oracle(**environment):
     env.pop("METAL_SCI_PRECISION", None)
     env.pop("METAL_SCI_DEVICE", None)
     env.update(environment)
-    paths = [str(ROOT / "python"), str(ROOT / "tests" / "oracle"), str(ROOT / "tests" / "python")]
+    paths = [str(ROOT / "python"), str(ROOT / "tests" / "oracle")]
     env["PYTHONPATH"] = os.pathsep.join(paths + [env["PYTHONPATH"]] if env.get("PYTHONPATH") else paths)
     completed = subprocess.run(
-        [sys.executable, "-m", "pytest", "-p", "metal_sci_oracle", "-p", "test_fft_oracle", "--pyargs",
+        [sys.executable, "-m", "pytest", "-p", "metal_sci_oracle", "--pyargs",
          "scipy.fft.tests.test_basic", "-q", "-rf", "-p", "no:cacheprovider"],
         capture_output=True, text=True, env=env, cwd=str(ROOT), timeout=1800)
     output = completed.stdout + completed.stderr

@@ -1,0 +1,113 @@
+{
+  "benchmark": "signal_convolve",
+  "metal_sci": "0.1.0.dev0",
+  "machine": {
+    "cpu": "Apple M1 Ultra",
+    "performance_cores": "16",
+    "memory_gb": 128,
+    "macos": "26.5.1",
+    "python": "3.14.2",
+    "numpy": "2.5.5",
+    "scipy": "1.18.1",
+    "loadavg": [
+      1.97,
+      1.91,
+      2.41
+    ]
+  },
+  "workloads": [
+    {
+      "workload": "fftconvolve 4096^2 x 4096^2",
+      "function": "fftconvolve",
+      "dtype": "float64",
+      "scipy_w1_ms": 1393.89,
+      "scipy_w16_ms": 176.62,
+      "fast_ms": 25.212,
+      "fast_min_ms": 24.523,
+      "first_call_ms": 179.83,
+      "fast_engine": "gpu",
+      "speedup_vs_w1": 55.29,
+      "speedup_vs_w16": 7.01,
+      "max_err_over_scale": 1.2630434996504431e-06
+    },
+    {
+      "workload": "convolve 2^24 x 1025",
+      "function": "convolve",
+      "dtype": "float64",
+      "scipy_w1_ms": 518.74,
+      "scipy_w16_ms": 129.39,
+      "fast_ms": 3.968,
+      "fast_min_ms": 3.775,
+      "first_call_ms": 35.26,
+      "fast_engine": "gpu",
+      "speedup_vs_w1": 130.74,
+      "speedup_vs_w16": 32.61,
+      "max_err_over_scale": 1.1211525187904125e-06,
+      "strict_ms": 128.34,
+      "strict_engine": "scipy",
+      "strict_speedup_vs_w1": 4.04
+    },
+    {
+      "workload": "oaconvolve 2^24 x 1025",
+      "function": "oaconvolve",
+      "dtype": "float64",
+      "scipy_w1_ms": 299.0,
+      "scipy_w16_ms": 44.59,
+      "fast_ms": 3.927,
+      "fast_min_ms": 3.68,
+      "first_call_ms": 18.35,
+      "fast_engine": "gpu",
+      "speedup_vs_w1": 76.15,
+      "speedup_vs_w16": 11.36,
+      "max_err_over_scale": 1.1211525191255366e-06
+    },
+    {
+      "workload": "oaconvolve 4096^2 x 65^2",
+      "function": "oaconvolve",
+      "dtype": "float64",
+      "scipy_w1_ms": 234.31,
+      "scipy_w16_ms": 67.56,
+      "fast_ms": 7.039,
+      "fast_min_ms": 6.254,
+      "first_call_ms": 23.97,
+      "fast_engine": "gpu",
+      "speedup_vs_w1": 33.29,
+      "speedup_vs_w16": 9.6,
+      "max_err_over_scale": 1.7768731269369703e-06
+    },
+    {
+      "workload": "convolve2d 4096^2 x 5^2",
+      "function": "convolve2d",
+      "dtype": "float64",
+      "scipy_w1_ms": 572.51,
+      "scipy_w16_ms": null,
+      "fast_ms": 3.347,
+      "fast_min_ms": 3.317,
+      "first_call_ms": 9.46,
+      "fast_engine": "gpu",
+      "speedup_vs_w1": 171.05,
+      "speedup_vs_w16": null,
+      "max_err_over_scale": 1.9474134006942065e-07,
+      "strict_ms": 4.46,
+      "strict_engine": "cpu",
+      "strict_speedup_vs_w1": 128.31
+    }
+  ],
+  "wall_seconds": 16.4,
+  "uptime": {
+    "before": "13:46  up 155 days,  2:28, 22 users, load averages: 1.97 1.91 2.41",
+    "after": "13:47  up 155 days,  2:28, 22 users, load averages: 2.85 2.11 2.47"
+  },
+  "loadavg": {
+    "before": [
+      1.97,
+      1.91,
+      2.41
+    ],
+    "after": [
+      2.85,
+      2.11,
+      2.47
+    ]
+  }
+}

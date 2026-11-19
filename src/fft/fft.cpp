@@ -12,6 +12,7 @@
 #endif
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <iterator>
 #include <cstdio>
@@ -188,7 +189,7 @@ struct Staged {
     std::string description;
 };
 
-Staged stage(const Call& call, const Limits& limits) {
+Staged stage(const Call& call, const Limits& limits, bool with_description = true) {
     Staged staged;
     std::shared_ptr<const Plan> last;
     if (call.last_axis) {
@@ -228,26 +229,24 @@ Staged stage(const Call& call, const Limits& limits) {
         if (!planned.plan)
             throw Error(MS_ENOTSUP, "no GPU plan for an FFT of length " + std::to_string(request.n) + " along axis " +
                                         std::to_string(*axis) + ": " + planned.reason);
-        inner_names.push_back("axis " + std::to_string(*axis) + ": " + planned.plan->name);
+        if (with_description) inner_names.push_back("axis " + std::to_string(*axis) + ": " + planned.plan->name);
         inner.push_back({std::move(planned.plan), request.count});
     }
 
     // Forward transforms take the last axis first (a real input becomes complex
     // there); inverses take it last.
-    std::vector<std::string> names;
-    const std::string last_name = last ? "axis " + std::to_string(call.in_shape.ndim - 1) + ": " + last->name : "";
-    if (last && !call.inverse) {
-        staged.stages.push_back({last, call.rows});
-        names.push_back(last_name);
-    }
+    if (last && !call.inverse) staged.stages.push_back({last, call.rows});
     staged.stages.insert(staged.stages.end(), inner.begin(), inner.end());
-    names.insert(names.end(), inner_names.begin(), inner_names.end());
-    if (last && call.inverse) {
-        staged.stages.push_back({last, call.rows});
-        names.push_back(last_name);
-    }
+    if (last && call.inverse) staged.stages.push_back({last, call.rows});
     if (staged.stages.empty()) throw Error(MS_ENOTSUP, "a one-point FFT is a copy");
-    for (const std::string& name : names) staged.description += (staged.description.empty() ? "" : "; ") + name;
+    if (with_description) {
+        std::vector<std::string> names;
+        const std::string last_name = last ? "axis " + std::to_string(call.in_shape.ndim - 1) + ": " + last->name : "";
+        if (last && !call.inverse) names.push_back(last_name);
+        names.insert(names.end(), inner_names.begin(), inner_names.end());
+        if (last && call.inverse) names.push_back(last_name);
+        for (const std::string& name : names) staged.description += (staged.description.empty() ? "" : "; ") + name;
+    }
 
     staged.device_real = last && last->input_real;
     staged.device_row = before;
@@ -292,7 +291,6 @@ uint64_t magnitude_bits(const double* values, uint64_t count) {
     }
     return peak;
 }
-uint64_t magnitude_bits(const float*, uint64_t) { return 0; }  // single precision is transformed as it is
 constexpr uint64_t load_block = 2048;  // points
 
 // Fills the device rows from the caller's: the first `used` points of each
@@ -301,25 +299,41 @@ constexpr uint64_t load_block = 2048;  // points
 // interior points of a one-sided spectrum of the n-point transform. Returns
 // the largest magnitude loaded (bit pattern, double-precision sources only).
 template<class Source>
-uint64_t load_rows(const Source* source, bool source_complex, float* device, bool device_complex, uint64_t rows,
-                   uint64_t have, uint64_t used, uint64_t device_row, Load load, uint64_t n, bool clear_dc_imag) {
+uint64_t load_rows(const Source* __restrict__ source, bool source_complex, float* __restrict__ device,
+                   bool device_complex, uint64_t rows, uint64_t have, uint64_t used, uint64_t device_row,
+                   Load load, uint64_t n, bool clear_dc_imag) {
     const uint64_t in_step = source_complex ? 2 : 1, out_step = device_complex ? 2 : 1;
     uint64_t peaks[parallel::max_lanes] = {};
     for_row_spans(rows, device_row, [&](unsigned lane, uint64_t row, uint64_t begin, uint64_t end) {
-        const Source* in = source + row * have * in_step;
-        float* out = device + row * device_row * out_step;
+        const Source* __restrict__ in = source + row * have * in_step;
+        float* __restrict__ out = device + row * device_row * out_step;
         const uint64_t stop = std::min(end, used);  // points [begin, stop) come from the caller
-        // In blocks that stay in the first-level cache between the magnitude
-        // scan and the conversion.
-        for (uint64_t from = begin; from < stop; from += load_block) {
-            const uint64_t to = std::min(stop, from + load_block);
-            peaks[lane] = std::max(peaks[lane], magnitude_bits(in + from * in_step, (to - from) * in_step));
-            if (source_complex == device_complex) {
-                for (uint64_t i = from * out_step; i < to * out_step; ++i) out[i] = static_cast<float>(in[i]);
-            } else {
-                for (uint64_t i = from; i < to; ++i) {
-                    out[2 * i] = static_cast<float>(in[i]);
-                    out[2 * i + 1] = 0.0f;
+        if constexpr (std::is_same_v<Source, float>) {
+            (void)lane;
+            if (begin < stop) {
+                if (source_complex == device_complex) {
+                    std::memcpy(out + begin * out_step, in + begin * in_step,
+                                (stop - begin) * out_step * sizeof(float));
+                } else {
+                    for (uint64_t i = begin; i < stop; ++i) {
+                        out[2 * i] = in[i];
+                        out[2 * i + 1] = 0.0f;
+                    }
+                }
+            }
+        } else {
+            // In blocks that stay in the first-level cache between the magnitude
+            // scan and the conversion.
+            for (uint64_t from = begin; from < stop; from += load_block) {
+                const uint64_t to = std::min(stop, from + load_block);
+                peaks[lane] = std::max(peaks[lane], magnitude_bits(in + from * in_step, (to - from) * in_step));
+                if (source_complex == device_complex) {
+                    for (uint64_t i = from * out_step; i < to * out_step; ++i) out[i] = static_cast<float>(in[i]);
+                } else {
+                    for (uint64_t i = from; i < to; ++i) {
+                        out[2 * i] = static_cast<float>(in[i]);
+                        out[2 * i + 1] = 0.0f;
+                    }
                 }
             }
         }
@@ -343,17 +357,29 @@ uint64_t load_rows(const Source* source, bool source_complex, float* device, boo
 // device row (their real parts for Store::real_part), scaled, in the caller's
 // precision.
 template<class Target>
-void store_rows(const float* device, uint64_t device_row, Target* target, uint64_t target_row, uint64_t rows,
-                bool complex, Store store, double scale) {
+void store_rows(const float* __restrict__ device, uint64_t device_row, Target* __restrict__ target,
+                uint64_t target_row, uint64_t rows, bool complex, Store store, double scale) {
     const uint64_t in_step = store == Store::real_part || complex ? 2 : 1;
     const uint64_t out_step = complex ? 2 : 1;
     for_row_spans(rows, target_row, [&](unsigned, uint64_t row, uint64_t begin, uint64_t end) {
-        const float* in = device + row * device_row * in_step;
-        Target* out = target + row * target_row * out_step;
+        const float* __restrict__ in = device + row * device_row * in_step;
+        Target* __restrict__ out = target + row * target_row * out_step;
         if (store == Store::real_part) {
-            for (uint64_t i = begin; i < end; ++i) out[i] = static_cast<Target>(static_cast<double>(in[2 * i]) * scale);
+            if (scale == 1.0) {
+                for (uint64_t i = begin; i < end; ++i) out[i] = static_cast<Target>(in[2 * i]);
+            } else {
+                for (uint64_t i = begin; i < end; ++i)
+                    out[i] = static_cast<Target>(static_cast<double>(in[2 * i]) * scale);
+            }
         } else if (scale == 1.0) {
-            for (uint64_t i = begin * out_step; i < end * out_step; ++i) out[i] = static_cast<Target>(in[i]);
+            if constexpr (std::is_same_v<Target, float>) {
+                if (begin < end) {
+                    std::memcpy(out + begin * out_step, in + begin * out_step,
+                                (end - begin) * out_step * sizeof(float));
+                }
+            } else {
+                for (uint64_t i = begin * out_step; i < end * out_step; ++i) out[i] = static_cast<double>(in[i]);
+            }
         } else {
             for (uint64_t i = begin * out_step; i < end * out_step; ++i)
                 out[i] = static_cast<Target>(static_cast<double>(in[i]) * scale);
@@ -368,10 +394,23 @@ void store_rows(const float* device, uint64_t device_row, Target* target, uint64
 constexpr double narrow_ceiling = 0x1p96;
 constexpr double narrow_floor = 0x1p-100;
 
-BufferPtr load(ms_context* context, const ms_array& input, const Call& call, const Staged& staged) {
+BufferPtr load(ms_context* context, const ms_array& input, const Call& call, const Staged& staged,
+               Profile* profile = nullptr) {
+    using Clock = std::chrono::steady_clock;
+    const auto elapsed_ns = [](Clock::time_point start, Clock::time_point end) -> uint64_t {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
+    };
     const Stage& first = staged.stages.front();
     const uint64_t bytes = first.plan->slots[0] * first.count * sizeof(float);
+    Clock::time_point t0;
+    if (profile) t0 = Clock::now();
     BufferPtr buffer = array::allocate(context, bytes);
+    Clock::time_point t1;
+    if (profile) {
+        t1 = Clock::now();
+        profile->alloc_in_ns = elapsed_ns(t0, t1);
+        profile->narrowed = array::is_double(call.in_dtype);
+    }
     auto* device = reinterpret_cast<float*>(mutable_data(buffer.get()));
     const bool source_complex = array::is_complex(call.in_dtype);
     const bool device_complex = !staged.device_real;
@@ -380,18 +419,24 @@ BufferPtr load(ms_context* context, const ms_array& input, const Call& call, con
         throw Error(MS_EBACKEND, "FFT input slot is smaller than the rows it holds");
     // Slack beyond the rows (a real input slot sized for the spectrum that
     // replaces it) is written by the last pass before anything reads it.
-    if (array::is_double(call.in_dtype)) {
+    if (!array::is_double(call.in_dtype) && source_complex == device_complex && call.have == staged.device_row &&
+        used == staged.device_row && staged.load == Load::direct && !staged.clear_dc_imag) {
+        array::convert(input.data, call.in_dtype, device, call.in_dtype, call.rows * call.have);
+    } else if (array::is_double(call.in_dtype)) {
         const uint64_t peak_bits = load_rows(static_cast<const double*>(input.data), source_complex, device, device_complex,
                                              call.rows, call.have, used, staged.device_row, staged.load, call.n,
                                              staged.clear_dc_imag);
         double peak;
         std::memcpy(&peak, &peak_bits, sizeof(peak));
-        if (!(peak <= narrow_ceiling) || (peak != 0.0 && peak < narrow_floor))
+        if (!(peak <= narrow_ceiling) || (peak != 0.0 && peak < narrow_floor)) {
+            if (profile) profile->copy_in_ns = elapsed_ns(t1, Clock::now());
             throw Error(MS_ENOTSUP, "the input's magnitudes do not fit single precision; SciPy's FFT is used");
+        }
     } else {
         load_rows(static_cast<const float*>(input.data), source_complex, device, device_complex, call.rows, call.have,
                   used, staged.device_row, staged.load, call.n, staged.clear_dc_imag);
     }
+    if (profile) profile->copy_in_ns = elapsed_ns(t1, Clock::now());
     return buffer;
 }
 
@@ -399,24 +444,50 @@ BufferPtr load(ms_context* context, const ms_array& input, const Call& call, con
 // and replaces any plan whose threadgroups its pipeline does not hold, until
 // all fit. MS_ENOTSUP when a length is left without a plan. Builds the
 // pipelines, so it is also what preparing a transform ahead of time means.
-Staged fit(const Call& call, const Limits& limits) {
-    Staged staged = stage(call, limits);
+Staged fit(const Call& call, const Limits& limits, Profile* profile = nullptr, bool with_description = true) {
+    using Clock = std::chrono::steady_clock;
+    const auto elapsed_ns = [](Clock::time_point start, Clock::time_point end) -> uint64_t {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
+    };
+    Clock::time_point t0;
+    if (profile) t0 = Clock::now();
+    Staged staged = stage(call, limits, with_description);
+    if (profile) profile->stage_ns += elapsed_ns(t0, Clock::now());
     int32_t ceiling = limits.group_threads;
-    for (Refusal refusal; refused(staged.stages, refusal);) {
+    for (Refusal refusal;;) {
+        Clock::time_point tr;
+        if (profile) tr = Clock::now();
+        const bool is_refused = refused(staged.stages, refusal);
+        if (profile) profile->refused_ns += elapsed_ns(tr, Clock::now());
+        if (!is_refused) break;
         // Each replacement was built within the ceiling and refused below it,
         // so the ceiling falls every round.
+        Clock::time_point tp;
+        if (profile) tp = Clock::now();
         ceiling = std::min(ceiling, refusal.granted);
         const Stage& stage_refused = staged.stages[refusal.stage];
         Request request = stage_refused.plan->request;
         request.count = stage_refused.count;
         replan(request, limits, ceiling);
-        staged = stage(call, limits);
+        if (profile) {
+            profile->replan_ns += elapsed_ns(tp, Clock::now());
+            ++profile->replan_iters;
+        }
+        Clock::time_point ts;
+        if (profile) ts = Clock::now();
+        staged = stage(call, limits, with_description);
+        if (profile) profile->stage_ns += elapsed_ns(ts, Clock::now());
     }
     return staged;
 }
 
-BufferPtr transform(ms_context* context, const ms_array& input, const Call& call, const Limits& limits) {
-    const Staged staged = fit(call, limits);
+BufferPtr transform(ms_context* context, const ms_array& input, const Call& call, const Limits& limits,
+                    Profile* profile = nullptr) {
+    using Clock = std::chrono::steady_clock;
+    const auto elapsed_ns = [](Clock::time_point start, Clock::time_point end) -> uint64_t {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
+    };
+    const Staged staged = fit(call, limits, profile, false);
     const uint64_t out_row = call.out_shape.dims[call.out_shape.ndim - 1];
     const bool out_complex = array::is_complex(call.out_dtype);
     const uint64_t out_bytes = call.out_shape.elements * array::dtype_size(call.out_dtype);
@@ -428,16 +499,23 @@ BufferPtr transform(ms_context* context, const ms_array& input, const Call& call
     // (Widening on the device in a last pass was measured and is not faster:
     // 2.1 ms against 1.9 ms for 2^24 complex points on an M1 Ultra.)
     const bool publish_device = !array::is_double(call.out_dtype) && staged.store == Store::direct;
-    BufferPtr result = run(context, staged.stages, load(context, input, call, staged),
-                           publish_device ? static_cast<float>(remaining) : 1.0f);
+    BufferPtr result = run(context, staged.stages, load(context, input, call, staged, profile),
+                           publish_device ? static_cast<float>(remaining) : 1.0f, profile);
     if (publish_device) {
         if (buffer_size(result.get(), context) != out_bytes)
             throw Error(MS_EBACKEND, "FFT result buffer does not match the result's size");
         return result;
     }
+    Clock::time_point tw0;
+    if (profile) tw0 = Clock::now();
     const auto* source = reinterpret_cast<const float*>(read(result.get(), context).data);
     BufferPtr output = array::allocate(context, out_bytes);
     uint8_t* target = mutable_data(output.get());
+    Clock::time_point tw1;
+    if (profile) {
+        tw1 = Clock::now();
+        profile->widen_alloc_ns = elapsed_ns(tw0, tw1);
+    }
     if (array::is_double(call.out_dtype)) {
         store_rows(source, staged.result_row, reinterpret_cast<double*>(target), out_row, call.rows, out_complex,
                    staged.store, remaining);
@@ -445,6 +523,7 @@ BufferPtr transform(ms_context* context, const ms_array& input, const Call& call
         store_rows(source, staged.result_row, reinterpret_cast<float*>(target), out_row, call.rows, out_complex,
                    staged.store, remaining);
     }
+    if (profile) profile->widen_store_ns = elapsed_ns(tw1, Clock::now());
     return output;
 }
 
@@ -490,20 +569,125 @@ using ms::detail::Error;
 namespace array = ms::detail::array;
 namespace fft = ms::detail::fft;
 
+#if defined(MS_ENABLE_METAL)
+struct ProfileGuard {
+    using Clock = std::chrono::steady_clock;
+    bool active = false;
+    fft::Profile data;
+    Clock::time_point entry;
+    const ms_array* input = nullptr;
+    const ms_fft_options* options = nullptr;
+    ms_status status = MS_OK;
+
+    ProfileGuard(const ms_array* in, const ms_fft_options* opts) noexcept
+        : active(fft::profile_enabled()), input(in), options(opts) {
+        if (active) entry = Clock::now();
+    }
+    ~ProfileGuard() noexcept {
+        if (!active) return;
+        data.total_ns = static_cast<uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - entry).count());
+
+        char shape_buf[128] = "null";
+        const char* dtype_str = "?";
+        if (input) {
+            switch (input->dtype) {
+            case MS_FLOAT32: dtype_str = "f32"; break;
+            case MS_FLOAT64: dtype_str = "f64"; break;
+            case MS_COMPLEX64: dtype_str = "c64"; break;
+            case MS_COMPLEX128: dtype_str = "c128"; break;
+            default: dtype_str = "?"; break;
+            }
+            if (input->ndim >= 1 && input->ndim <= MS_MAX_NDIM) {
+                size_t pos = 0;
+                for (uint32_t i = 0; i < input->ndim && pos + 1 < sizeof(shape_buf); ++i) {
+                    const int w = std::snprintf(shape_buf + pos, sizeof(shape_buf) - pos, "%s%llu",
+                                                i == 0 ? "" : "x", static_cast<unsigned long long>(input->shape[i]));
+                    if (w <= 0) break;
+                    pos += static_cast<size_t>(w) < sizeof(shape_buf) - pos ? static_cast<size_t>(w)
+                                                                            : sizeof(shape_buf) - pos - 1;
+                }
+            } else {
+                std::snprintf(shape_buf, sizeof(shape_buf), "ndim=%u", input->ndim);
+            }
+        }
+        const char* kind_str = "?";
+        if (options) {
+            switch (options->kind) {
+            case MS_FFT_FORWARD: kind_str = "fwd"; break;
+            case MS_FFT_INVERSE: kind_str = "inv"; break;
+            case MS_FFT_R2C: kind_str = "r2c"; break;
+            case MS_FFT_C2R: kind_str = "c2r"; break;
+            default: kind_str = "?"; break;
+            }
+        }
+        const char* status_str = "?";
+        switch (status) {
+        case MS_OK: status_str = "OK"; break;
+        case MS_EINVAL: status_str = "EINVAL"; break;
+        case MS_ENOTSUP: status_str = "ENOTSUP"; break;
+        case MS_EOVERFLOW: status_str = "EOVERFLOW"; break;
+        case MS_EOOM: status_str = "EOOM"; break;
+        case MS_ETIMEOUT: status_str = "ETIMEOUT"; break;
+        case MS_EBACKEND: status_str = "EBACKEND"; break;
+        case MS_ESTATE: status_str = "ESTATE"; break;
+        }
+
+        char buf[768];
+        const int len = std::snprintf(
+            buf, sizeof(buf),
+            "ms_fft_profile shape=%s dtype=%s kind=%s status=%s narrowed=%d replan_iters=%u "
+            "total_ns=%llu parse_route_ns=%llu stage_ns=%llu refused_ns=%llu replan_ns=%llu "
+            "alloc_in_ns=%llu copy_in_ns=%llu alloc_scratch_ns=%llu encode_ns=%llu gpu_ns=%llu "
+            "wait_overhead_ns=%llu widen_alloc_ns=%llu widen_store_ns=%llu publish_ns=%llu\n",
+            shape_buf, dtype_str, kind_str, status_str, data.narrowed ? 1 : 0, data.replan_iters,
+            static_cast<unsigned long long>(data.total_ns),
+            static_cast<unsigned long long>(data.parse_route_ns),
+            static_cast<unsigned long long>(data.stage_ns),
+            static_cast<unsigned long long>(data.refused_ns),
+            static_cast<unsigned long long>(data.replan_ns),
+            static_cast<unsigned long long>(data.alloc_in_ns),
+            static_cast<unsigned long long>(data.copy_in_ns),
+            static_cast<unsigned long long>(data.alloc_scratch_ns),
+            static_cast<unsigned long long>(data.encode_ns),
+            static_cast<unsigned long long>(data.gpu_ns),
+            static_cast<unsigned long long>(data.wait_overhead_ns),
+            static_cast<unsigned long long>(data.widen_alloc_ns),
+            static_cast<unsigned long long>(data.widen_store_ns),
+            static_cast<unsigned long long>(data.publish_ns));
+        if (len > 0) {
+            const size_t n = static_cast<size_t>(len) < sizeof(buf) ? static_cast<size_t>(len) : sizeof(buf) - 1;
+            buf[n - 1] = '\n';
+            std::fwrite(buf, 1, n, stderr);
+        }
+    }
+};
+#endif
+
 ms_status ms_fft_transform(ms_context* context, const ms_array* input, const ms_fft_options* options,
                            const ms_route_options* route_options, ms_array_result* out, ms_route_info* info) {
-    return ms::detail::api(context, [&] {
+#if defined(MS_ENABLE_METAL)
+    ProfileGuard profile(input, options);
+    fft::Profile* const prof = profile.active ? &profile.data : nullptr;
+    profile.status = ms::detail::api(context, [&] {
+        using Clock = std::chrono::steady_clock;
+        Clock::time_point t0;
+        if (prof) t0 = Clock::now();
         if (!out) throw Error(MS_EINVAL, "null output");
+        array::check_route_info(info);
         array::check_options(route_options);
         const array::Shape shape = array::checked_shape(input);
         const fft::Call call = fft::parse(input->dtype, shape, options);
         const ms::detail::router::Decision decision = fft::route(context, call, *route_options);
-#if defined(MS_ENABLE_METAL)
+        if (prof) {
+            prof->parse_route_ns = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - t0).count());
+        }
         const fft::Limits limits = fft::device_limits();
         ms::detail::GpuOperationScope operation(context, true);
         ms::detail::BufferPtr result;
         try {
-            result = fft::transform(context, *input, call, limits);
+            result = fft::transform(context, *input, call, limits, prof);
         } catch (const Error& error) {
             // A drop-in must not fail where SciPy would not: without room for
             // the buffers the call is declined instead.
@@ -511,15 +695,30 @@ ms_status ms_fft_transform(ms_context* context, const ms_array* input, const ms_
                 throw Error(MS_ENOTSUP, std::string("the context's memory budget cannot hold the FFT's buffers: ") + error.what());
             throw;
         }
+        Clock::time_point tp;
+        if (prof) tp = Clock::now();
         operation.complete();
         array::publish(out, std::move(result), call.out_dtype, call.out_shape);
-        array::report(info, decision.engine, decision.compute_dtype);
+        array::report(info, decision.engine, decision.compute_dtype, "");
+        if (prof) {
+            prof->publish_ns = static_cast<uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - tp).count());
+        }
+    });
+    return profile.status;
 #else
+    return ms::detail::api(context, [&] {
+        if (!out) throw Error(MS_EINVAL, "null output");
+        array::check_route_info(info);
+        array::check_options(route_options);
+        const array::Shape shape = array::checked_shape(input);
+        const fft::Call call = fft::parse(input->dtype, shape, options);
+        const ms::detail::router::Decision decision = fft::route(context, call, *route_options);
         (void)decision;
         (void)info;
         throw Error(MS_ENOTSUP, "this build has no GPU engine and there is no native CPU FFT");
-#endif
     });
+#endif
 }
 
 ms_status ms_fft_plan(ms_context* context, uint32_t dtype, uint32_t ndim, const uint64_t* shape,

@@ -5,7 +5,7 @@
 extern "C" {
 #endif
 
-/* Array operations ABI, version 1. Shared by every numerical family
+/* Array operations ABI, version 2. Shared by every numerical family
  * (ms_ndimage.h, ms_fft.h, ...).
  *
  * Inputs are C-contiguous host arrays the caller keeps alive and unmodified
@@ -13,7 +13,7 @@ extern "C" {
  * C-contiguous array; release them with ms_buffer_release. Released result
  * storage returns to the context's buffer cache, so repeated calls reuse it.
  * Functions leave *out and *info unchanged on failure. */
-#define MS_ARRAY_ABI_VERSION 1u
+#define MS_ARRAY_ABI_VERSION 2u
 #define MS_MAX_NDIM 8u
 
 typedef enum ms_dtype {
@@ -57,6 +57,7 @@ typedef struct ms_route_info {
     uint32_t engine;         /* MS_EXECUTION_CPU or MS_EXECUTION_GPU */
     uint32_t compute_dtype;  /* ms_dtype the arithmetic ran in */
     uint64_t reserved[2];
+    char reason[256];        /* NUL-terminated re-route reason, or "" when none */
 } ms_route_info;
 
 typedef struct ms_array_result {

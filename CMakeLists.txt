@@ -20,7 +20,7 @@ set(MS_METAL_CPP_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/metal-cpp"
 
 # The native core: runtime (vendored from metal-arrow, see src/runtime/PROVENANCE.md),
 # router, CPU kernels and GPU routes behind the C ABI in include/.
-add_library(mscore SHARED src/runtime/storage.cpp src/core/array.cpp src/core/router.cpp)
+add_library(mscore SHARED src/runtime/storage.cpp src/core/array.cpp src/core/router.cpp src/core/dense_correlate.cpp)
 add_library(metal_sci::core ALIAS mscore)
 set_target_properties(mscore PROPERTIES OUTPUT_NAME metalsci)
 target_include_directories(mscore PUBLIC include)
@@ -42,8 +42,8 @@ set(MS_FAMILIES "ndimage;fft;signal;linalg;sparse" CACHE STRING
   "Numerical families to build (a subset isolates one family while others are in flux)")
 set(MS_FAMILY_SOURCES)
 set(MS_FAMILY_GPU_SOURCES)
-set(MS_METAL_SOURCES src/kernels/smoke.metal)
-set(MS_METAL_INCLUDE_DIRS src/kernels)
+set(MS_METAL_SOURCES src/kernels/smoke.metal src/core/dense_correlate.metal)
+set(MS_METAL_INCLUDE_DIRS src/kernels src/core)
 foreach(_family IN LISTS MS_FAMILIES)
   if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/src/${_family}/sources.cmake)
     include(src/${_family}/sources.cmake)
@@ -100,7 +100,7 @@ if(MS_ENABLE_METAL)
     COMMENT "Embedding metal_sci.metallib"
     VERBATIM)
   target_sources(mscore PRIVATE src/runtime/metal_storage.cpp src/runtime/metal_compute.cpp
-    ${MS_FAMILY_GPU_SOURCES} ${MS_METALLIB_C})
+    src/core/dense_correlate_gpu.cpp ${MS_FAMILY_GPU_SOURCES} ${MS_METALLIB_C})
   # Third-party headers: their pedantic warnings are not ours.
   target_include_directories(mscore SYSTEM PRIVATE "${MS_METAL_CPP_DIR}")
   target_compile_options(mscore PRIVATE -fblocks)
@@ -151,6 +151,10 @@ foreach(name IN ITEMS storage metal_storage buffer_cache)
 endforeach()
 add_test(NAME storage COMMAND ms_storage_test)
 add_test(NAME buffer_cache COMMAND ms_buffer_cache_test)
+add_executable(ms_array_test tests/native/array_test.cpp)
+target_include_directories(ms_array_test PRIVATE src)
+target_link_libraries(ms_array_test PRIVATE mscore Threads::Threads)
+add_test(NAME array COMMAND ms_array_test)
 if(MS_ENABLE_METAL)
   add_test(NAME shared_metal_storage COMMAND ms_metal_storage_test)
   add_test(NAME buffer_cache_shared_storage COMMAND ms_buffer_cache_test --metal)

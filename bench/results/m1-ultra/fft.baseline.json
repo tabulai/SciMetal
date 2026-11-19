@@ -1,0 +1,364 @@
+{
+  "benchmark": "fft",
+  "machine": {
+    "cpu": "Apple M1 Ultra",
+    "performance_cores": "16",
+    "memory_gb": 128,
+    "macos": "26.5.1",
+    "python": "3.14.2",
+    "numpy": "2.5.5",
+    "scipy": "1.18.1",
+    "loadavg": [
+      1.39,
+      1.7,
+      1.75
+    ]
+  },
+  "policy": {
+    "precision": "fast",
+    "device": "auto"
+  },
+  "timing": "median of warm runs, interleaved rounds",
+  "cases": [
+    {
+      "case": "fft 2^16",
+      "function": "fft",
+      "shape": [
+        65536
+      ],
+      "dtype": "complex128",
+      "engine": "gpu",
+      "plan": "axis 0: four-step 1024x64",
+      "route_reason": null,
+      "metal_sci_ms": 0.5346,
+      "metal_sci_min_ms": 0.4456,
+      "metal_sci_first_call_ms": 56.772,
+      "scipy_workers_1_ms": 0.6842,
+      "scipy_workers_16_ms": 0.2916,
+      "rounds": 40,
+      "relative_error_vs_scipy_complex128": 6.68403075663586e-07,
+      "speedup_vs_workers_1": 1.28,
+      "speedup_vs_workers_16": 0.55
+    },
+    {
+      "case": "fft 2^16",
+      "function": "fft",
+      "shape": [
+        65536
+      ],
+      "dtype": "complex64",
+      "engine": "scipy",
+      "plan": null,
+      "route_reason": "the FFT is below the GPU crossover; SciPy's is used",
+      "metal_sci_ms": 0.2712,
+      "metal_sci_min_ms": 0.2625,
+      "metal_sci_first_call_ms": 0.538,
+      "scipy_workers_1_ms": 0.2475,
+      "scipy_workers_16_ms": 0.2462,
+      "rounds": 40,
+      "relative_error_vs_scipy_complex128": 1.4958583099623586e-07,
+      "speedup_vs_workers_1": 0.91,
+      "speedup_vs_workers_16": 0.91
+    },
+    {
+      "case": "fft 2^20",
+      "function": "fft",
+      "shape": [
+        1048576
+      ],
+      "dtype": "complex128",
+      "engine": "gpu",
+      "plan": "axis 0: four-step 1024x1024",
+      "route_reason": null,
+      "metal_sci_ms": 1.4642,
+      "metal_sci_min_ms": 1.0147,
+      "metal_sci_first_call_ms": 4.082,
+      "scipy_workers_1_ms": 13.453,
+      "scipy_workers_16_ms": 2.1081,
+      "rounds": 40,
+      "relative_error_vs_scipy_complex128": 1.0162892094237048e-06,
+      "speedup_vs_workers_1": 9.19,
+      "speedup_vs_workers_16": 1.44
+    },
+    {
+      "case": "fft 2^20",
+      "function": "fft",
+      "shape": [
+        1048576
+      ],
+      "dtype": "complex64",
+      "engine": "gpu",
+      "plan": "axis 0: four-step 1024x1024",
+      "route_reason": null,
+      "metal_sci_ms": 1.12,
+      "metal_sci_min_ms": 0.663,
+      "metal_sci_first_call_ms": 1.068,
+      "scipy_workers_1_ms": 7.1458,
+      "scipy_workers_16_ms": 1.3208,
+      "rounds": 40,
+      "relative_error_vs_scipy_complex128": 1.0164481106422362e-06,
+      "speedup_vs_workers_1": 6.38,
+      "speedup_vs_workers_16": 1.18
+    },
+    {
+      "case": "fft 2^22",
+      "function": "fft",
+      "shape": [
+        4194304
+      ],
+      "dtype": "complex128",
+      "engine": "gpu",
+      "plan": "axis 0: four-step 2048x2048",
+      "route_reason": null,
+      "metal_sci_ms": 2.4873,
+      "metal_sci_min_ms": 2.1124,
+      "metal_sci_first_call_ms": 14.416,
+      "scipy_workers_1_ms": 65.1999,
+      "scipy_workers_16_ms": 7.2691,
+      "rounds": 14,
+      "relative_error_vs_scipy_complex128": 1.1675078302647978e-06,
+      "speedup_vs_workers_1": 26.21,
+      "speedup_vs_workers_16": 2.92
+    },
+    {
+      "case": "fft 2^22",
+      "function": "fft",
+      "shape": [
+        4194304
+      ],
+      "dtype": "complex64",
+      "engine": "gpu",
+      "plan": "axis 0: four-step 2048x2048",
+      "route_reason": null,
+      "metal_sci_ms": 2.0161,
+      "metal_sci_min_ms": 1.4862,
+      "metal_sci_first_call_ms": 2.11,
+      "scipy_workers_1_ms": 43.6889,
+      "scipy_workers_16_ms": 4.9381,
+      "rounds": 20,
+      "relative_error_vs_scipy_complex128": 1.16711681811957e-06,
+      "speedup_vs_workers_1": 21.67,
+      "speedup_vs_workers_16": 2.45
+    },
+    {
+      "case": "fft 2^24",
+      "function": "fft",
+      "shape": [
+        16777216
+      ],
+      "dtype": "complex128",
+      "engine": "gpu",
+      "plan": "axis 0: four-step 16x32x32x32x32",
+      "route_reason": null,
+      "metal_sci_ms": 7.7834,
+      "metal_sci_min_ms": 7.6101,
+      "metal_sci_first_call_ms": 56.252,
+      "scipy_workers_1_ms": 293.2678,
+      "scipy_workers_16_ms": 29.1016,
+      "rounds": 4,
+      "relative_error_vs_scipy_complex128": 4.2316499034262407e-07,
+      "speedup_vs_workers_1": 37.68,
+      "speedup_vs_workers_16": 3.74
+    },
+    {
+      "case": "fft 2^24",
+      "function": "fft",
+      "shape": [
+        16777216
+      ],
+      "dtype": "complex64",
+      "engine": "gpu",
+      "plan": "axis 0: four-step 16x32x32x32x32",
+      "route_reason": null,
+      "metal_sci_ms": 5.358,
+      "metal_sci_min_ms": 5.2713,
+      "metal_sci_first_call_ms": 5.379,
+      "scipy_workers_1_ms": 206.0935,
+      "scipy_workers_16_ms": 20.6649,
+      "rounds": 5,
+      "relative_error_vs_scipy_complex128": 4.223849853016896e-07,
+      "speedup_vs_workers_1": 38.46,
+      "speedup_vs_workers_16": 3.86
+    },
+    {
+      "case": "fft 10^6 (2^6 5^6)",
+      "function": "fft",
+      "shape": [
+        1000000
+      ],
+      "dtype": "complex128",
+      "engine": "gpu",
+      "plan": "axis 0: strided 100x100x100",
+      "route_reason": null,
+      "metal_sci_ms": 1.5454,
+      "metal_sci_min_ms": 1.1463,
+      "metal_sci_first_call_ms": 2.465,
+      "scipy_workers_1_ms": 10.9288,
+      "scipy_workers_16_ms": 1.7843,
+      "rounds": 40,
+      "relative_error_vs_scipy_complex128": 1.002572517351474e-06,
+      "speedup_vs_workers_1": 7.07,
+      "speedup_vs_workers_16": 1.15
+    },
+    {
+      "case": "fft 10^6 (2^6 5^6)",
+      "function": "fft",
+      "shape": [
+        1000000
+      ],
+      "dtype": "complex64",
+      "engine": "gpu",
+      "plan": "axis 0: strided 100x100x100",
+      "route_reason": null,
+      "metal_sci_ms": 1.1823,
+      "metal_sci_min_ms": 0.7588,
+      "metal_sci_first_call_ms": 1.021,
+      "scipy_workers_1_ms": 7.8973,
+      "scipy_workers_16_ms": 1.0958,
+      "rounds": 40,
+      "relative_error_vs_scipy_complex128": 1.0031071974624359e-06,
+      "speedup_vs_workers_1": 6.68,
+      "speedup_vs_workers_16": 0.93
+    },
+    {
+      "case": "rfft 2^22",
+      "function": "rfft",
+      "shape": [
+        4194304
+      ],
+      "dtype": "float64",
+      "engine": "gpu",
+      "plan": "axis 0: four-step 2048x2048",
+      "route_reason": null,
+      "metal_sci_ms": 2.1563,
+      "metal_sci_min_ms": 1.5872,
+      "metal_sci_first_call_ms": 5.787,
+      "scipy_workers_1_ms": 47.1343,
+      "scipy_workers_16_ms": 8.2592,
+      "rounds": 18,
+      "relative_error_vs_scipy_complex128": 1.1667826411901623e-06,
+      "speedup_vs_workers_1": 21.86,
+      "speedup_vs_workers_16": 3.83
+    },
+    {
+      "case": "rfft 2^22",
+      "function": "rfft",
+      "shape": [
+        4194304
+      ],
+      "dtype": "float32",
+      "engine": "gpu",
+      "plan": "axis 0: four-step 2048x2048",
+      "route_reason": null,
+      "metal_sci_ms": 1.6418,
+      "metal_sci_min_ms": 1.2058,
+      "metal_sci_first_call_ms": 1.583,
+      "scipy_workers_1_ms": 29.7655,
+      "scipy_workers_16_ms": 5.8037,
+      "rounds": 27,
+      "relative_error_vs_scipy_complex128": 1.165865419182657e-06,
+      "speedup_vs_workers_1": 18.13,
+      "speedup_vs_workers_16": 3.53
+    },
+    {
+      "case": "fft 4096x4096",
+      "function": "fft",
+      "shape": [
+        4096,
+        4096
+      ],
+      "dtype": "complex128",
+      "engine": "gpu",
+      "plan": "axis 1: stockham 4096",
+      "route_reason": null,
+      "metal_sci_ms": 5.018,
+      "metal_sci_min_ms": 4.7023,
+      "metal_sci_first_call_ms": 12.826,
+      "scipy_workers_1_ms": 55.6954,
+      "scipy_workers_16_ms": 5.0574,
+      "rounds": 16,
+      "relative_error_vs_scipy_complex128": 7.024517004715397e-07,
+      "speedup_vs_workers_1": 11.1,
+      "speedup_vs_workers_16": 1.01
+    },
+    {
+      "case": "fft 4096x4096",
+      "function": "fft",
+      "shape": [
+        4096,
+        4096
+      ],
+      "dtype": "complex64",
+      "engine": "gpu",
+      "plan": "axis 1: stockham 4096",
+      "route_reason": null,
+      "metal_sci_ms": 2.6655,
+      "metal_sci_min_ms": 2.3178,
+      "metal_sci_first_call_ms": 2.75,
+      "scipy_workers_1_ms": 31.6306,
+      "scipy_workers_16_ms": 2.6777,
+      "rounds": 27,
+      "relative_error_vs_scipy_complex128": 7.018963070407588e-07,
+      "speedup_vs_workers_1": 11.87,
+      "speedup_vs_workers_16": 1.0
+    },
+    {
+      "case": "fft 1024x65536",
+      "function": "fft",
+      "shape": [
+        1024,
+        65536
+      ],
+      "dtype": "complex128",
+      "engine": "gpu",
+      "plan": "axis 1: four-step 1024x64",
+      "route_reason": null,
+      "metal_sci_ms": 20.4155,
+      "metal_sci_min_ms": 19.9513,
+      "metal_sci_first_call_ms": 194.654,
+      "scipy_workers_1_ms": 654.7709,
+      "scipy_workers_16_ms": 50.6776,
+      "rounds": 3,
+      "relative_error_vs_scipy_complex128": 6.683305566286356e-07,
+      "speedup_vs_workers_1": 32.07,
+      "speedup_vs_workers_16": 2.48
+    },
+    {
+      "case": "fft 1024x65536",
+      "function": "fft",
+      "shape": [
+        1024,
+        65536
+      ],
+      "dtype": "complex64",
+      "engine": "gpu",
+      "plan": "axis 1: four-step 1024x64",
+      "route_reason": null,
+      "metal_sci_ms": 11.3462,
+      "metal_sci_min_ms": 11.0635,
+      "metal_sci_first_call_ms": 26.339,
+      "scipy_workers_1_ms": 260.5677,
+      "scipy_workers_16_ms": 20.2214,
+      "rounds": 4,
+      "relative_error_vs_scipy_complex128": 6.678519488378775e-07,
+      "speedup_vs_workers_1": 22.97,
+      "speedup_vs_workers_16": 1.78
+    }
+  ],
+  "uptime": {
+    "before": "3:09  up 154 days, 15:51, 22 users, load averages: 1.49 1.74 1.77",
+    "after": "3:10  up 154 days, 15:52, 22 users, load averages: 1.39 1.70 1.75"
+  },
+  "loadavg": {
+    "before": [
+      1.4893,
+      1.7422,
+      1.7695
+    ],
+    "after": [
+      1.3892,
+      1.6973,
+      1.751
+    ]
+  }
+}

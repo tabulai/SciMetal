@@ -7,8 +7,8 @@ from scipy._lib.uarray import BackendNotImplementedError
 
 import metal_sci
 import metal_sci.fft as mfft
+from metal_sci import _native
 from metal_sci._dispatch import counters
-from metal_sci.fft import _basic
 
 TOLERANCE = 5e-6
 NAMES = ["fft", "ifft", "rfft", "irfft", "fft2", "ifft2", "fftn", "ifftn", "rfft2", "irfft2", "rfftn", "irfftn"]
@@ -99,12 +99,20 @@ def test_declined_calls_continue_to_scipy(registered):
     with metal_sci.device("auto"):
         scipy.fft.fft(x[:2, :64].copy())
         assert metal_sci.last_route().engine == "scipy" and "crossover" in metal_sci.last_route().reason
+    batch = np.tile(x, (4, 1))   # 192 000 points: enough for SciPy's threads to pay
     with metal_sci.precision("strict"):
-        batch = np.tile(x, (4, 1))   # 192 000 points: enough for SciPy's threads to pay
+        mfft.unregister()
+        exact_batch = scipy.fft.fft(batch)
+        mfft.register()
         result = scipy.fft.fft(batch)
         route = metal_sci.last_route()
-        assert route.engine == "scipy" and "strict" in route.reason
-        cores = _basic.performance_cores()
+        assert route.engine == "scipy" and "strict" in route.reason and "workers=" not in route.reason
+        assert result.tobytes() == exact_batch.tobytes()
+    with metal_sci.device("cpu"):
+        result = scipy.fft.fft(batch)
+        route = metal_sci.last_route()
+        assert route.engine == "scipy" and "cpu" in route.reason
+        cores = _native.performance_cores()
         if cores > 1:
             assert f"workers={cores}" in route.reason
             assert result.tobytes() == scipy.fft.fft(batch, workers=cores).tobytes()

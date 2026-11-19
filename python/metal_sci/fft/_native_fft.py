@@ -76,7 +76,7 @@ def transform(x: np.ndarray, fft_options: Options, function: str) -> np.ndarray:
     _native.check(lib.ms_fft_transform(_native.context(), ctypes.byref(descriptor), ctypes.byref(fft_options),
                                        ctypes.byref(route), ctypes.byref(result), ctypes.byref(info)))
     del held
-    _native.record_route(function, info)
+    _native.record_route(function, info, input_dtype=x.dtype)
     return _native.to_numpy(result)
 
 

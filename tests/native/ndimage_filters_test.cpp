@@ -7,10 +7,12 @@
 #include "ms_ndimage.h"
 
 #include <algorithm>
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -176,9 +178,10 @@ ms_route_options route(uint32_t execution, uint32_t precision) {
     return options;
 }
 
-// Runs the filter on `data` stored as `dtype` and returns the result as doubles.
-Outcome run(const std::vector<double>& data, const std::vector<uint64_t>& shape, uint32_t dtype,
-            const std::vector<Spec>& specs, uint32_t execution, uint32_t precision = MS_PRECISION_FAST) {
+// Runs the filter on `data` stored as `dtype` with `out_dtype` (0 = same as `dtype`) and returns the result as doubles.
+Outcome run_to(const std::vector<double>& data, const std::vector<uint64_t>& shape, uint32_t dtype,
+               uint32_t out_dtype, const std::vector<Spec>& specs, uint32_t execution,
+               uint32_t precision = MS_PRECISION_FAST) {
     std::vector<float> narrow;
     const void* pointer = data.data();
     if (dtype == MS_FLOAT32) {
@@ -192,17 +195,21 @@ Outcome run(const std::vector<double>& data, const std::vector<uint64_t>& shape,
     outcome.info.struct_size = sizeof(outcome.info);
     outcome.info.abi_version = MS_ARRAY_ABI_VERSION;
     ms_array_result result{};
-    outcome.status = ms_ndimage_separable_filter(ctx, &input, passes.data(), static_cast<uint32_t>(passes.size()),
-                                                 &options, &result, &outcome.info);
+    outcome.status = (out_dtype == 0)
+        ? ms_ndimage_separable_filter(ctx, &input, passes.data(), static_cast<uint32_t>(passes.size()),
+                                      &options, &result, &outcome.info)
+        : ms_ndimage_separable_filter_to(ctx, &input, passes.data(), static_cast<uint32_t>(passes.size()),
+                                         out_dtype, &options, &result, &outcome.info);
     if (outcome.status != MS_OK) return outcome;
-    CHECK(result.buffer && result.dtype == dtype && result.ndim == shape.size());
+    const uint32_t expected_out = out_dtype ? out_dtype : dtype;
+    CHECK(result.buffer && result.dtype == expected_out && result.ndim == shape.size());
     for (size_t axis = 0; axis < shape.size(); ++axis) CHECK(result.shape[axis] == shape[axis]);
     const void* bytes = nullptr;
     uint64_t size = 0;
     CHECK(ms_buffer_data(result.buffer, &bytes, &size) == MS_OK);
-    CHECK(size == data.size() * (dtype == MS_FLOAT32 ? 4 : 8));
+    CHECK(size == data.size() * (expected_out == MS_FLOAT32 ? 4 : 8));
     outcome.values.resize(data.size());
-    if (dtype == MS_FLOAT32) {
+    if (expected_out == MS_FLOAT32) {
         const float* values = static_cast<const float*>(bytes);
         for (size_t i = 0; i < data.size(); ++i) outcome.values[i] = values[i];
     } else if (!data.empty()) {
@@ -210,6 +217,11 @@ Outcome run(const std::vector<double>& data, const std::vector<uint64_t>& shape,
     }
     ms_buffer_release(result.buffer);
     return outcome;
+}
+
+Outcome run(const std::vector<double>& data, const std::vector<uint64_t>& shape, uint32_t dtype,
+            const std::vector<Spec>& specs, uint32_t execution, uint32_t precision = MS_PRECISION_FAST) {
+    return run_to(data, shape, dtype, 0, specs, execution, precision);
 }
 
 double max_difference(const std::vector<double>& a, const std::vector<double>& b) {
@@ -704,6 +716,606 @@ void test_routing() {
         }
     }
 }
+
+void test_overflow_guard() {
+    if (!have_gpu) return;
+    const std::vector<uint64_t> large = {1536, 2048};
+    const size_t n = product(large);
+    Spec g0, g1;
+    g0.axis = 0;
+    g1.axis = 1;
+    g0.weights = g1.weights = gaussian(12, 3.0, 0);
+
+    // Normal data runs on GPU with empty reason.
+    {
+        const std::vector<double> normal = make_data(n, 7);
+        const Outcome ok = run(normal, large, MS_FLOAT64, {g0, g1}, MS_EXECUTION_AUTO, MS_PRECISION_FAST);
+        CHECK(ok.status == MS_OK && ok.info.engine == MS_EXECUTION_GPU && ok.info.compute_dtype == MS_FLOAT32);
+        CHECK(ok.info.reason[0] == '\0');
+    }
+
+    // 1. Direct input overflow (1e39): AUTO -> CPU (MS_FLOAT64, non-empty reason, 0 GPU ops); GPU -> MS_ENOTSUP.
+    {
+        std::vector<double> data(n, 1.0);
+        data[0] = 1e39;
+        data[n / 2] = -1e39;
+        const Outcome cpu_ref = run(data, large, MS_FLOAT64, {g0, g1}, MS_EXECUTION_CPU, MS_PRECISION_FAST);
+        CHECK(cpu_ref.status == MS_OK);
+
+        const ms_execution_info before = counters();
+        const Outcome auto_out = run(data, large, MS_FLOAT64, {g0, g1}, MS_EXECUTION_AUTO, MS_PRECISION_FAST);
+        const ms_execution_info after = counters();
+        CHECK(auto_out.status == MS_OK);
+        CHECK(auto_out.info.engine == MS_EXECUTION_CPU && auto_out.info.compute_dtype == MS_FLOAT64);
+        CHECK(auto_out.info.reason[0] != '\0');
+        CHECK(after.gpu_operations == before.gpu_operations);
+        CHECK(after.gpu_command_buffers == before.gpu_command_buffers);
+        CHECK(auto_out.values == cpu_ref.values);
+        for (double v : auto_out.values) CHECK(std::isfinite(v));
+
+        const Outcome gpu_out = run(data, large, MS_FLOAT64, {g0, g1}, MS_EXECUTION_GPU, MS_PRECISION_FAST);
+        CHECK(gpu_out.status == MS_ENOTSUP && !last_error().empty());
+        const ms_execution_info after_gpu = counters();
+        CHECK(after_gpu.gpu_operations == after.gpu_operations);
+        CHECK(after_gpu.gpu_command_buffers == after.gpu_command_buffers);
+    }
+
+    // 2. Gain-amplified 1e38 (each element fits float32, yet 1e38 * 16 = 1.6e39 overflows float32):
+    {
+        Spec s0, s1;
+        s0.axis = 0;
+        s1.axis = 1;
+        s0.weights = s1.weights = {1.0, 2.0, 1.0};
+        // 6 passes of {1, 2, 1} -> gain = 4^6 = 4096, 1536 * 2048 * 48 ~ 151M ops > 80M work.
+        const std::vector<Spec> passes = {s0, s1, s0, s1, s0, s1};
+        std::vector<double> data(n, 1e38);
+        const Outcome cpu_ref = run(data, large, MS_FLOAT64, passes, MS_EXECUTION_CPU, MS_PRECISION_FAST);
+        CHECK(cpu_ref.status == MS_OK);
+
+        const ms_execution_info before = counters();
+        const Outcome auto_out = run(data, large, MS_FLOAT64, passes, MS_EXECUTION_AUTO, MS_PRECISION_FAST);
+        const ms_execution_info after = counters();
+        CHECK(auto_out.status == MS_OK);
+        CHECK(auto_out.info.engine == MS_EXECUTION_CPU && auto_out.info.compute_dtype == MS_FLOAT64);
+        CHECK(auto_out.info.reason[0] != '\0');
+        CHECK(after.gpu_operations == before.gpu_operations);
+        CHECK(auto_out.values == cpu_ref.values);
+
+        const Outcome gpu_out = run(data, large, MS_FLOAT64, passes, MS_EXECUTION_GPU, MS_PRECISION_FAST);
+        CHECK(gpu_out.status == MS_ENOTSUP && !last_error().empty());
+        const ms_execution_info after_gpu = counters();
+        CHECK(after_gpu.gpu_operations == after.gpu_operations);
+    }
+
+    // 3. Overflowing constant cval and overflowing weights:
+    {
+        const std::vector<double> data(n, 1.0);
+        Spec cpass = g0;
+        cpass.mode = MS_NDIMAGE_CONSTANT;
+        cpass.cval = 1e39;
+        const ms_execution_info before = counters();
+        const Outcome auto_cval = run(data, large, MS_FLOAT64, {cpass, g1}, MS_EXECUTION_AUTO, MS_PRECISION_FAST);
+        const ms_execution_info after = counters();
+        CHECK(auto_cval.status == MS_OK && auto_cval.info.engine == MS_EXECUTION_CPU);
+        CHECK(auto_cval.info.compute_dtype == MS_FLOAT64 && auto_cval.info.reason[0] != '\0');
+        CHECK(after.gpu_operations == before.gpu_operations);
+        CHECK(run(data, large, MS_FLOAT64, {cpass, g1}, MS_EXECUTION_GPU, MS_PRECISION_FAST).status == MS_ENOTSUP);
+
+        Spec wpass = g0;
+        wpass.weights = {1e39, 1.0, 1.0};
+        const Outcome auto_w = run(data, large, MS_FLOAT64, {wpass, g1, g0, g1}, MS_EXECUTION_AUTO, MS_PRECISION_FAST);
+        CHECK(auto_w.status == MS_OK && auto_w.info.engine == MS_EXECUTION_CPU && auto_w.info.reason[0] != '\0');
+        CHECK(run(data, large, MS_FLOAT64, {wpass}, MS_EXECUTION_GPU, MS_PRECISION_FAST).status == MS_ENOTSUP);
+    }
+
+    // 4. Pre-existing [inf, -inf, nan] with cval=inf must still run on the GPU!
+    {
+        std::vector<double> data = make_data(n, 8);
+        data[10] = std::numeric_limits<double>::infinity();
+        data[20] = -std::numeric_limits<double>::infinity();
+        data[30] = std::numeric_limits<double>::quiet_NaN();
+        Spec cpass = g0;
+        cpass.mode = MS_NDIMAGE_CONSTANT;
+        cpass.cval = std::numeric_limits<double>::infinity();
+        const ms_execution_info before = counters();
+        const Outcome special = run(data, large, MS_FLOAT64, {cpass, g1}, MS_EXECUTION_AUTO, MS_PRECISION_FAST);
+        const ms_execution_info after = counters();
+        CHECK(special.status == MS_OK && special.info.engine == MS_EXECUTION_GPU);
+        CHECK(special.info.compute_dtype == MS_FLOAT32 && special.info.reason[0] == '\0');
+        CHECK(after.gpu_operations == before.gpu_operations + 1);
+    }
+
+    // 5. mode != CONSTANT with cval = 1e39 stays on GPU; mode == CONSTANT with cval = -1e39 re-routes/declines.
+    {
+        const std::vector<double> data = make_data(n, 9);
+        Spec rpass = g0;
+        rpass.mode = MS_NDIMAGE_REFLECT;
+        rpass.cval = 1e39;
+        const ms_execution_info before = counters();
+        const Outcome reflect_ok = run(data, large, MS_FLOAT64, {rpass, g1}, MS_EXECUTION_AUTO, MS_PRECISION_FAST);
+        const ms_execution_info after = counters();
+        CHECK(reflect_ok.status == MS_OK && reflect_ok.info.engine == MS_EXECUTION_GPU);
+        CHECK(reflect_ok.info.compute_dtype == MS_FLOAT32 && reflect_ok.info.reason[0] == '\0');
+        CHECK(after.gpu_operations == before.gpu_operations + 1);
+
+        Spec neg_cpass = g0;
+        neg_cpass.mode = MS_NDIMAGE_CONSTANT;
+        neg_cpass.cval = -1e39;
+        const Outcome cpu_ref = run(data, large, MS_FLOAT64, {neg_cpass, g1}, MS_EXECUTION_CPU, MS_PRECISION_FAST);
+        const Outcome auto_neg = run(data, large, MS_FLOAT64, {neg_cpass, g1}, MS_EXECUTION_AUTO, MS_PRECISION_FAST);
+        CHECK(auto_neg.status == MS_OK && auto_neg.info.engine == MS_EXECUTION_CPU);
+        CHECK(auto_neg.info.compute_dtype == MS_FLOAT64 && auto_neg.info.reason[0] != '\0');
+        CHECK(counters().gpu_operations == after.gpu_operations);
+        CHECK(auto_neg.values == cpu_ref.values);
+        CHECK(run(data, large, MS_FLOAT64, {neg_cpass, g1}, MS_EXECUTION_GPU, MS_PRECISION_FAST).status == MS_ENOTSUP);
+    }
+
+    // 6. Symmetric/antisymmetric (below +- above) pre-multiply overflow on 2e38 (uniform + correlate + [0, 1, 0] NaN guard).
+    {
+        Spec u0, u1;
+        u0.kind = MS_NDIMAGE_UNIFORM;
+        u0.axis = 0;
+        u0.size = 5;
+        u1.kind = MS_NDIMAGE_UNIFORM;
+        u1.axis = 1;
+        u1.size = 5;
+        const std::vector<double> normal = make_data(n, 10);
+        CHECK(run(normal, large, MS_FLOAT64, {u0, u1}, MS_EXECUTION_AUTO, MS_PRECISION_FAST).info.engine == MS_EXECUTION_GPU);
+
+        const std::vector<double> two_e38(n, 2e38);
+        const Outcome u_ref = run(two_e38, large, MS_FLOAT64, {u0, u1}, MS_EXECUTION_CPU, MS_PRECISION_FAST);
+        const ms_execution_info before_u = counters();
+        const Outcome u_auto = run(two_e38, large, MS_FLOAT64, {u0, u1}, MS_EXECUTION_AUTO, MS_PRECISION_FAST);
+        CHECK(u_auto.status == MS_OK && u_auto.info.engine == MS_EXECUTION_CPU);
+        CHECK(u_auto.info.compute_dtype == MS_FLOAT64 && u_auto.info.reason[0] != '\0');
+        CHECK(counters().gpu_operations == before_u.gpu_operations);
+        CHECK(u_auto.values == u_ref.values);
+        for (double v : u_auto.values) CHECK(std::isfinite(v));
+        CHECK(run(two_e38, large, MS_FLOAT64, {u0, u1}, MS_EXECUTION_GPU, MS_PRECISION_FAST).status == MS_ENOTSUP);
+
+        // [0.0, 1.0, 0.0] (symmetric even, gain = 1.0): without the 2*m guard, (2e38 + 2e38) * 0.0 -> inf * 0 = NaN.
+        Spec id_sym;
+        id_sym.axis = 0;
+        id_sym.weights = {0.0, 1.0, 0.0};
+        const std::vector<Spec> six_id_sym(6, id_sym);
+        CHECK(run(normal, large, MS_FLOAT64, six_id_sym, MS_EXECUTION_AUTO, MS_PRECISION_FAST).info.engine == MS_EXECUTION_GPU);
+        const ms_execution_info before_id = counters();
+        const Outcome id_auto = run(two_e38, large, MS_FLOAT64, six_id_sym, MS_EXECUTION_AUTO, MS_PRECISION_FAST);
+        CHECK(id_auto.status == MS_OK && id_auto.info.engine == MS_EXECUTION_CPU);
+        CHECK(id_auto.info.compute_dtype == MS_FLOAT64 && id_auto.info.reason[0] != '\0');
+        CHECK(counters().gpu_operations == before_id.gpu_operations);
+        for (double v : id_auto.values) CHECK(v == 2e38);
+        CHECK(run(two_e38, large, MS_FLOAT64, {id_sym}, MS_EXECUTION_GPU, MS_PRECISION_FAST).status == MS_ENOTSUP);
+
+        // Antisymmetric [-0.1, 0.0, 0.1] on row-alternating +-2e38 (gain = 0.2).
+        std::vector<double> alt_2e38(n);
+        for (size_t i = 0; i < n; ++i) alt_2e38[i] = ((i / large[1]) & 1) ? 2e38 : -2e38;
+        Spec anti;
+        anti.axis = 0;
+        anti.weights = {-0.1, 0.0, 0.1};
+        const std::vector<Spec> six_anti(6, anti);
+        CHECK(run(normal, large, MS_FLOAT64, six_anti, MS_EXECUTION_AUTO, MS_PRECISION_FAST).info.engine == MS_EXECUTION_GPU);
+        const Outcome anti_ref = run(alt_2e38, large, MS_FLOAT64, six_anti, MS_EXECUTION_CPU, MS_PRECISION_FAST);
+        const ms_execution_info before_anti = counters();
+        const Outcome anti_auto = run(alt_2e38, large, MS_FLOAT64, six_anti, MS_EXECUTION_AUTO, MS_PRECISION_FAST);
+        CHECK(anti_auto.status == MS_OK && anti_auto.info.engine == MS_EXECUTION_CPU);
+        CHECK(anti_auto.info.compute_dtype == MS_FLOAT64 && anti_auto.info.reason[0] != '\0');
+        CHECK(counters().gpu_operations == before_anti.gpu_operations);
+        CHECK(anti_auto.values == anti_ref.values);
+        for (double v : anti_auto.values) CHECK(std::isfinite(v));
+        CHECK(run(alt_2e38, large, MS_FLOAT64, {anti}, MS_EXECUTION_GPU, MS_PRECISION_FAST).status == MS_ENOTSUP);
+    }
+
+    // 7. Grow-then-shrink intermediate-pass overflow (even-length asymmetric and symmetric+antisymmetric).
+    {
+        const std::vector<double> one_e38(n, 1e38);
+        const std::vector<double> normal = make_data(n, 11);
+
+        // Asymmetric even-length: pass 0 gain = 10 (1e38 -> 1e39 overflows), pass 1 gain = 0.01 (product = 0.1).
+        Spec grow, shrink, pad;
+        grow.axis = 0;
+        grow.weights = {5.0, 5.0};
+        shrink.axis = 1;
+        shrink.weights = {0.005, 0.005};
+        pad.axis = 0;
+        pad.weights = {0.5, 0.5};
+        const std::vector<Spec> gts_asym = {grow, shrink, pad, pad, pad, pad};
+        CHECK(run(normal, large, MS_FLOAT64, gts_asym, MS_EXECUTION_AUTO, MS_PRECISION_FAST).info.engine == MS_EXECUTION_GPU);
+
+        const Outcome gts_ref = run(one_e38, large, MS_FLOAT64, gts_asym, MS_EXECUTION_CPU, MS_PRECISION_FAST);
+        const ms_execution_info before_gts = counters();
+        const Outcome gts_auto = run(one_e38, large, MS_FLOAT64, gts_asym, MS_EXECUTION_AUTO, MS_PRECISION_FAST);
+        CHECK(gts_auto.status == MS_OK && gts_auto.info.engine == MS_EXECUTION_CPU);
+        CHECK(gts_auto.info.compute_dtype == MS_FLOAT64 && gts_auto.info.reason[0] != '\0');
+        CHECK(counters().gpu_operations == before_gts.gpu_operations);
+        CHECK(gts_auto.values == gts_ref.values);
+        CHECK(run(one_e38, large, MS_FLOAT64, {grow, shrink}, MS_EXECUTION_GPU, MS_PRECISION_FAST).status == MS_ENOTSUP);
+
+        // Symmetric grow (gain = 8) + antisymmetric Gaussian order=1 shrink (sigma = 10, gain ~ 0.08, product ~ 0.64).
+        Spec sym_grow;
+        sym_grow.axis = 0;
+        sym_grow.weights = {2.0, -4.0, 2.0};
+        Spec gauss_shrink;
+        gauss_shrink.axis = 1;
+        gauss_shrink.weights = gaussian(40, 10.0, 1);
+        const std::vector<Spec> gts_gauss = {sym_grow, gauss_shrink};
+        CHECK(run(normal, large, MS_FLOAT64, gts_gauss, MS_EXECUTION_AUTO, MS_PRECISION_FAST).info.engine == MS_EXECUTION_GPU);
+
+        const Outcome gauss_ref = run(one_e38, large, MS_FLOAT64, gts_gauss, MS_EXECUTION_CPU, MS_PRECISION_FAST);
+        const ms_execution_info before_gauss = counters();
+        const Outcome gauss_auto = run(one_e38, large, MS_FLOAT64, gts_gauss, MS_EXECUTION_AUTO, MS_PRECISION_FAST);
+        CHECK(gauss_auto.status == MS_OK && gauss_auto.info.engine == MS_EXECUTION_CPU);
+        CHECK(gauss_auto.info.compute_dtype == MS_FLOAT64 && gauss_auto.info.reason[0] != '\0');
+        CHECK(counters().gpu_operations == before_gauss.gpu_operations);
+        CHECK(gauss_auto.values == gauss_ref.values);
+        CHECK(run(one_e38, large, MS_FLOAT64, gts_gauss, MS_EXECUTION_GPU, MS_PRECISION_FAST).status == MS_ENOTSUP);
+    }
+
+    // 8. Near-FLT_MAX float32 weight-narrowing and accumulation rounding on Symmetry::none passes.
+    {
+        const std::vector<uint64_t> wide = {2048, 2560};
+        const size_t nw = product(wide);
+        const std::vector<double> normal_large = make_data(n, 12);
+        const std::vector<double> normal_wide = make_data(nw, 13);
+
+        auto check_flt_max_guard = [&](const std::vector<uint64_t>& shape, const std::vector<double>& data,
+                                       const std::vector<double>& normal_data, const std::vector<Spec>& passes) {
+            CHECK(run(normal_data, shape, MS_FLOAT64, passes, MS_EXECUTION_AUTO, MS_PRECISION_FAST).info.engine ==
+                  MS_EXECUTION_GPU);
+            const Outcome ref = run(data, shape, MS_FLOAT64, passes, MS_EXECUTION_CPU, MS_PRECISION_FAST);
+            CHECK(ref.status == MS_OK);
+            const ms_execution_info before = counters();
+            const Outcome auto_out = run(data, shape, MS_FLOAT64, passes, MS_EXECUTION_AUTO, MS_PRECISION_FAST);
+            CHECK(auto_out.status == MS_OK && auto_out.info.engine == MS_EXECUTION_CPU);
+            CHECK(auto_out.info.compute_dtype == MS_FLOAT64 && auto_out.info.reason[0] != '\0');
+            CHECK(counters().gpu_operations == before.gpu_operations);
+            CHECK(auto_out.values == ref.values);
+            for (double v : auto_out.values) CHECK(std::isfinite(v));
+            CHECK(run(data, shape, MS_FLOAT64, passes, MS_EXECUTION_GPU, MS_PRECISION_FAST).status == MS_ENOTSUP);
+        };
+
+        const double flt_max = static_cast<double>(FLT_MAX);
+        for (double val : {flt_max, 3.402823e38}) {
+            const std::vector<double> data_large(n, val);
+            const std::vector<double> data_wide(nw, val);
+            for (uint64_t sz : {uint64_t{10}, uint64_t{20}, uint64_t{24}}) {
+                Spec p0, p1;
+                p0.kind = MS_NDIMAGE_UNIFORM;
+                p0.axis = 0;
+                p0.size = sz;
+                p1.kind = MS_NDIMAGE_UNIFORM;
+                p1.axis = 1;
+                p1.size = sz;
+                check_flt_max_guard(large, data_large, normal_large, {p0, p1});
+            }
+            {
+                Spec u1d;
+                u1d.kind = MS_NDIMAGE_UNIFORM;
+                u1d.axis = 0;
+                u1d.size = 10;
+                check_flt_max_guard(large, data_large, normal_large, {u1d});
+            }
+            {
+                Spec c8;
+                c8.axis = 0;
+                c8.weights = {0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.3};
+                check_flt_max_guard(wide, data_wide, normal_wide, {c8});
+            }
+            {
+                Spec c6;
+                c6.axis = 0;
+                c6.weights = {0.1, 0.1, 0.1, 0.1, 0.1, 0.5};
+                check_flt_max_guard(wide, data_wide, normal_wide, {c6});
+            }
+        }
+
+        // Constant cval = FLT_MAX on unit input with even-sized uniform(10).
+        {
+            const std::vector<double> unit(n, 1.0);
+            Spec n0, n1;
+            n0.kind = MS_NDIMAGE_UNIFORM;
+            n0.axis = 0;
+            n0.size = 10;
+            n0.mode = MS_NDIMAGE_CONSTANT;
+            n0.cval = 0.0;
+            n1.kind = MS_NDIMAGE_UNIFORM;
+            n1.axis = 1;
+            n1.size = 10;
+            n1.mode = MS_NDIMAGE_CONSTANT;
+            n1.cval = 0.0;
+            CHECK(run(unit, large, MS_FLOAT64, {n0, n1}, MS_EXECUTION_AUTO, MS_PRECISION_FAST).info.engine ==
+                  MS_EXECUTION_GPU);
+
+            Spec c0 = n0, c1 = n1;
+            c0.cval = flt_max;
+            c1.cval = flt_max;
+            const Outcome ref = run(unit, large, MS_FLOAT64, {c0, c1}, MS_EXECUTION_CPU, MS_PRECISION_FAST);
+            CHECK(ref.status == MS_OK);
+            const ms_execution_info before = counters();
+            const Outcome auto_out = run(unit, large, MS_FLOAT64, {c0, c1}, MS_EXECUTION_AUTO, MS_PRECISION_FAST);
+            CHECK(auto_out.status == MS_OK && auto_out.info.engine == MS_EXECUTION_CPU);
+            CHECK(auto_out.info.compute_dtype == MS_FLOAT64 && auto_out.info.reason[0] != '\0');
+            CHECK(counters().gpu_operations == before.gpu_operations);
+            CHECK(auto_out.values == ref.values);
+            for (double v : auto_out.values) CHECK(std::isfinite(v));
+            CHECK(run(unit, large, MS_FLOAT64, {c0, c1}, MS_EXECUTION_GPU, MS_PRECISION_FAST).status == MS_ENOTSUP);
+        }
+    }
+}
+
+void test_output_dtype_to() {
+    // Empty array with explicit out_dtype publishes out_dtype.
+    {
+        const std::vector<uint64_t> empty_shape = {0, 5};
+        const ms_array empty = describe(empty_shape, MS_FLOAT32, nullptr);
+        Spec s;
+        s.axis = 1;
+        s.weights = {0.25, 0.5, 0.25};
+        const auto passes = to_passes({s});
+        const auto opts = route(MS_EXECUTION_CPU, MS_PRECISION_STRICT);
+        ms_array_result result{};
+        CHECK(ms_ndimage_separable_filter_to(ctx, &empty, passes.data(), 1, MS_FLOAT64, &opts, &result, nullptr) ==
+              MS_OK);
+        CHECK(result.dtype == MS_FLOAT64 && result.ndim == 2 && result.shape[0] == 0 && result.shape[1] == 5);
+        ms_buffer_release(result.buffer);
+    }
+
+    // Invalid out_dtype returns MS_ENOTSUP and leaves result/info untouched.
+    {
+        const std::vector<uint64_t> shape = {4, 5};
+        const std::vector<double> data = make_data(product(shape), 42);
+        const ms_array input = describe(shape, MS_FLOAT64, data.data());
+        Spec s;
+        s.axis = 1;
+        s.weights = {1.0};
+        const auto passes = to_passes({s});
+        const auto opts = route(MS_EXECUTION_CPU, MS_PRECISION_STRICT);
+        for (uint32_t bad_dtype : {uint32_t{MS_COMPLEX64}, uint32_t{MS_COMPLEX128}, uint32_t{99}}) {
+            ms_array_result res;
+            std::memset(&res, 0x5a, sizeof(res));
+            const ms_array_result before = res;
+            CHECK(ms_ndimage_separable_filter_to(ctx, &input, passes.data(), 1, bad_dtype, &opts, &res, nullptr) ==
+                  MS_ENOTSUP);
+            CHECK(std::memcmp(&res, &before, sizeof(res)) == 0);
+        }
+    }
+
+    // Cross-float combinations (float64->float32, float32->float64) on CPU and GPU.
+    const std::vector<uint64_t> shape = {29, 37};
+    const std::vector<double> exact = make_data(product(shape), 55);
+    Spec c0, c1, u0;
+    c0.axis = 0;
+    c0.weights = gaussian(4, 1.2, 0);
+    c0.mode = MS_NDIMAGE_REFLECT;
+    c1.axis = 1;
+    c1.weights = ramp(6);
+    c1.mode = MS_NDIMAGE_CONSTANT;
+    c1.cval = -1.25;
+    u0.kind = MS_NDIMAGE_UNIFORM;
+    u0.axis = 1;
+    u0.size = 5;
+    u0.mode = MS_NDIMAGE_WRAP;
+
+    for (const auto& specs : {std::vector<Spec>{c0}, {c0, c1}, {c0, u0, c1}}) {
+        for (uint32_t in_dtype : {MS_FLOAT64, MS_FLOAT32}) {
+            for (uint32_t out_dtype : {MS_FLOAT64, MS_FLOAT32}) {
+                std::vector<double> data = exact;
+                if (in_dtype == MS_FLOAT32) {
+                    for (double& v : data) v = static_cast<double>(static_cast<float>(v));
+                }
+                const bool out_single = out_dtype == MS_FLOAT32;
+                std::vector<double> expected = data;
+                for (const Spec& sp : specs) expected = reference_pass(expected, shape, sp, out_single);
+
+                const Outcome cpu = run_to(data, shape, in_dtype, out_dtype, specs, MS_EXECUTION_CPU, MS_PRECISION_STRICT);
+                CHECK(cpu.status == MS_OK && cpu.info.engine == MS_EXECUTION_CPU && cpu.info.compute_dtype == MS_FLOAT64);
+                const double cpu_bound = budget(data, shape, specs, out_single ? unit32 : unit64, true);
+                CHECK(max_difference(cpu.values, expected) <= cpu_bound);
+
+                if (have_gpu) {
+                    const ms_execution_info before = counters();
+                    const Outcome gpu = run_to(data, shape, in_dtype, out_dtype, specs, MS_EXECUTION_GPU, MS_PRECISION_FAST);
+                    const ms_execution_info after = counters();
+                    CHECK(gpu.status == MS_OK && gpu.info.engine == MS_EXECUTION_GPU &&
+                          gpu.info.compute_dtype == MS_FLOAT32);
+                    CHECK(after.gpu_operations == before.gpu_operations + 1);
+                    CHECK(after.gpu_command_buffers == before.gpu_command_buffers + 1);
+                    const double gpu_bound = budget(data, shape, specs, unit32, false);
+                    CHECK(max_difference(gpu.values, cpu.values) <= gpu_bound);
+                }
+            }
+        }
+    }
+
+    // Overflow guard rails with cross-float out_dtype (float64->float32 and float32->float64).
+    if (have_gpu) {
+        const std::vector<uint64_t> large = {1536, 2048};
+        const size_t n = product(large);
+        Spec g0, g1;
+        g0.axis = 0;
+        g1.axis = 1;
+        g0.weights = g1.weights = gaussian(12, 3.0, 0);
+
+        std::vector<double> over(n, 1.0);
+        over[0] = 1e39;
+        const Outcome cpu_ref = run_to(over, large, MS_FLOAT64, MS_FLOAT32, {g0, g1}, MS_EXECUTION_CPU, MS_PRECISION_FAST);
+        const ms_execution_info before = counters();
+        const Outcome auto_out = run_to(over, large, MS_FLOAT64, MS_FLOAT32, {g0, g1}, MS_EXECUTION_AUTO, MS_PRECISION_FAST);
+        CHECK(auto_out.status == MS_OK && auto_out.info.engine == MS_EXECUTION_CPU &&
+              auto_out.info.compute_dtype == MS_FLOAT64 && auto_out.info.reason[0] != '\0');
+        CHECK(counters().gpu_operations == before.gpu_operations);
+        CHECK(auto_out.values == cpu_ref.values);
+        CHECK(run_to(over, large, MS_FLOAT64, MS_FLOAT32, {g0, g1}, MS_EXECUTION_GPU, MS_PRECISION_FAST).status ==
+              MS_ENOTSUP);
+
+        // float32 -> float64 with cval = 1e39 must also re-route AUTO to CPU and decline GPU.
+        const std::vector<double> f32_data = make_data(n, 77);
+        Spec cpass = g0;
+        cpass.mode = MS_NDIMAGE_CONSTANT;
+        cpass.cval = 1e39;
+        const Outcome c_auto = run_to(f32_data, large, MS_FLOAT32, MS_FLOAT64, {cpass, g1}, MS_EXECUTION_AUTO,
+                                      MS_PRECISION_FAST);
+        CHECK(c_auto.status == MS_OK && c_auto.info.engine == MS_EXECUTION_CPU &&
+              c_auto.info.compute_dtype == MS_FLOAT64 && c_auto.info.reason[0] != '\0');
+        CHECK(run_to(f32_data, large, MS_FLOAT32, MS_FLOAT64, {cpass, g1}, MS_EXECUTION_GPU, MS_PRECISION_FAST).status ==
+              MS_ENOTSUP);
+    }
+}
+
+void test_overhanging_windows() {
+    const uint32_t modes[] = {MS_NDIMAGE_NEAREST, MS_NDIMAGE_WRAP, MS_NDIMAGE_REFLECT, MS_NDIMAGE_MIRROR,
+                              MS_NDIMAGE_CONSTANT};
+    const std::vector<std::vector<uint64_t>> shapes = {{1}, {1, 17}, {17, 1}, {2, 3}, {7, 19}, {3, 5, 4}};
+    uint32_t seed = 9000;
+    for (const auto& shape : shapes) {
+        for (uint32_t axis = 0; axis < shape.size(); ++axis) {
+            const uint64_t len = shape[axis];
+            for (size_t taps : {size_t{5}, size_t{19}, size_t{65}}) {
+                if (taps <= len) continue;
+                const std::vector<std::vector<double>> wsets = {
+                    ramp(taps),
+                    gaussian(static_cast<int>(taps / 2), 4.0, 0),
+                    gaussian(static_cast<int>(taps / 2), 4.0, 1),
+                };
+                for (const auto& w : wsets) {
+                    for (uint32_t mode : modes) {
+                        for (int64_t origin : origins_of(w.size())) {
+                            Spec spec;
+                            spec.axis = axis;
+                            spec.mode = mode;
+                            spec.origin = origin;
+                            spec.weights = w;
+                            spec.cval = -0.75;
+                            compare(shape, {spec}, ++seed);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Special values (NaN, Inf, -Inf, cval=Inf) on overhanging windows (GPU vs reference).
+    if (have_gpu) {
+        const std::vector<uint64_t> shape = {8, 5};
+        std::vector<double> data = make_data(product(shape), 9500);
+        for (double& v : data) v = static_cast<double>(static_cast<float>(v));
+        data[0] = std::numeric_limits<double>::quiet_NaN();
+        data[7] = std::numeric_limits<double>::infinity();
+        data[19] = -std::numeric_limits<double>::infinity();
+        const std::vector<double> odd_w = {-0.5, -0.25, 0.0, 0.25, 0.5};
+        const std::vector<double> sym_w = {0.1, 0.2, 0.4, 0.2, 0.1};
+        const std::vector<double> asym_w = ramp(13);
+
+        for (uint32_t mode : modes) {
+            for (const auto& w : {odd_w, sym_w, asym_w}) {
+                Spec sp;
+                sp.axis = 1;
+                sp.mode = mode;
+                sp.weights = w;
+                sp.cval = std::numeric_limits<double>::infinity();
+                const Outcome gpu = run(data, shape, MS_FLOAT32, {sp}, MS_EXECUTION_GPU, MS_PRECISION_FAST);
+                CHECK(gpu.status == MS_OK && gpu.info.engine == MS_EXECUTION_GPU);
+                const std::vector<double> ref = reference_pass(data, shape, sp, true);
+                for (size_t i = 0; i < ref.size(); ++i) {
+                    CHECK(std::isnan(gpu.values[i]) == std::isnan(ref[i]));
+                    if (!std::isnan(ref[i])) {
+                        if (std::isinf(ref[i])) {
+                            CHECK(gpu.values[i] == ref[i]);
+                        } else {
+                            CHECK(std::fabs(gpu.values[i] - ref[i]) <= 1e-4 * std::max(1.0, std::fabs(ref[i])));
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+void test_uniform_neon_and_tiles() {
+    // Independent exact scalar NI_UniformFilter1D running-sum reference (must match bit-for-bit!).
+    auto ref_uniform_running = [](const std::vector<double>& in, const std::vector<uint64_t>& shape,
+                                  const Spec& spec, bool out_single) {
+        const int64_t length = static_cast<int64_t>(shape[spec.axis]);
+        uint64_t inner = 1, outer = 1;
+        for (size_t a = 0; a < spec.axis; ++a) outer *= shape[a];
+        for (size_t a = spec.axis + 1; a < shape.size(); ++a) inner *= shape[a];
+        const int64_t taps = static_cast<int64_t>(spec.size);
+        const int64_t before = taps / 2 + spec.origin;
+        const double size = static_cast<double>(taps);
+        std::vector<double> out(in.size());
+        for (uint64_t o = 0; o < outer; ++o) {
+            for (uint64_t c = 0; c < inner; ++c) {
+                const double* line = in.data() + o * static_cast<uint64_t>(length) * inner + c;
+                auto at = [&](int64_t p) {
+                    const int64_t q = fold(p, length, spec.mode);
+                    return q < 0 ? spec.cval : line[static_cast<uint64_t>(q) * inner];
+                };
+                double sum = 0.0;
+                for (int64_t k = 0; k < taps; ++k) sum = sum + at(k - before);
+                out[o * static_cast<uint64_t>(length) * inner + c] =
+                    out_single ? static_cast<double>(static_cast<float>(sum / size)) : (sum / size);
+                for (int64_t y = 1; y < length; ++y) {
+                    sum = sum + (at(y - before + taps - 1) - at(y - 1 - before));
+                    const double v = sum / size;
+                    out[o * static_cast<uint64_t>(length) * inner + c + static_cast<uint64_t>(y) * inner] =
+                        out_single ? static_cast<double>(static_cast<float>(v)) : v;
+                }
+            }
+        }
+        return out;
+    };
+
+    const uint32_t modes[] = {MS_NDIMAGE_NEAREST, MS_NDIMAGE_WRAP, MS_NDIMAGE_REFLECT, MS_NDIMAGE_MIRROR,
+                              MS_NDIMAGE_CONSTANT};
+    uint32_t seed = 12000;
+    // Test line counts 1..17 across stride==1 (exercises 4-line NEON bundles + 0..3 remainder lines)
+    // and overhanging + non-overhanging window sizes.
+    for (uint64_t lines : {uint64_t{1}, uint64_t{3}, uint64_t{4}, uint64_t{5}, uint64_t{7}, uint64_t{8},
+                           uint64_t{9}, uint64_t{15}, uint64_t{17}}) {
+        for (uint64_t len : {uint64_t{7}, uint64_t{33}}) {
+            const std::vector<uint64_t> shape = {lines, len};
+            const std::vector<double> exact = make_data(product(shape), ++seed);
+            for (uint64_t sz : {uint64_t{3}, uint64_t{9}, uint64_t{15}}) {
+                const uint32_t mode = modes[(lines + sz) % 5];
+                Spec sp;
+                sp.kind = MS_NDIMAGE_UNIFORM;
+                sp.axis = 1;
+                sp.mode = mode;
+                sp.size = sz;
+                sp.origin = (sz % 2) ? 0 : -1;
+                sp.cval = 2.25;
+                for (uint32_t in_dt : {MS_FLOAT64, MS_FLOAT32}) {
+                    for (uint32_t out_dt : {MS_FLOAT64, MS_FLOAT32}) {
+                        std::vector<double> data = exact;
+                        if (in_dt == MS_FLOAT32) for (double& v : data) v = static_cast<double>(static_cast<float>(v));
+                        const auto expected = ref_uniform_running(data, shape, sp, out_dt == MS_FLOAT32);
+                        const Outcome cpu =
+                            run_to(data, shape, in_dt, out_dt, {sp}, MS_EXECUTION_CPU, MS_PRECISION_STRICT);
+                        CHECK(cpu.status == MS_OK && cpu.values == expected);
+                    }
+                }
+            }
+        }
+    }
+
+    // Test uniform_tiles scaling across wide inner dimensions (axis=0).
+    for (uint64_t inner : {uint64_t{64}, uint64_t{257}, uint64_t{4096}}) {
+        const std::vector<uint64_t> shape = {25, inner};
+        const std::vector<double> exact = make_data(product(shape), ++seed);
+        Spec sp;
+        sp.kind = MS_NDIMAGE_UNIFORM;
+        sp.axis = 0;
+        sp.mode = MS_NDIMAGE_REFLECT;
+        sp.size = 9;
+        for (uint32_t in_dt : {MS_FLOAT64, MS_FLOAT32}) {
+            std::vector<double> data = exact;
+            if (in_dt == MS_FLOAT32) for (double& v : data) v = static_cast<double>(static_cast<float>(v));
+            const auto expected = ref_uniform_running(data, shape, sp, in_dt == MS_FLOAT32);
+            const Outcome cpu = run(data, shape, in_dt, {sp}, MS_EXECUTION_CPU, MS_PRECISION_STRICT);
+            CHECK(cpu.status == MS_OK && cpu.values == expected);
+        }
+    }
+}
 } // namespace
 
 int main() {
@@ -726,6 +1338,10 @@ int main() {
     test_larger();
     test_fused_widening_is_exact();
     test_routing();
+    test_overflow_guard();
+    test_output_dtype_to();
+    test_overhanging_windows();
+    test_uniform_neon_and_tiles();
 
     ms_context_release(ctx);
     std::printf("ndimage filters ok: %lu CPU cases (worst error %.2g of its bound), %lu GPU cases (worst %.2g)%s\n",

@@ -343,6 +343,14 @@ BluesteinTables bluestein_tables(int32_t n, int32_t bluestein_n) {
 }
 
 // --- Plan construction ------------------------------------------------------
+std::atomic<uint64_t> next_plan_id{1};
+
+std::shared_ptr<Plan> make_plan() {
+    auto plan = std::make_shared<Plan>();
+    plan->id = next_plan_id.fetch_add(1, std::memory_order_relaxed);
+    return plan;
+}
+
 Planned unsupported(std::string reason) { return {nullptr, std::move(reason)}; }
 
 bool is_inverse(const Request& request) {
@@ -411,7 +419,7 @@ Planned plan_single_kernel(const Request& request, const Limits& limits) {
     step.group_elements = group_elements(step.width, fft_size);
     const std::string suffix = "_mem_" + std::to_string(step.group_elements) + "_" + in_type + "_" + out_type;
 
-    auto plan = std::make_shared<Plan>();
+    auto plan = make_plan();
     if (decomposition.bluestein_n) {
         step.kind = Kernel::bluestein;
         step.kernel = "bluestein_fft" + suffix;
@@ -545,7 +553,7 @@ Planned plan_chain(const Request& request, const std::vector<int32_t>& factors, 
     if (request.transform != Transform::c2c && request.tail != 1)
         return unsupported("real transforms run along the last axis only");
     const bool inverse = is_inverse(request);
-    auto plan = std::make_shared<Plan>();
+    auto plan = make_plan();
     plan->request = request;
     uint64_t outer = 1, stride = request.n * request.tail;
     for (size_t i = 0; i < factors.size(); ++i) {
@@ -590,7 +598,7 @@ Planned plan_power_of_two(const Request& request, const std::vector<int32_t>& fa
     const bool inverse = is_inverse(request);
     const bool real = request.transform != Transform::c2c;
     const size_t count = factors.size();
-    auto plan = std::make_shared<Plan>();
+    auto plan = make_plan();
     plan->request = request;
 
     const auto four_step = [&](int32_t fft_size, bool first, uint8_t source, uint8_t target) {
@@ -879,6 +887,41 @@ Planned replan(const Request& request, const Limits& limits, int32_t group_threa
 }
 
 uint64_t plans_built() { return built_plans.load(std::memory_order_relaxed); }
+
+namespace {
+uint64_t next_smooth_235(uint64_t target) {
+    if (target <= 1) return target;
+    uint64_t best = UINT64_MAX;
+    for (uint64_t p5 = 1;;) {
+        for (uint64_t p35 = p5;;) {
+            const uint64_t need = (target - 1) / p35 + 1;
+            const uint64_t p2 = std::bit_ceil(need);
+            if (p35 <= best / p2) {
+                const uint64_t cand = p35 * p2;
+                if (cand < best) best = cand;
+            }
+            if (p35 > UINT64_MAX / 3) break;
+            p35 *= 3;
+            if (p35 >= best) break;
+        }
+        if (p5 > UINT64_MAX / 5) break;
+        p5 *= 5;
+        if (p5 >= best) break;
+    }
+    return best;
+}
+} // namespace
+
+uint64_t next_fast_len(uint64_t target, bool real, bool last_axis, const Limits& limits) {
+    if (target <= 1) return target;
+    if (real && last_axis) {
+        const uint64_t limit = static_cast<uint64_t>(std::max<int32_t>(limits.group_elements, 0));
+        if (target > limit) return std::bit_ceil(target);
+        const uint64_t smooth = next_smooth_235(target);
+        return smooth <= limit ? smooth : std::bit_ceil(target);
+    }
+    return next_smooth_235(target);
+}
 
 bool instantiate(const Plan& plan, uint64_t count, std::vector<Dispatch>& out, std::string& reason) {
     // Every kernel indexes its buffers with 32-bit integers.

@@ -30,41 +30,13 @@ static inline void ms_ndimage_store(device ulong* dst, uint index, float value) 
     dst[index] = ms_ndimage_widen(as_type<uint>(value));
 }
 
-// The value at extension position `position` of the line whose first element
-// is src[line] (ms_ndimage_mode; the host's `extend` in filters.hpp).
-static inline float ms_ndimage_tap(device const float* src, int line, int stride, int position, int length,
-                                   uint mode, float cval) {
-    if (position < 0 || position >= length) {
-        if (mode == 0u) {                       // nearest
-            position = position < 0 ? 0 : length - 1;
-        } else if (mode == 1u) {                // wrap
-            position = position % length;
-            position = position < 0 ? position + length : position;
-        } else if (mode == 2u) {                // reflect: period 2n, pairs-sample symmetric
-            const int period = 2 * length;
-            position = position % period;
-            position = position < 0 ? position + period : position;
-            position = position < length ? position : period - 1 - position;
-        } else if (mode == 3u) {                // mirror: period 2n - 2, whole-sample symmetric
-            if (length == 1) {
-                position = 0;
-            } else {
-                const int period = 2 * length - 2;
-                position = position % period;
-                position = position < 0 ? position + period : position;
-                position = position < length ? position : period - position;
-            }
-        } else {                                // constant
-            return cval;
-        }
-    }
-    return src[line + position * stride];
-}
-
 // SymmetryKind is a compile-time constant: one kernel per summation order
 // keeps each inner loop free of the others' code, which measured 10% faster
 // on 4096 x 4096 than one kernel branching on a parameter. The boundary mode
-// stays a parameter: only threads near the ends of a line look at it.
+// stays a parameter: only threads near the ends of a line (or overhanging
+// windows) take the boundary path, where mode is dispatched outside the tap
+// loop with 3-segment direct loops (NEAREST/CONSTANT) and modulo-free cursor
+// stepping (WRAP/REFLECT/MIRROR).
 template <typename Destination, uint SymmetryKind>
 static inline void ms_ndimage_correlate1d(constant MSNdimageCorrelateParams& p, device const float* src,
                                           Destination dst, constant float* all_weights, uint3 pos) {
@@ -93,20 +65,196 @@ static inline void ms_ndimage_correlate1d(constant MSNdimageCorrelateParams& p, 
             }
         }
     } else {
-        const int line = int(index) - at * stride;
+        device const float* line_src = src + (int(index) - at * stride);
         const uint mode = p.mode;
         const float cval = p.cval;
         if (SymmetryKind == MS_NDIMAGE_SYMMETRY_NONE) {
-            acc = ms_ndimage_tap(src, line, stride, first + taps - 1, length, mode, cval) * w[taps - 1];
-            for (int j = 0; j < taps - 1; ++j)
-                acc += ms_ndimage_tap(src, line, stride, first + j, length, mode, cval) * w[j];
+            const int last_pos = first + taps - 1;
+            if (mode == 0u) {  // nearest
+                const float last_v = line_src[clamp(last_pos, 0, length - 1) * stride];
+                acc = last_v * w[taps - 1];
+                const int j_lo = clamp(-first, 0, taps - 1);
+                const int j_hi = clamp(length - first, j_lo, taps - 1);
+                if (j_lo > 0) {
+                    const float left_v = line_src[0];
+                    for (int j = 0; j < j_lo; ++j) acc += left_v * w[j];
+                }
+                for (int j = j_lo; j < j_hi; ++j) acc += line_src[(first + j) * stride] * w[j];
+                if (j_hi < taps - 1) {
+                    const float right_v = line_src[(length - 1) * stride];
+                    for (int j = j_hi; j < taps - 1; ++j) acc += right_v * w[j];
+                }
+            } else if (mode == 1u) {  // wrap
+                int ql = last_pos % length;
+                if (ql < 0) ql += length;
+                acc = line_src[ql * stride] * w[taps - 1];
+                if (taps > 1) {
+                    int q = first % length;
+                    if (q < 0) q += length;
+                    for (int j = 0; j < taps - 1; ++j) {
+                        acc += line_src[q * stride] * w[j];
+                        if (++q == length) q = 0;
+                    }
+                }
+            } else if (mode == 2u) {  // reflect
+                const int period = 2 * length;
+                int ml = last_pos % period;
+                if (ml < 0) ml += period;
+                const int ql = ml < length ? ml : period - 1 - ml;
+                acc = line_src[ql * stride] * w[taps - 1];
+                if (taps > 1) {
+                    int m = first % period;
+                    if (m < 0) m += period;
+                    for (int j = 0; j < taps - 1; ++j) {
+                        const int q = m < length ? m : period - 1 - m;
+                        acc += line_src[q * stride] * w[j];
+                        if (++m == period) m = 0;
+                    }
+                }
+            } else if (mode == 3u) {  // mirror
+                if (length == 1) {
+                    const float v0 = line_src[0];
+                    acc = v0 * w[taps - 1];
+                    for (int j = 0; j < taps - 1; ++j) acc += v0 * w[j];
+                } else {
+                    const int period = 2 * length - 2;
+                    int ml = last_pos % period;
+                    if (ml < 0) ml += period;
+                    const int ql = ml < length ? ml : period - ml;
+                    acc = line_src[ql * stride] * w[taps - 1];
+                    if (taps > 1) {
+                        int m = first % period;
+                        if (m < 0) m += period;
+                        for (int j = 0; j < taps - 1; ++j) {
+                            const int q = m < length ? m : period - m;
+                            acc += line_src[q * stride] * w[j];
+                            if (++m == period) m = 0;
+                        }
+                    }
+                }
+            } else {  // constant
+                const float last_v = (last_pos >= 0 && last_pos < length) ? line_src[last_pos * stride] : cval;
+                acc = last_v * w[taps - 1];
+                const int j_lo = clamp(-first, 0, taps - 1);
+                const int j_hi = clamp(length - first, j_lo, taps - 1);
+                for (int j = 0; j < j_lo; ++j) acc += cval * w[j];
+                for (int j = j_lo; j < j_hi; ++j) acc += line_src[(first + j) * stride] * w[j];
+                for (int j = j_hi; j < taps - 1; ++j) acc += cval * w[j];
+            }
         } else {
             const int centre = first + pairs;
-            acc = ms_ndimage_tap(src, line, stride, centre, length, mode, cval) * w[pairs];
-            for (int d = pairs; d >= 1; --d) {
-                const float below = ms_ndimage_tap(src, line, stride, centre - d, length, mode, cval);
-                const float above = ms_ndimage_tap(src, line, stride, centre + d, length, mode, cval);
-                acc += (SymmetryKind == MS_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
+            if (mode == 0u) {  // nearest
+                acc = line_src[clamp(centre, 0, length - 1) * stride] * w[pairs];
+                const int d_both_out = max(centre, length - 1 - centre);
+                const int d_in_stop = max(0, min(pairs, min(centre, length - 1 - centre)));
+                int d = pairs;
+                if (d > d_both_out) {
+                    const float left_v = line_src[0];
+                    const float right_v = line_src[(length - 1) * stride];
+                    const float diff = (SymmetryKind == MS_NDIMAGE_SYMMETRY_ODD ? left_v - right_v : left_v + right_v);
+                    for (; d > d_both_out; --d) acc += diff * w[pairs - d];
+                }
+                for (; d > d_in_stop; --d) {
+                    const float below = line_src[clamp(centre - d, 0, length - 1) * stride];
+                    const float above = line_src[clamp(centre + d, 0, length - 1) * stride];
+                    acc += (SymmetryKind == MS_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
+                }
+                if (d >= 1) {
+                    device const float* c_src = line_src + centre * stride;
+                    for (; d >= 1; --d) {
+                        const float below = c_src[-d * stride], above = c_src[d * stride];
+                        acc += (SymmetryKind == MS_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
+                    }
+                }
+            } else if (mode == 1u) {  // wrap
+                int qc = centre % length;
+                if (qc < 0) qc += length;
+                acc = line_src[qc * stride] * w[pairs];
+                if (pairs >= 1) {
+                    int qb = (centre - pairs) % length;
+                    if (qb < 0) qb += length;
+                    int qa = (centre + pairs) % length;
+                    if (qa < 0) qa += length;
+                    for (int d = pairs; d >= 1; --d) {
+                        const float below = line_src[qb * stride];
+                        const float above = line_src[qa * stride];
+                        acc += (SymmetryKind == MS_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
+                        if (++qb == length) qb = 0;
+                        if (--qa < 0) qa = length - 1;
+                    }
+                }
+            } else if (mode == 2u) {  // reflect
+                const int period = 2 * length;
+                int mc = centre % period;
+                if (mc < 0) mc += period;
+                const int qc = mc < length ? mc : period - 1 - mc;
+                acc = line_src[qc * stride] * w[pairs];
+                if (pairs >= 1) {
+                    int mb = (centre - pairs) % period;
+                    if (mb < 0) mb += period;
+                    int ma = (centre + pairs) % period;
+                    if (ma < 0) ma += period;
+                    for (int d = pairs; d >= 1; --d) {
+                        const int qb = mb < length ? mb : period - 1 - mb;
+                        const int qa = ma < length ? ma : period - 1 - ma;
+                        const float below = line_src[qb * stride];
+                        const float above = line_src[qa * stride];
+                        acc += (SymmetryKind == MS_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
+                        if (++mb == period) mb = 0;
+                        if (--ma < 0) ma = period - 1;
+                    }
+                }
+            } else if (mode == 3u) {  // mirror
+                if (length == 1) {
+                    const float v0 = line_src[0];
+                    acc = v0 * w[pairs];
+                    const float diff = (SymmetryKind == MS_NDIMAGE_SYMMETRY_ODD ? v0 - v0 : v0 + v0);
+                    for (int d = pairs; d >= 1; --d) acc += diff * w[pairs - d];
+                } else {
+                    const int period = 2 * length - 2;
+                    int mc = centre % period;
+                    if (mc < 0) mc += period;
+                    const int qc = mc < length ? mc : period - mc;
+                    acc = line_src[qc * stride] * w[pairs];
+                    if (pairs >= 1) {
+                        int mb = (centre - pairs) % period;
+                        if (mb < 0) mb += period;
+                        int ma = (centre + pairs) % period;
+                        if (ma < 0) ma += period;
+                        for (int d = pairs; d >= 1; --d) {
+                            const int qb = mb < length ? mb : period - mb;
+                            const int qa = ma < length ? ma : period - ma;
+                            const float below = line_src[qb * stride];
+                            const float above = line_src[qa * stride];
+                            acc += (SymmetryKind == MS_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
+                            if (++mb == period) mb = 0;
+                            if (--ma < 0) ma = period - 1;
+                        }
+                    }
+                }
+            } else {  // constant
+                const float vc = (centre >= 0 && centre < length) ? line_src[centre * stride] : cval;
+                acc = vc * w[pairs];
+                const int d_both_out = max(centre, length - 1 - centre);
+                const int d_in_stop = max(0, min(pairs, min(centre, length - 1 - centre)));
+                int d = pairs;
+                if (d > d_both_out) {
+                    const float diff = (SymmetryKind == MS_NDIMAGE_SYMMETRY_ODD ? cval - cval : cval + cval);
+                    for (; d > d_both_out; --d) acc += diff * w[pairs - d];
+                }
+                for (; d > d_in_stop; --d) {
+                    const int pb = centre - d, pa = centre + d;
+                    const float below = (pb >= 0 && pb < length) ? line_src[pb * stride] : cval;
+                    const float above = (pa >= 0 && pa < length) ? line_src[pa * stride] : cval;
+                    acc += (SymmetryKind == MS_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
+                }
+                if (d >= 1) {
+                    device const float* c_src = line_src + centre * stride;
+                    for (; d >= 1; --d) {
+                        const float below = c_src[-d * stride], above = c_src[d * stride];
+                        acc += (SymmetryKind == MS_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
+                    }
+                }
             }
         }
     }
@@ -128,3 +276,50 @@ MS_NDIMAGE_CORRELATE1D_KERNEL(ms_ndimage_correlate1d_odd_f32, float, MS_NDIMAGE_
 MS_NDIMAGE_CORRELATE1D_KERNEL(ms_ndimage_correlate1d_any_f64, ulong, MS_NDIMAGE_SYMMETRY_NONE)
 MS_NDIMAGE_CORRELATE1D_KERNEL(ms_ndimage_correlate1d_even_f64, ulong, MS_NDIMAGE_SYMMETRY_EVEN)
 MS_NDIMAGE_CORRELATE1D_KERNEL(ms_ndimage_correlate1d_odd_f64, ulong, MS_NDIMAGE_SYMMETRY_ODD)
+
+template <typename Destination>
+static inline void ms_ndimage_combine_impl(constant MSNdimageCombineParams& p,
+                                           device const float* a,
+                                           device const float* b,
+                                           Destination dst,
+                                           uint gid) {
+    if (gid >= p.elements) return;
+    const float va = a[gid];
+    float out;
+    if (p.op == MS_NDIMAGE_COMBINE_OP_COPY) {
+        out = va;
+    } else if (p.op == MS_NDIMAGE_COMBINE_OP_SUM2) {
+        out = va + b[gid];
+    } else if (p.op == MS_NDIMAGE_COMBINE_OP_SQRT_SQ1) {
+        out = sqrt(va * va);
+    } else if (p.op == MS_NDIMAGE_COMBINE_OP_SUM_SQ2) {
+        const float vb = b[gid];
+        out = va * va + vb * vb;
+    } else if (p.op == MS_NDIMAGE_COMBINE_OP_ADD_SQ) {
+        const float vb = b[gid];
+        out = va + vb * vb;
+    } else if (p.op == MS_NDIMAGE_COMBINE_OP_SQRT_SUM_SQ2) {
+        const float vb = b[gid];
+        out = sqrt(va * va + vb * vb);
+    } else {
+        const float vb = b[gid];
+        out = sqrt(va + vb * vb);
+    }
+    ms_ndimage_store(dst, gid, out);
+}
+
+kernel void ms_ndimage_combine_f32(constant MSNdimageCombineParams& p [[buffer(0)]],
+                                   device const float* a [[buffer(1)]],
+                                   device const float* b [[buffer(2)]],
+                                   device float* dst [[buffer(3)]],
+                                   uint gid [[thread_position_in_grid]]) {
+    ms_ndimage_combine_impl<device float*>(p, a, b, dst, gid);
+}
+
+kernel void ms_ndimage_combine_f64(constant MSNdimageCombineParams& p [[buffer(0)]],
+                                   device const float* a [[buffer(1)]],
+                                   device const float* b [[buffer(2)]],
+                                   device ulong* dst [[buffer(3)]],
+                                   uint gid [[thread_position_in_grid]]) {
+    ms_ndimage_combine_impl<device ulong*>(p, a, b, dst, gid);
+}

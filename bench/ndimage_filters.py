@@ -62,6 +62,15 @@ def image(shape, dtype, seed=20261118):
 
 
 WEIGHTS = np.array([0.02, -0.05, 0.11, 0.24, 0.31, 0.22, 0.13, -0.04, 0.06])  # no symmetry
+OVERHANG_513 = np.linspace(0.001, 0.004, 513)
+OVERHANG_513 /= OVERHANG_513.sum()
+DENSE_5X5 = np.array([
+    [0.01, -0.02, 0.04, -0.02, 0.01],
+    [-0.03, 0.07, 0.11, 0.05, -0.01],
+    [0.02, 0.12, 0.35, 0.14, 0.03],
+    [-0.01, 0.06, 0.10, 0.08, -0.02],
+    [0.01, -0.03, 0.05, -0.01, 0.02],
+])  # non-separable 5x5
 
 # name, shape, call(module, array)
 WORKLOADS = [
@@ -71,6 +80,9 @@ WORKLOADS = [
     ("uniform_filter 4096x4096 size=9", (4096, 4096), lambda m, a: m.uniform_filter(a, 9)),
     ("correlate1d 4096x4096 9 taps axis=-1", (4096, 4096), lambda m, a: m.correlate1d(a, WEIGHTS)),
     ("correlate1d 4096x4096 9 taps axis=0", (4096, 4096), lambda m, a: m.correlate1d(a, WEIGHTS, axis=0)),
+    ("correlate1d 8192x64 513 taps overhang", (8192, 64), lambda m, a: m.correlate1d(a, OVERHANG_513, axis=-1)),
+    ("gaussian_laplace 4096x4096 sigma=3", (4096, 4096), lambda m, a: m.gaussian_laplace(a, 3)),
+    ("correlate 4096x4096 5x5 dense", (4096, 4096), lambda m, a: m.correlate(a, DENSE_5X5)),
 ]
 
 
@@ -124,6 +136,8 @@ def calibrate():
     cases += [(f"correlate1d 9 taps axis=0 {n}^2", (n, n), lambda a: mn.correlate1d(a, WEIGHTS, axis=0), 9 + 12) for n in sides2d[4:]]
     cases += [(f"gaussian s=2 {n}^3", (n, n, n), lambda a: mn.gaussian_filter(a, 2), work_units(17, True, 3)) for n in (64, 96, 128, 192, 256)]
     cases += [(f"gaussian1d s=3 n=2^{k}", (2 ** k,), lambda a: mn.gaussian_filter1d(a, 3), 13) for k in (18, 20, 22, 24)]
+    cases += [(f"correlate 3x3 {n}^2", (n, n), lambda a: mn.correlate(a, DENSE_5X5[:3, :3]), 9) for n in sides2d[3:]]
+    cases += [(f"correlate 5x5 {n}^2", (n, n), lambda a: mn.correlate(a, DENSE_5X5), 25) for n in sides2d[2:]]
     rows = []
     for dtype in (np.float64, np.float32):
         print(f"\n{np.dtype(dtype).name}: {'case':36s} {'elements':>9s} {'work/2^20':>10s} {'cpu ms':>8s} {'gpu ms':>8s} {'cpu/gpu':>8s}  auto")

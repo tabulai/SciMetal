@@ -81,6 +81,8 @@ struct IndexedBytes {
 // Builds (or finds) the pipeline ahead of time, so its one-off compile cost is
 // not paid inside a timed or latency-sensitive call.
 void warm_pipeline(const char* kernel, const Specialization* specialization = nullptr);
+// Resolves and caches a pipeline state pointer (valid for process lifetime).
+MTL::ComputePipelineState* resolve_pipeline(const char* kernel, const Specialization* specialization = nullptr);
 // The most threads one threadgroup of this kernel's pipeline may hold. It is a
 // property of the compiled pipeline, not of the device: shader validation, for
 // one, lowers it. Builds the pipeline if needed.
@@ -96,12 +98,17 @@ public:
     // at 0. More than max_bound_buffers buffers, parameters that are not a
     // multiple of 8 bytes or exceed max_params_bytes, or a threadgroup larger
     // than the pipeline allows are MS_EBACKEND before anything is encoded.
+    void dispatch(MTL::ComputePipelineState* state, const void* params, size_t bytes, const Binding* buffers,
+                  size_t count, const Grid& grid);
     void dispatch(const char* kernel, const void* params, size_t bytes, const Binding* buffers, size_t count,
                   const Grid& grid);
     // Dispatches with every argument at an explicit index: buffers (with their
     // byte offsets) and small by-value blobs (each at most max_params_bytes),
     // optionally on a function-constant specialization of the kernel. Indices
     // must be distinct and at most max_bound_buffers.
+    void dispatch_indexed(MTL::ComputePipelineState* state,
+                          const IndexedBuffer* buffers, size_t buffer_count,
+                          const IndexedBytes* bytes, size_t bytes_count, const Grid& grid);
     void dispatch_indexed(const char* kernel, const Specialization* specialization,
                           const IndexedBuffer* buffers, size_t buffer_count,
                           const IndexedBytes* bytes, size_t bytes_count, const Grid& grid);
@@ -111,6 +118,16 @@ public:
         dispatch_indexed(kernel, specialization, buffers.begin(), buffers.size(), bytes.begin(), bytes.size(), grid);
     }
     // The 1-D convention: `threadgroups` groups of MS_GPU_THREADS threads.
+    void dispatch(MTL::ComputePipelineState* state, const void* params, size_t bytes, const Binding* buffers,
+                  size_t count, uint64_t threadgroups) {
+        dispatch(state, params, bytes, buffers, count, Grid::linear(threadgroups));
+    }
+    template<class Params>
+    void dispatch(MTL::ComputePipelineState* state, const Params& params, std::initializer_list<Binding> buffers,
+                  uint64_t threadgroups) {
+        check_params<Params>();
+        dispatch(state, &params, sizeof(Params), buffers.begin(), buffers.size(), threadgroups);
+    }
     void dispatch(const char* kernel, const void* params, size_t bytes, const Binding* buffers, size_t count,
                   uint64_t threadgroups) {
         dispatch(kernel, params, bytes, buffers, count, Grid::linear(threadgroups));
@@ -141,7 +158,13 @@ public:
     // Buffers that kernels write through addresses need ResourceUsageWrite.
     void use(const std::vector<MTL::Buffer*>&, MTL::ResourceUsage usage = MTL::ResourceUsageRead);
     // Commits and waits; command errors become MS_EBACKEND. Records counters.
-    void commit_and_wait();
+    struct Timing {
+        uint64_t encode_ns = 0;     // submit_mutex + commandBuffer + encode_batch + commit
+        uint64_t gpu_ns = 0;        // GPUEndTime - GPUStartTime
+        uint64_t host_wait_ns = 0;  // commit -> waitUntilCompleted
+        uint64_t complete_ns = 0;   // complete_sync_gpu_batch
+    };
+    void commit_and_wait(Timing* timing = nullptr);
     // Commits without waiting, signaling the runtime MTLSharedEvent and marking
     // `outputs` with that producer event so downstream GPU batches chain via
     // encodeWait and host reads synchronize automatically.

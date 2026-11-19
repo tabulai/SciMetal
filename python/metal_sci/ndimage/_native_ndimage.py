@@ -14,6 +14,7 @@ MS_NDIMAGE_MAX_WINDOW = 1 << 30
 CORRELATE, UNIFORM = 1, 2
 # Boundary modes: SciPy's NI_ExtendMode codes.
 NEAREST, WRAP, REFLECT, MIRROR, CONSTANT = range(5)
+COMBINE_SUM, COMBINE_SQRT_SUM_SQ = 1, 2
 
 
 class Pass(ctypes.Structure):
@@ -22,6 +23,22 @@ class Pass(ctypes.Structure):
                 ("mode", ctypes.c_uint32), ("reserved0", ctypes.c_uint32),
                 ("origin", ctypes.c_int64), ("size", ctypes.c_uint64),
                 ("weights", ctypes.c_void_p), ("cval", ctypes.c_double),
+                ("reserved", ctypes.c_uint64 * 2)]
+
+
+class DenseOptions(ctypes.Structure):
+    _fields_ = [("struct_size", ctypes.c_uint32), ("abi_version", ctypes.c_uint32),
+                ("mode", ctypes.c_uint32), ("out_dtype", ctypes.c_uint32),
+                ("wshape", ctypes.c_uint32 * _native.MS_MAX_NDIM),
+                ("origins", ctypes.c_int64 * _native.MS_MAX_NDIM),
+                ("weights", ctypes.c_void_p), ("cval", ctypes.c_double),
+                ("reserved", ctypes.c_uint64 * 2)]
+
+
+class Chain(ctypes.Structure):
+    _fields_ = [("struct_size", ctypes.c_uint32), ("abi_version", ctypes.c_uint32),
+                ("pass_count", ctypes.c_uint32), ("reserved0", ctypes.c_uint32),
+                ("passes", ctypes.POINTER(Pass)),
                 ("reserved", ctypes.c_uint64 * 2)]
 
 
@@ -39,18 +56,34 @@ def library() -> ctypes.CDLL:
     lib = _native.library()
     if not _declared:
         with _lock:
-            if not hasattr(lib, "ms_ndimage_separable_filter"):
-                raise _native.NotAccelerated("the native library was built without the ndimage filters")
-            lib.ms_ndimage_separable_filter.argtypes = [
-                ctypes.c_void_p, ctypes.POINTER(_native.Array), ctypes.POINTER(Pass), ctypes.c_uint32,
-                ctypes.POINTER(_native.RouteOptions), ctypes.POINTER(_native.ArrayResult),
-                ctypes.POINTER(_native.RouteInfo)]
-            _declared = True
+            if not _declared:
+                if not hasattr(lib, "ms_ndimage_separable_filter"):
+                    raise _native.NotAccelerated("the native library was built without the ndimage filters")
+                lib.ms_ndimage_separable_filter.argtypes = [
+                    ctypes.c_void_p, ctypes.POINTER(_native.Array), ctypes.POINTER(Pass), ctypes.c_uint32,
+                    ctypes.POINTER(_native.RouteOptions), ctypes.POINTER(_native.ArrayResult),
+                    ctypes.POINTER(_native.RouteInfo)]
+                if hasattr(lib, "ms_ndimage_separable_filter_to"):
+                    lib.ms_ndimage_separable_filter_to.argtypes = [
+                        ctypes.c_void_p, ctypes.POINTER(_native.Array), ctypes.POINTER(Pass), ctypes.c_uint32,
+                        ctypes.c_uint32, ctypes.POINTER(_native.RouteOptions), ctypes.POINTER(_native.ArrayResult),
+                        ctypes.POINTER(_native.RouteInfo)]
+                if hasattr(lib, "ms_ndimage_dense_filter"):
+                    lib.ms_ndimage_dense_filter.argtypes = [
+                        ctypes.c_void_p, ctypes.POINTER(_native.Array), ctypes.POINTER(DenseOptions),
+                        ctypes.POINTER(_native.RouteOptions), ctypes.POINTER(_native.ArrayResult),
+                        ctypes.POINTER(_native.RouteInfo)]
+                if hasattr(lib, "ms_ndimage_composite_filter"):
+                    lib.ms_ndimage_composite_filter.argtypes = [
+                        ctypes.c_void_p, ctypes.POINTER(_native.Array), ctypes.POINTER(Chain), ctypes.c_uint32,
+                        ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(_native.RouteOptions),
+                        ctypes.POINTER(_native.ArrayResult), ctypes.POINTER(_native.RouteInfo)]
+                _declared = True
     return lib
 
 
-def separable_filter(function: str, array: np.ndarray, passes) -> np.ndarray:
-    """Apply 1-D passes to ``array`` in order and return a new array of its dtype.
+def separable_filter(function: str, array: np.ndarray, passes, out_dtype=None) -> np.ndarray:
+    """Apply 1-D passes to ``array`` in order and return a new array of ``out_dtype`` (default ``array.dtype``).
 
     ``passes`` is a sequence of ``(kind, axis, mode, origin, size, weights, cval)``
     with ``weights`` a float64 array of ``size`` weights for CORRELATE and None
@@ -65,7 +98,12 @@ def separable_filter(function: str, array: np.ndarray, passes) -> np.ndarray:
     lib = library()
     if len(passes) > MS_NDIMAGE_MAX_PASSES:
         raise _native.NotAccelerated("more passes than the native filter takes")
+    out_code = 0 if out_dtype is None else _native.native_dtype(out_dtype)
+    if out_dtype is not None and out_code is None:
+        raise _native.NotAccelerated(f"no native path for output dtype {out_dtype}")
     descriptor, held = _native.as_native(array)
+    if out_code != 0 and out_code != descriptor.dtype and not hasattr(lib, "ms_ndimage_separable_filter_to"):
+        raise _native.NotAccelerated("the native library was built without ms_ndimage_separable_filter_to")
     native_passes = (Pass * len(passes))()
     keep = []  # weight arrays must outlive the call
     for slot, (kind, axis, mode, origin, size, weights, cval) in zip(native_passes, passes):
@@ -81,11 +119,94 @@ def separable_filter(function: str, array: np.ndarray, passes) -> np.ndarray:
     info = _native.new_route_info()
     result = _native.ArrayResult()
     try:
-        _native.check(lib.ms_ndimage_separable_filter(
-            _native.context(), ctypes.byref(descriptor), native_passes, len(passes), ctypes.byref(options),
-            ctypes.byref(result), ctypes.byref(info)))
+        if out_code == 0 or out_code == descriptor.dtype:
+            status = lib.ms_ndimage_separable_filter(
+                _native.context(), ctypes.byref(descriptor), native_passes, len(passes), ctypes.byref(options),
+                ctypes.byref(result), ctypes.byref(info))
+        else:
+            status = lib.ms_ndimage_separable_filter_to(
+                _native.context(), ctypes.byref(descriptor), native_passes, len(passes), out_code,
+                ctypes.byref(options), ctypes.byref(result), ctypes.byref(info))
+        _native.check(status)
     except (ValueError, MemoryError) as refusal:
         raise _native.NotAccelerated(f"the native filter refused the call: {refusal}") from None
     del held, keep
-    _native.record_route(function, info)
+    _native.record_route(function, info, input_dtype=array.dtype)
+    return _native.to_numpy(result)
+
+
+def dense_filter(function: str, array: np.ndarray, weights: np.ndarray, origins, mode: int,
+                 cval: float, out_dtype=None) -> np.ndarray:
+    """Apply an N-D dense correlation kernel to ``array``."""
+    lib = library()
+    if not hasattr(lib, "ms_ndimage_dense_filter"):
+        raise _native.NotAccelerated("the native library was built without ms_ndimage_dense_filter")
+    descriptor, held = _native.as_native(array)
+    weights_f64 = np.ascontiguousarray(weights, dtype=np.float64)
+    out_code = 0 if out_dtype is None else _native.native_dtype(out_dtype)
+    if out_dtype is not None and out_code is None:
+        raise _native.NotAccelerated(f"no native path for output dtype {out_dtype}")
+    dense_opts = DenseOptions(struct_size=ctypes.sizeof(DenseOptions), abi_version=MS_NDIMAGE_ABI_VERSION,
+                              mode=mode, out_dtype=out_code, weights=weights_f64.ctypes.data, cval=cval)
+    for d in range(array.ndim):
+        dense_opts.wshape[d] = weights_f64.shape[d]
+        dense_opts.origins[d] = origins[d]
+    options = _native.route_options()
+    info = _native.new_route_info()
+    result = _native.ArrayResult()
+    try:
+        _native.check(lib.ms_ndimage_dense_filter(
+            _native.context(), ctypes.byref(descriptor), ctypes.byref(dense_opts), ctypes.byref(options),
+            ctypes.byref(result), ctypes.byref(info)))
+    except (ValueError, MemoryError) as refusal:
+        raise _native.NotAccelerated(f"the native filter refused the call: {refusal}") from None
+    del held, weights_f64
+    _native.record_route(function, info, input_dtype=array.dtype)
+    return _native.to_numpy(result)
+
+
+def composite_filter(function: str, array: np.ndarray, chains, combine_op: int, out_dtype=None) -> np.ndarray:
+    """Apply ``len(chains)`` separable 1-D pass chains to ``array`` and combine them."""
+    lib = library()
+    if not hasattr(lib, "ms_ndimage_composite_filter"):
+        raise _native.NotAccelerated("the native library was built without ms_ndimage_composite_filter")
+    if not 1 <= len(chains) <= _native.MS_MAX_NDIM:
+        raise _native.NotAccelerated("composite filter chain count out of range")
+    for chain in chains:
+        if len(chain) > MS_NDIMAGE_MAX_PASSES:
+            raise _native.NotAccelerated("more passes in chain than the native filter takes")
+    descriptor, held = _native.as_native(array)
+    out_code = 0 if out_dtype is None else _native.native_dtype(out_dtype)
+    if out_dtype is not None and out_code is None:
+        raise _native.NotAccelerated(f"no native path for output dtype {out_dtype}")
+    native_chains = (Chain * len(chains))()
+    keep = []
+    for chain_slot, chain in zip(native_chains, chains):
+        chain_slot.struct_size = ctypes.sizeof(Chain)
+        chain_slot.abi_version = MS_NDIMAGE_ABI_VERSION
+        chain_slot.pass_count = len(chain)
+        if chain:
+            native_passes = (Pass * len(chain))()
+            keep.append(native_passes)
+            for slot, (kind, axis, mode, origin, size, weights, cval) in zip(native_passes, chain):
+                slot.struct_size = ctypes.sizeof(Pass)
+                slot.abi_version = MS_NDIMAGE_ABI_VERSION
+                slot.kind, slot.axis, slot.mode = kind, axis, mode
+                slot.origin, slot.size, slot.cval = origin, size, cval
+                if weights is not None:
+                    w = np.ascontiguousarray(weights, dtype=np.float64)
+                    keep.append(w)
+                    slot.weights = w.ctypes.data
+            chain_slot.passes = native_passes
+    options = _native.route_options()
+    info = _native.new_route_info()
+    result = _native.ArrayResult()
+    try:
+        _native.check(lib.ms_ndimage_composite_filter(
+            _native.context(), ctypes.byref(descriptor), native_chains, len(chains), combine_op, out_code,
+            ctypes.byref(options), ctypes.byref(result), ctypes.byref(info)))
+    except (ValueError, MemoryError) as refusal:
+        raise _native.NotAccelerated(f"the native filter refused the call: {refusal}") from None
+    del held, keep
+    _native.record_route(function, info, input_dtype=array.dtype)
     return _native.to_numpy(result)

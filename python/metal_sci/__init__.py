@@ -23,14 +23,14 @@ import importlib as _importlib
 
 from ._config import (device, get_device, get_precision, precision, set_device,
                       set_precision, set_small_inputs)
-from ._dispatch import NotAccelerated, Route, explain, last_route
+from ._dispatch import NotAccelerated, PrecisionWarning, Route, explain, last_route
 from ._fallback import install_finder as _install_finder
 
 __version__ = "0.1.0.dev0"
 
 _install_finder()
 
-__all__ = ["NotAccelerated", "Route", "accelerated", "device", "explain", "get_device",
+__all__ = ["NotAccelerated", "PrecisionWarning", "Route", "accelerated", "device", "explain", "get_device",
            "get_precision", "last_route", "precision", "set_device", "set_precision", "set_small_inputs"]
 
 

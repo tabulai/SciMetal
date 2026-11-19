@@ -13,7 +13,11 @@ twice the worst case measured.
 """
 import gc
 import multiprocessing
+import os
+import pathlib
 import pickle
+import subprocess
+import sys
 import threading
 
 import numpy as np
@@ -22,8 +26,9 @@ import scipy.fft
 
 import metal_sci
 import metal_sci.fft as mfft
+from metal_sci import _native
 from metal_sci._dispatch import counters
-from metal_sci.fft import _basic, _native_fft
+from metal_sci.fft import _native_fft
 
 TOLERANCE = 5e-6
 REAL = {np.complex64: np.float32, np.complex128: np.float64}
@@ -86,7 +91,7 @@ def declined(function, x, *args, **kwargs):
     assert result.dtype == expected.dtype and result.shape == expected.shape
     if "SciPy with workers=" in route.reason:
         threads = int(route.reason.rsplit("=", 1)[1])
-        assert threads == _basic.performance_cores() and "workers" not in kwargs
+        assert threads == _native.performance_cores() and "workers" not in kwargs
         assert result.tobytes() == getattr(scipy.fft, function)(x, *args, **kwargs, workers=threads).tobytes()
         np.testing.assert_allclose(result, expected, rtol=0, atol=1e-13 * np.abs(expected).max())
     else:
@@ -423,22 +428,52 @@ def test_device_policies_and_the_crossover():
             check("fft", random((2, 8), np.complex64))         # forced: any size
 
 
+def test_small_inputs_go_to_scipy_by_default():
+    small = random((4, 512), np.complex64)
+    with metal_sci.device("auto"), metal_sci.precision("fast"):
+        try:
+            metal_sci.set_small_inputs("scipy")
+            assert "elements" in declined("fft", small).reason
+            assert "elements" in declined("fftn", small).reason
+        finally:
+            metal_sci.set_small_inputs("native")
+        assert "crossover" in declined("fft", small).reason
+
+
 def test_declined_batches_use_scipys_worker_threads():
-    cores = _basic.performance_cores()
+    cores = _native.performance_cores()
     assert cores >= 1
     x = random((64, 4096), np.complex128)     # 2^18 points: enough for SciPy's threads to pay
     expected = scipy.fft.fft(x)
+    long = np.tile(x[0], 40)
     tally = counters["fft.fft"]
+    native, fell = tally
+    # Under strict, declined calls stay on single-worker SciPy so they remain bit-identical.
     with metal_sci.device("auto"), metal_sci.precision("strict"):
-        native, fell = tally
+        for fn, arg, ref in ((mfft.fft, x, expected),
+                             (mfft.fft, long, scipy.fft.fft(long)),
+                             (mfft.fft2, x, scipy.fft.fft2(x))):
+            result = fn(arg)
+            route = metal_sci.last_route()
+            assert route.engine == "scipy" and "strict" in route.reason
+            assert "workers=" not in route.reason
+            assert result.tobytes() == ref.tobytes()
+    # Under fast/refined, large declined calls (e.g. device="cpu") use SciPy's worker threads.
+    with metal_sci.device("cpu"), metal_sci.precision("fast"):
+        before_cpu_fell = tally[1]
         result = mfft.fft(x)
         route = metal_sci.last_route()
-        assert route.engine == "scipy" and "strict" in route.reason
-        assert tally == [native, fell + 1]
+        assert route.engine == "scipy" and "cpu" in route.reason
+        assert tally == [native, before_cpu_fell + 1]
         if cores > 1:
             assert f"workers={cores}" in route.reason
             assert result.tobytes() == scipy.fft.fft(x, workers=cores).tobytes()
         np.testing.assert_allclose(result, expected, rtol=0, atol=1e-13 * np.abs(expected).max())
+        # Positional workers=None must also receive the override without TypeError.
+        result_pos = mfft.fft(x, None, -1, None, False, None)
+        if cores > 1:
+            assert f"workers={cores}" in metal_sci.last_route().reason
+            assert result_pos.tobytes() == scipy.fft.fft(x, workers=cores).tobytes()
         # The caller's own choice of workers is left alone.
         for workers in (1, 2, -1):
             mfft.fft(x, workers=workers)
@@ -454,7 +489,6 @@ def test_declined_batches_use_scipys_worker_threads():
         mfft.fft2(np.tile(x[0], 40)[None, :])
         assert "workers=" not in metal_sci.last_route().reason
         # One long transform of a 1-D array threads inside SciPy.
-        long = np.tile(x[0], 40)
         result = mfft.fft(long)
         if cores > 1:
             assert f"workers={cores}" in metal_sci.last_route().reason
@@ -527,3 +561,163 @@ def test_threads_share_the_context(gpu):
     for thread in threads:
         thread.join()
     assert errors == []
+
+
+def test_prepare_supported_kinds_and_dtypes(gpu):
+    # Sentinel route and counter snapshot: prepare must not mutate either.
+    mfft.fft(random((4, 32), np.complex64))
+    route_before = metal_sci.last_route()
+    counters_before = {k: list(v) for k, v in counters.items()}
+
+    for kind in ("fft", "ifft", "fft2", "ifft2", "fftn", "ifftn"):
+        assert mfft.prepare((8, 16, 32), np.complex64, kind=kind) is True
+        assert mfft.prepare((8, 16, 32), np.complex128, kind=kind) is True
+    for kind in ("rfft", "rfft2", "rfftn"):
+        assert mfft.prepare((8, 16, 32), np.float32, kind=kind) is True
+        assert mfft.prepare((8, 16, 32), np.float64, kind=kind) is True
+    for kind in ("irfft", "irfft2", "irfftn"):
+        assert mfft.prepare((8, 16, 17), np.complex64, kind=kind) is True
+        assert mfft.prepare((8, 16, 17), np.complex128, kind=kind) is True
+
+    # Shape as int, axes as int / negative / non-last, promoted dtypes, all norms.
+    assert mfft.prepare(64, np.complex64) is True
+    assert mfft.prepare((16, 32), np.float16, kind="rfft") is True
+    assert mfft.prepare((16, 32), np.int64, kind="fft") is True
+    assert mfft.prepare((16, 32), np.bool_, kind="rfft") is True
+    assert mfft.prepare((16, 32), np.complex64, kind="fft", axes=0) is True
+    assert mfft.prepare((16, 32), np.complex64, kind="fft", axes=-2) is True
+    assert mfft.prepare((8, 16, 32), np.complex64, kind="fft2", axes=(-3, -2)) is True
+    for norm in (None, "backward", "ortho", "forward"):
+        assert mfft.prepare((8, 32), np.complex64, kind="fft", norm=norm) is True
+
+    # n / s resizing on last axis, -1 in s, and irfft* even/odd/equal output lengths.
+    assert mfft.prepare((8, 32), np.complex64, kind="fft", n=64) is True
+    assert mfft.prepare((8, 32), np.complex64, kind="fft2", s=(-1, 64)) is True
+    assert mfft.prepare((8, 32), np.complex64, kind="fftn", s=(64,), axes=(-1,)) is True
+    assert mfft.prepare((8, 17), np.complex64, kind="irfft", n=32) is True
+    assert mfft.prepare((8, 17), np.complex64, kind="irfft", n=33) is True
+    assert mfft.prepare((8, 17), np.complex64, kind="irfft", n=17) is True
+    assert mfft.prepare((8, 17), np.complex64, kind="irfft2", s=(8, 33)) is True
+    assert mfft.prepare((8, 17), np.complex64, kind="irfftn", s=(8, 32)) is True
+
+    assert metal_sci.last_route() == route_before
+    assert {k: list(v) for k, v in counters.items()} == counters_before
+
+
+def test_prepare_policies_and_declines_return_false():
+    with metal_sci.device("cpu"), metal_sci.precision("fast"):
+        assert mfft.prepare((1024, 4096), np.complex64) is False
+
+    for dev in ("auto", "gpu"):
+        with metal_sci.device(dev), metal_sci.precision("strict"):
+            assert mfft.prepare((1 << 18,), np.complex128) is False
+            assert mfft.prepare((1 << 18,), np.float64, kind="rfft") is False
+            assert mfft.prepare((1 << 18,), np.complex64) is True
+            assert mfft.prepare((1 << 18,), np.float32, kind="rfft") is True
+
+    with metal_sci.device("auto"), metal_sci.precision("fast"):
+        assert mfft.prepare((2, 64), np.complex64) is False
+        assert mfft.prepare((1 << 14, 16), np.complex64) is False
+        assert mfft.prepare((1 << 18,), np.complex64) is True
+        assert mfft.prepare((1024, 4096), np.complex64) is True
+        assert mfft.prepare((128, 4096), np.complex64) is True
+        with scipy.fft.set_workers(16):
+            assert mfft.prepare((128, 4096), np.complex64) is False
+
+    with metal_sci.device("gpu"), metal_sci.precision("fast"):
+        assert mfft.prepare((4, 3001), np.complex64) is False
+        assert mfft.prepare((4, 1), np.complex64) is False
+        assert mfft.prepare((17, 64), np.complex64, kind="fft", axes=0) is False
+        assert mfft.prepare((8, 16), np.float32, kind="rfft", axes=0) is False
+        assert mfft.prepare((8, 16), np.complex64, kind="irfft", axes=0) is False
+        assert mfft.prepare((8, 16), np.float32, kind="rfftn", axes=(1, 0)) is False
+        assert mfft.prepare((8, 16), np.complex64, kind="irfftn", axes=(1, 0)) is False
+        assert mfft.prepare((6, 10, 36), np.complex64, kind="fft2", s=(12, 36)) is False
+        assert mfft.prepare((0, 8), np.complex64, kind="fft") is False
+        assert mfft.prepare((0, 8), np.complex64, kind="fft2") is False
+        assert mfft.prepare((4, 16), np.complex64, kind="fft", n=1 << 31) is False
+        assert mfft.prepare((4, 16), np.complex64, kind="fft2", s=(4, 1 << 31)) is False
+
+
+def test_prepare_invalid_arguments_raise_value_error(gpu):
+    invalid_calls = [
+        ((8, 16), {"kind": "dct"}),
+        ((8, 16), {"kind": ["fft"]}),
+        ((8, 16), {"norm": "unitary"}),
+        ((8, 16), {"norm": ["ortho"]}),
+        ((8, 16), {"kind": "rfft"}),  # default dtype is complex128
+        ((8, 16), {"dtype": np.complex64, "kind": "rfft"}),
+        ((8, 16), {"dtype": np.complex128, "kind": "rfft2"}),
+        ((8, 16), {"dtype": np.complex64, "kind": "rfftn"}),
+        ((8, 16), {"dtype": object}),
+        ((), {}),
+        ((-4, 8), {}),
+        ((2,) * 9, {}),
+        ((8, 16), {"kind": "fft", "n": 16, "s": (16,)}),
+        ((8, 16), {"kind": "fft", "s": (16,)}),
+        ((8, 16), {"kind": "fft2", "n": 16}),
+        ((8, 16), {"kind": "fft", "n": 0}),
+        ((8, 16), {"kind": "fft", "n": -4}),
+        ((8, 16), {"kind": "fft2", "s": (0, 16)}),
+        ((8, 16), {"kind": "fft2", "s": (-2, 16)}),
+        ((8, 16), {"kind": "fftn", "s": (8, 16), "axes": (1,)}),
+        ((8, 16), {"kind": "fftn", "s": (2, 8, 16)}),
+        ((8, 16), {"kind": "fft", "axes": (0, 1)}),
+        ((8, 16), {"kind": "fft", "axes": 2}),
+        ((8, 16), {"kind": "fft", "axes": -3}),
+        ((8, 16), {"kind": "fft2", "axes": (0, 0)}),
+        ((8, 16), {"kind": "fft2", "axes": (0, 2)}),
+        ((16,), {"kind": "fft2"}),
+        ((8, 16), {"kind": "fftn", "axes": ()}),
+    ]
+    for shape, kwargs in invalid_calls:
+        with pytest.raises(ValueError):
+            mfft.prepare(shape, **kwargs)
+
+
+def test_prepare_warms_pipeline_for_first_call():
+    repo_root = pathlib.Path(__file__).resolve().parents[2]
+    env = os.environ.copy()
+    existing_pp = env.get("PYTHONPATH")
+    python_dir = str(repo_root / "python")
+    env["PYTHONPATH"] = f"{python_dir}:{existing_pp}" if existing_pp else python_dir
+
+    common = (
+        "import time, numpy as np, scipy.fft, metal_sci, metal_sci.fft as mfft\n"
+        "x = np.ones((4, 1409), dtype=np.complex64)\n"
+        "with metal_sci.device('gpu'):\n"
+        "    mfft.fft(np.ones(8, dtype=np.complex64))\n"
+    )
+    cold_script = common + (
+        "    t0 = time.perf_counter()\n"
+        "    y = mfft.fft(x)\n"
+        "    dt_ms = (time.perf_counter() - t0) * 1e3\n"
+        "    err = float(np.linalg.norm(y - scipy.fft.fft(x)) / np.linalg.norm(scipy.fft.fft(x)))\n"
+        "    print(f'{dt_ms:.6f} {err:.6e}')\n"
+    )
+    prepared_script = common + (
+        "    assert mfft.prepare((4, 1409), np.complex64) is True\n"
+        "    t0 = time.perf_counter()\n"
+        "    y = mfft.fft(x)\n"
+        "    dt_ms = (time.perf_counter() - t0) * 1e3\n"
+        "    err = float(np.linalg.norm(y - scipy.fft.fft(x)) / np.linalg.norm(scipy.fft.fft(x)))\n"
+        "    print(f'{dt_ms:.6f} {err:.6e}')\n"
+    )
+    cold_res = subprocess.run([sys.executable, "-c", cold_script], env=env, capture_output=True, text=True, check=True)
+    prep_res = subprocess.run([sys.executable, "-c", prepared_script], env=env, capture_output=True, text=True, check=True)
+    cold_ms, cold_err = map(float, cold_res.stdout.strip().split())
+    prep_ms, prep_err = map(float, prep_res.stdout.strip().split())
+    assert cold_err < TOLERANCE and prep_err < TOLERANCE
+    assert prep_ms < 0.5 * cold_ms, f"expected prepared ({prep_ms:.3f} ms) < 0.5 * cold ({cold_ms:.3f} ms)"
+
+
+def test_prepare_exports_and_backend():
+    assert "prepare" in mfft.__all__
+    assert "prepare" in dir(mfft)
+    assert "prepare" not in metal_sci.accelerated()["fft"]
+    assert not mfft.registered()
+    mfft.register()
+    try:
+        assert mfft.registered()
+    finally:
+        mfft.unregister()

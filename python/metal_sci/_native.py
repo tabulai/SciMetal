@@ -7,6 +7,8 @@ buffer cache when the last view is dropped.
 from __future__ import annotations
 
 import ctypes
+import ctypes.util
+import functools
 import os
 import pathlib
 import threading
@@ -14,13 +16,29 @@ import threading
 import numpy as np
 
 from . import _config
-from ._dispatch import NotAccelerated, Route, record
+from ._dispatch import NotAccelerated, Route, record, warn_precision_once
+
+_CPU_COUNT = os.cpu_count() or 1
+
+
+@functools.cache
+def performance_cores() -> int:
+    """Physical performance cores: the worker count handed to SciPy for batches."""
+    try:
+        libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+        value, size = ctypes.c_int(0), ctypes.c_size_t(ctypes.sizeof(ctypes.c_int))
+        if libc.sysctlbyname(b"hw.perflevel0.physicalcpu", ctypes.byref(value), ctypes.byref(size), None, 0) == 0 \
+                and value.value > 0:
+            return value.value
+    except (OSError, AttributeError):
+        pass
+    return _CPU_COUNT
 
 MS_OK, MS_EINVAL, MS_ENOTSUP, MS_EOVERFLOW, MS_EOOM, MS_ETIMEOUT, MS_EBACKEND, MS_ESTATE = range(8)
 MS_BUFFER_CPU, MS_BUFFER_METAL = 1, 2
 MS_EXECUTION_CPU, MS_EXECUTION_GPU, MS_EXECUTION_AUTO = 1, 2, 3
 MS_RUNTIME_ABI_VERSION = 1
-MS_ARRAY_ABI_VERSION = 1
+MS_ARRAY_ABI_VERSION = 2
 MS_MAX_NDIM = 8
 
 _DTYPES = {np.dtype(np.float32): 1, np.dtype(np.float64): 2,
@@ -57,7 +75,8 @@ class RouteOptions(ctypes.Structure):
 class RouteInfo(ctypes.Structure):
     _fields_ = [("struct_size", ctypes.c_uint32), ("abi_version", ctypes.c_uint32),
                 ("engine", ctypes.c_uint32), ("compute_dtype", ctypes.c_uint32),
-                ("reserved", ctypes.c_uint64 * 2)]
+                ("reserved", ctypes.c_uint64 * 2),
+                ("reason", ctypes.c_char * 256)]
 
 
 class ArrayResult(ctypes.Structure):
@@ -247,9 +266,13 @@ def new_route_info() -> RouteInfo:
     return RouteInfo(struct_size=ctypes.sizeof(RouteInfo), abi_version=MS_ARRAY_ABI_VERSION)
 
 
-def record_route(function: str, info: RouteInfo, reason: str = "") -> None:
-    record(Route(function, _ENGINES.get(info.engine, "?"), _NUMPY_DTYPES[info.compute_dtype].name,
-                 _config.get_precision(), reason))
+def record_route(function: str, info: RouteInfo, reason: str = "", input_dtype=None) -> None:
+    c_reason = info.reason.decode("utf-8", errors="replace") if info.reason else ""
+    final_reason = c_reason or reason
+    compute_dtype = _NUMPY_DTYPES[info.compute_dtype].name
+    record(Route(function, _ENGINES.get(info.engine, "?"), compute_dtype,
+                 _config.get_precision(), final_reason))
+    warn_precision_once(input_dtype, compute_dtype)
 
 
 def astype(array: np.ndarray, dtype) -> np.ndarray:

@@ -14,8 +14,9 @@ import sys
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-FUNCTIONS = ("convolve1d", "correlate1d", "gaussian_filter", "gaussian_filter1d", "prewitt", "sobel",
-             "uniform_filter", "uniform_filter1d")
+FUNCTIONS = ("convolve", "convolve1d", "correlate", "correlate1d", "gaussian_filter", "gaussian_filter1d",
+             "gaussian_gradient_magnitude", "gaussian_laplace", "generic_gradient_magnitude", "generic_laplace",
+             "laplace", "prewitt", "sobel", "uniform_filter", "uniform_filter1d")
 
 
 def run_oracle(**settings):
@@ -68,6 +69,7 @@ def test_scipys_filter_tests_pass_on_the_native_routes_in_strict_mode(native_fil
 # compare sums of second-derivative filters of data up to 900 to 1.5e-6
 # absolute. Float32 is good for about 1e-7 of the data scale per operation.
 FLOAT32_ACCURACY = re.compile(r"test_filter_axes(_kwargs)?\[numpy-axes\d+-(gaussian|uniform)_filter\]"
+                              r"|test_derivative_filter_axes\[numpy-gaussian_gradient_magnitude\]"
                               r"|test_gaussian_laplace0[12]\[numpy-float(32|64)\]")
 
 

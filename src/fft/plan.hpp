@@ -101,6 +101,7 @@ enum class Store : uint8_t {
 };
 
 struct Plan {
+    uint64_t id = 0;
     Request request;
     std::vector<Step> steps;
     std::vector<std::shared_ptr<const std::vector<uint8_t>>> tables;  // Rader and Bluestein constants
@@ -157,6 +158,13 @@ bool instantiate(const Plan& plan, uint64_t count, std::vector<Dispatch>& out, s
 
 // Number of plans built since the process started (cache misses), for tests.
 uint64_t plans_built();
+
+// Smallest transform length >= target that the GPU planner executes efficiently
+// with direct loads/stores: {2, 3, 5}-smooth up to limits.group_elements (and
+// std::bit_ceil above limits.group_elements when real && last_axis so
+// plan_power_of_two uses Load::direct / Store::direct).
+uint64_t next_fast_len(uint64_t target, bool real = false, bool last_axis = true,
+                       const Limits& limits = {});
 
 // The pieces of MLX's planning the tests check directly.
 namespace mlx {

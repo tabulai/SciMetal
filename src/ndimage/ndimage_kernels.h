@@ -48,4 +48,31 @@ static_assert(sizeof(MSNdimageCorrelateParams) == 48,
               "kernel parameter layouts changed: update ndimage_kernels.h and the kernels together");
 #endif
 
+// ms_ndimage_combine_{f32,f64}: element-wise chain combiner for composite filters.
+// op codes:
+//   0: copy (dst = a)
+//   1: sum2 (dst = a + b)
+//   2: sqrt_sq1 (dst = sqrt(a * a))
+//   3: sum_sq2 (dst = a * a + b * b)
+//   4: add_sq (dst = a + b * b)
+//   5: sqrt_sum_sq2 (dst = sqrt(a * a + b * b))
+//   6: sqrt_add_sq (dst = sqrt(a + b * b))
+#define MS_NDIMAGE_COMBINE_OP_COPY 0u
+#define MS_NDIMAGE_COMBINE_OP_SUM2 1u
+#define MS_NDIMAGE_COMBINE_OP_SQRT_SQ1 2u
+#define MS_NDIMAGE_COMBINE_OP_SUM_SQ2 3u
+#define MS_NDIMAGE_COMBINE_OP_ADD_SQ 4u
+#define MS_NDIMAGE_COMBINE_OP_SQRT_SUM_SQ2 5u
+#define MS_NDIMAGE_COMBINE_OP_SQRT_ADD_SQ 6u
+
+struct MSNdimageCombineParams {
+    ms_u32 elements;
+    ms_u32 op;
+};
+
+#ifndef __METAL_VERSION__
+static_assert(sizeof(MSNdimageCombineParams) == 8,
+              "MSNdimageCombineParams layout changed: update ndimage_kernels.h and the kernels together");
+#endif
+
 #endif // MS_NDIMAGE_KERNELS_H

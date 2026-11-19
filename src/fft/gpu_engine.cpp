@@ -3,8 +3,14 @@
 #include "core/array.hpp"
 #include "runtime/metal_compute.hpp"
 
+#include <algorithm>
+#include <array>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <deque>
+#include <mutex>
+#include <unordered_map>
 
 namespace ms::detail::fft {
 namespace {
@@ -32,41 +38,56 @@ gpu::Binding bind(const ms_buffer* buffer, ms_context* context) {
 
 constexpr uint64_t scalar_bytes = sizeof(float);
 
-// Buffers of one run. Slots released by a stage are reused by later stages
-// that need the same size; everything returns to the context's cache when the
-// run ends.
-class Buffers {
-public:
-    explicit Buffers(ms_context* context) : context_(context) {}
-    ms_buffer* acquire(uint64_t bytes) {
-        for (size_t i = 0; i < idle_.size(); ++i) {
-            if (buffer_size(idle_[i]) == bytes) {
-                ms_buffer* buffer = idle_[i];
-                idle_.erase(idle_.begin() + static_cast<ptrdiff_t>(i));
-                return buffer;
-            }
-        }
-        owned_.push_back(array::allocate(context_, bytes));
-        return owned_.back().get();
-    }
-    ms_buffer* adopt(BufferPtr buffer) {
-        owned_.push_back(std::move(buffer));
-        return owned_.back().get();
-    }
-    // A slot no later pass of its stage reads: free for the stages after it.
-    void release(ms_buffer* buffer) { idle_.push_back(buffer); }
-    BufferPtr take(ms_buffer* buffer) {
-        for (BufferPtr& owned : owned_) {
-            if (owned.get() == buffer) return std::move(owned);
-        }
-        throw Error(MS_EBACKEND, "FFT result buffer is not owned by its run");
+struct ResolvedPlan {
+    std::vector<MTL::ComputePipelineState*> pipelines;
+    bool is_refused = false;
+    int32_t granted = 0;
+};
+
+constexpr size_t resolved_cache_capacity = 512;
+
+std::shared_ptr<const ResolvedPlan> resolve_plan(const Plan& plan) {
+    static std::mutex mutex;
+    static std::unordered_map<uint64_t, std::shared_ptr<const ResolvedPlan>> cache;
+    static std::deque<uint64_t> order;
+
+    if (plan.id != 0) {
+        std::lock_guard lock(mutex);
+        const auto found = cache.find(plan.id);
+        if (found != cache.end()) return found->second;
     }
 
-private:
-    ms_context* context_;
-    std::vector<BufferPtr> owned_;
-    std::vector<ms_buffer*> idle_;
-};
+    auto resolved = std::make_shared<ResolvedPlan>();
+    resolved->pipelines.reserve(plan.steps.size());
+    for (const Step& step : plan.steps) {
+        const gpu::Specialization constants = specialization(step.constants);
+        MTL::ComputePipelineState* state = gpu::resolve_pipeline(step.kernel.c_str(), &constants);
+        const uint32_t granted = static_cast<uint32_t>(state->maxTotalThreadsPerThreadgroup());
+        if (static_cast<uint32_t>(step.width) * static_cast<uint32_t>(step.threads) > granted) {
+            resolved->is_refused = true;
+            resolved->granted = static_cast<int32_t>(granted);
+            break;
+        }
+        resolved->pipelines.push_back(state);
+    }
+
+    if (plan.id != 0) {
+        std::lock_guard lock(mutex);
+        auto [it, inserted] = cache.emplace(plan.id, resolved);
+        if (!inserted) return it->second;
+        order.push_back(plan.id);
+        if (order.size() > resolved_cache_capacity) {
+            cache.erase(order.front());
+            order.pop_front();
+        }
+    }
+    return resolved;
+}
+
+MTL::ComputePipelineState* scale_pipeline() {
+    static MTL::ComputePipelineState* const state = gpu::resolve_pipeline("ms_fft_scale");
+    return state;
+}
 } // namespace
 
 Limits device_limits() {
@@ -83,34 +104,82 @@ Limits device_limits() {
 }
 
 void prepare(const std::vector<Stage>& stages) {
-    for (const Stage& stage : stages) {
-        for (const Step& step : stage.plan->steps) {
-            const gpu::Specialization constants = specialization(step.constants);
-            gpu::warm_pipeline(step.kernel.c_str(), &constants);
-        }
-    }
-    gpu::warm_pipeline("ms_fft_scale");
+    for (const Stage& stage : stages) (void)resolve_plan(*stage.plan);
+    (void)scale_pipeline();
 }
 
-bool refused(const std::vector<Stage>& stages, Refusal& refusal) {
+bool refused(std::vector<Stage>& stages, Refusal& refusal) {
     for (size_t index = 0; index < stages.size(); ++index) {
-        for (const Step& step : stages[index].plan->steps) {
-            const gpu::Specialization constants = specialization(step.constants);
-            const uint32_t granted = gpu::max_threads_per_group(step.kernel.c_str(), &constants);
-            if (static_cast<uint32_t>(step.width) * static_cast<uint32_t>(step.threads) > granted) {
-                refusal = {index, static_cast<int32_t>(granted)};
-                return true;
-            }
+        auto resolved = resolve_plan(*stages[index].plan);
+        stages[index].resolved = resolved;
+        if (resolved->is_refused) {
+            refusal = {index, resolved->granted};
+            return true;
         }
     }
     return false;
 }
 
-BufferPtr run(ms_context* context, const std::vector<Stage>& stages, BufferPtr input, float scale) {
+Scratch::Scratch(ms_context* context) : context_(context) {}
+
+ms_buffer* Scratch::acquire(uint64_t bytes) {
+    for (size_t i = 0; i < idle_.size(); ++i) {
+        if (buffer_size(idle_[i]) == bytes) {
+            ms_buffer* buffer = idle_[i];
+            idle_.erase(idle_.begin() + static_cast<ptrdiff_t>(i));
+            return buffer;
+        }
+    }
+    owned_.push_back(array::allocate(context_, bytes));
+    return owned_.back().get();
+}
+
+ms_buffer* Scratch::adopt(BufferPtr buffer) {
+    owned_.push_back(std::move(buffer));
+    return owned_.back().get();
+}
+
+void Scratch::release(ms_buffer* buffer) {
+    if (!buffer) return;
+    bool is_owned = false;
+    for (const BufferPtr& owned : owned_) {
+        if (owned.get() == buffer) {
+            is_owned = true;
+            break;
+        }
+    }
+    if (!is_owned) return;
+    if (std::find(idle_.begin(), idle_.end(), buffer) == idle_.end()) idle_.push_back(buffer);
+}
+
+BufferPtr Scratch::take(ms_buffer* buffer) {
+    auto it = std::find(idle_.begin(), idle_.end(), buffer);
+    if (it != idle_.end()) idle_.erase(it);
+    for (size_t i = 0; i < owned_.size(); ++i) {
+        if (owned_[i].get() == buffer) {
+            BufferPtr out = std::move(owned_[i]);
+            owned_.erase(owned_.begin() + static_cast<ptrdiff_t>(i));
+            return out;
+        }
+    }
+    throw Error(MS_EBACKEND, "FFT result buffer is not owned by its run");
+}
+
+void Scratch::clear() {
+    idle_.clear();
+    owned_.clear();
+}
+
+ms_buffer* encode(ms_context* context, gpu::Batch& batch, Scratch& scratch,
+                  const std::vector<Stage>& stages, ms_buffer* input, float scale,
+                  Profile* profile) {
     if (stages.empty() || !input) throw Error(MS_EINVAL, "an FFT run needs a stage and an input buffer");
-    Buffers buffers(context);
-    gpu::Batch batch(context);
-    ms_buffer* carried = buffers.adopt(std::move(input));
+    using Clock = std::chrono::steady_clock;
+    const auto elapsed_ns = [](Clock::time_point start, Clock::time_point end) -> uint64_t {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
+    };
+
+    ms_buffer* carried = input;
 
     // A plan whose last pass is ours applies the factor there for free; the
     // last such stage does it.
@@ -128,7 +197,15 @@ BufferPtr run(ms_context* context, const std::vector<Stage>& stages, BufferPtr i
     std::vector<ms_buffer*> slots;
     std::vector<ms_buffer*> tables;
     for (size_t index = 0; index < stages.size(); ++index) {
+        Clock::time_point t_alloc;
+        if (profile) t_alloc = Clock::now();
         const Plan& plan = *stages[index].plan;
+        const std::shared_ptr<const ResolvedPlan> resolved =
+            stages[index].resolved ? std::static_pointer_cast<const ResolvedPlan>(stages[index].resolved)
+                                   : resolve_plan(plan);
+        if (resolved->is_refused || resolved->pipelines.size() != plan.steps.size())
+            throw Error(MS_ENOTSUP, "this Metal device's threadgroup capacity is too small for the kernel");
+
         const uint64_t count = stages[index].count;
         std::string reason;
         if (!instantiate(plan, count, dispatches, reason)) throw Error(MS_ENOTSUP, reason);
@@ -138,28 +215,38 @@ BufferPtr run(ms_context* context, const std::vector<Stage>& stages, BufferPtr i
             throw Error(MS_EBACKEND, "FFT input buffer is smaller than its plan's input slot");
         slots[0] = carried;
         for (size_t slot = 1; slot < plan.slots.size(); ++slot)
-            slots[slot] = buffers.acquire(plan.slots[slot] * count * scalar_bytes);
+            slots[slot] = scratch.acquire(plan.slots[slot] * count * scalar_bytes);
         tables.clear();
         for (const auto& table : plan.tables) {
             BufferPtr device = allocate_scratch(context, table->size(), Fill::unfilled);
             std::memcpy(mutable_data(device.get()), table->data(), table->size());
-            tables.push_back(buffers.adopt(std::move(device)));
+            tables.push_back(scratch.adopt(std::move(device)));
+        }
+        Clock::time_point t_enc;
+        if (profile) {
+            t_enc = Clock::now();
+            profile->alloc_scratch_ns += elapsed_ns(t_alloc, t_enc);
         }
 
         for (size_t i = 0; i < plan.steps.size(); ++i) {
             const Step& step = plan.steps[i];
             const Dispatch& dispatch = dispatches[i];
-            const gpu::Specialization constants = specialization(step.constants);
             gpu::Grid grid;
             grid.groups[0] = dispatch.groups;
             grid.threads[1] = static_cast<uint32_t>(step.width);
             grid.threads[2] = static_cast<uint32_t>(step.threads);
 
-            std::vector<gpu::IndexedBuffer> bound = {{0, bind(slots[step.source], context)},
-                                                     {1, bind(slots[step.target], context)}};
+            std::array<gpu::IndexedBuffer, gpu::max_bound_buffers + 1> bound;
+            size_t bound_count = 0;
+            bound[bound_count++] = {0, bind(slots[step.source], context)};
+            bound[bound_count++] = {1, bind(slots[step.target], context)};
             uint32_t next = 2;
-            for (const int32_t table : step.tables) bound.push_back({next++, bind(tables[static_cast<size_t>(table)], context)});
-            std::vector<gpu::IndexedBytes> bytes;
+            for (const int32_t table : step.tables) {
+                if (bound_count >= bound.size()) throw Error(MS_EBACKEND, "GPU dispatch binds too many buffers");
+                bound[bound_count++] = {next++, bind(tables[static_cast<size_t>(table)], context)};
+            }
+            std::array<gpu::IndexedBytes, gpu::max_bound_buffers + 1> bytes;
+            size_t bytes_count = 0;
             MSFFTStridedParams params{};
             if (step.kind == Kernel::strided) {
                 params.n = step.n;
@@ -169,28 +256,51 @@ BufferPtr run(ms_context* context, const std::vector<Stage>& stages, BufferPtr i
                 params.tail = step.tail;
                 params.flags = step.flags;
                 params.scale = index == scaling_stage && i + 1 == plan.steps.size() ? scale : 1.0f;
-                bytes.push_back({next, &params, sizeof(params)});
+                bytes[bytes_count++] = {next, &params, sizeof(params)};
             } else {
-                for (const int32_t& value : dispatch.values) bytes.push_back({next++, &value, sizeof(value)});
+                for (const int32_t& value : dispatch.values) {
+                    if (bytes_count >= bytes.size()) throw Error(MS_EBACKEND, "GPU dispatch has too many arguments");
+                    bytes[bytes_count++] = {next++, &value, sizeof(value)};
+                }
             }
-            batch.dispatch_indexed(step.kernel.c_str(), &constants, bound.data(), bound.size(), bytes.data(),
-                                   bytes.size(), grid);
+            batch.dispatch_indexed(resolved->pipelines[i], bound.data(), bound_count, bytes.data(), bytes_count, grid);
         }
+        if (profile) profile->encode_ns += elapsed_ns(t_enc, Clock::now());
 
         carried = slots[plan.result_slot];
         for (ms_buffer* slot : slots) {
-            if (slot != carried) buffers.release(slot);
+            if (slot != carried) scratch.release(slot);
         }
     }
 
     if (scale != 1.0f && scaling_stage == stages.size()) {
+        Clock::time_point t_scale;
+        if (profile) t_scale = Clock::now();
         MSFFTScaleParams params{};
         params.count = buffer_size(carried, context) / scalar_bytes;
         params.scale = scale;
         const uint64_t per_group = uint64_t{MS_GPU_THREADS} * MS_FFT_SCALE_CHUNK;
-        batch.dispatch("ms_fft_scale", params, {bind(carried, context)}, (params.count + per_group - 1) / per_group);
+        batch.dispatch(scale_pipeline(), params, {bind(carried, context)}, (params.count + per_group - 1) / per_group);
+        if (profile) profile->encode_ns += elapsed_ns(t_scale, Clock::now());
     }
-    batch.commit_and_wait();
-    return buffers.take(carried);
+    return carried;
+}
+
+BufferPtr run(ms_context* context, const std::vector<Stage>& stages, BufferPtr input, float scale,
+              Profile* profile) {
+    if (stages.empty() || !input) throw Error(MS_EINVAL, "an FFT run needs a stage and an input buffer");
+    Scratch scratch(context);
+    gpu::Batch batch(context);
+    ms_buffer* input_buf = scratch.adopt(std::move(input));
+    ms_buffer* carried = encode(context, batch, scratch, stages, input_buf, scale, profile);
+    gpu::Batch::Timing timing;
+    batch.commit_and_wait(profile ? &timing : nullptr);
+    if (profile) {
+        profile->encode_ns += timing.encode_ns;
+        profile->gpu_ns = timing.gpu_ns;
+        profile->wait_overhead_ns =
+            (timing.host_wait_ns > timing.gpu_ns ? timing.host_wait_ns - timing.gpu_ns : 0) + timing.complete_ns;
+    }
+    return scratch.take(carried);
 }
 } // namespace ms::detail::fft

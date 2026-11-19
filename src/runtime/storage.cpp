@@ -67,6 +67,7 @@ struct State {
     bool explicit_cache_limit = false;
     std::mutex mutex;
     char error[256]{};
+    std::atomic<bool> has_error{false};
     std::unordered_map<Key, Entry, KeyHash> allocations;
     std::unordered_multimap<void*, Allocation*> live_metal;
     // Idle owned Metal storage, least recently cached first, indexed by
@@ -282,10 +283,12 @@ void state_error(const std::shared_ptr<State>& state, const char* message) noexc
         std::memcpy(tls_diagnostic.error, text, length);
         tls_diagnostic.error[length] = '\0';
     } catch (...) {}
+    if (length == 0 && !state->has_error.load(std::memory_order_acquire)) return;
     try {
         std::lock_guard lock(state->mutex);
         std::memcpy(state->error, text, length);
         state->error[length] = '\0';
+        state->has_error.store(length != 0, std::memory_order_release);
     } catch (...) {}
 }
 

@@ -99,11 +99,30 @@ template <int tg_mem_size>
   // column count need not be a multiple of the width: columns past the end
   // of a block are loaded as zeros and never stored.
   const int groups_per_block = (stride + width - 1) / width;
-  const int block = elem.x / groups_per_block;
+  const uint gpb = uint(groups_per_block);
+  int block;
+  int group_in_block;
+  if ((gpb & (gpb - 1u)) == 0u) {
+    const uint gpb_shift = metal::ctz(gpb);
+    block = int(uint(elem.x) >> gpb_shift);
+    group_in_block = int(uint(elem.x) & (gpb - 1u));
+  } else {
+    block = int(uint(elem.x) / gpb);
+    group_in_block = int(uint(elem.x) - uint(block) * gpb);
+  }
   const int tg_idx = elem.y * m + elem.z;
-  const int lane = tg_idx % width;
-  const int column = (elem.x % groups_per_block) * width + lane;
-  const int first = (tg_idx / width) * elems_per_thread_;
+  const uint uwidth = uint(width);
+  int lane;
+  int first;
+  if ((uwidth & (uwidth - 1u)) == 0u) {
+    const uint w_shift = metal::ctz(uwidth);
+    lane = int(uint(tg_idx) & (uwidth - 1u));
+    first = int(uint(tg_idx) >> w_shift) * elems_per_thread_;
+  } else {
+    lane = tg_idx % width;
+    first = (tg_idx / width) * elems_per_thread_;
+  }
+  const int column = group_in_block * width + lane;
   const bool live = block < p.blocks && column < stride;
   const uint source = uint(block) * uint(n) * uint(stride) + uint(column);
   const int slot = lane * n + first;
@@ -129,12 +148,30 @@ template <int tg_mem_size>
   }
 
   const uint tail = uint(p.tail);
-  const uint remaining = uint(stride) / tail; // extent of the factors still to transform
-  const uint r = uint(column) / tail;
+  uint remaining;
+  uint r;
+  if ((tail & (tail - 1u)) == 0u) {
+    const uint tail_shift = metal::ctz(tail);
+    remaining = uint(stride) >> tail_shift;
+    r = uint(column) >> tail_shift;
+  } else {
+    remaining = uint(stride) / tail; // extent of the factors still to transform
+    r = uint(column) / tail;
+  }
   const uint period = uint(n) * remaining;
   const float inverse_period = 1.0f / float(period);
-  const uint lead = uint(block) / uint(p.outer);
-  const uint done = uint(block) - lead * uint(p.outer);
+  const uint outer = uint(p.outer);
+  uint lead;
+  uint done;
+  if ((outer & (outer - 1u)) == 0u) {
+    const uint outer_shift = metal::ctz(outer);
+    lead = uint(block) >> outer_shift;
+    done = uint(block) & (outer - 1u);
+  } else {
+    lead = uint(block) / outer;
+    done = uint(block) - lead * outer;
+  }
+  const bool has_scale = (p.scale != 1.0f);
   for (int e = 0; e < elems_per_thread_; e++) {
     const uint k = uint(first + e);
     float2 value = shared[slot + e];
@@ -144,8 +181,8 @@ template <int tg_mem_size>
     if (p.flags & MS_FFT_CONJ_STORE) {
       value.y = -value.y;
     }
-    const uint target = ((lead * uint(n) + k) * uint(p.outer) + done) * uint(stride) + uint(column);
-    out[target] = value * p.scale;
+    const uint target = ((lead * uint(n) + k) * outer + done) * uint(stride) + uint(column);
+    out[target] = has_scale ? value * p.scale : value;
   }
 }
 

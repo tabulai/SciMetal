@@ -18,22 +18,20 @@ What runs natively (GPU, single precision, see include/ms_fft.h):
   infinities, NaNs) is declined.
 
 Under the ``strict`` precision policy double-precision inputs stay in double
-precision: they are declined. Since ``scipy.fft`` uses one worker by default,
-a declined call that SciPy can thread (a batch of transforms, or one long
-transform of a 1-D array) is handed to SciPy with ``workers`` set to the
-performance-core count when the caller left it unset. That is SciPy's own
-double-precision transform, but not always bit for bit the single-worker one:
-pocketfft takes rows through its SIMD or its scalar path depending on how the
-batch is split between threads, and the two round differently in the last
-place (about 1e-16 relative). Set ``METAL_SCI_FFT_THREADED_FALLBACK=0`` to
-leave declined calls exactly as the caller made them.
+precision: they are declined and left with the caller's ``workers`` untouched
+so the result is bit for bit SciPy's own (pocketfft takes rows through its
+SIMD or its scalar path depending on how a batch is split between threads, and
+the two round differently in the last place, about 1e-16 relative). Under the
+``fast`` and ``refined`` policies, a declined call that SciPy can thread (a
+batch of transforms, or one long 1-D transform of at least 2^17 points, e.g.
+under ``device='cpu'`` or for lengths without a GPU plan) is handed to SciPy
+with ``workers`` set to the performance-core count when the caller left it
+unset. Set ``METAL_SCI_FFT_THREADED_FALLBACK=0`` to leave declined calls
+exactly as the caller made them.
 """
 from __future__ import annotations
 
 import contextvars
-import ctypes
-import ctypes.util
-import functools
 import operator
 import os
 
@@ -41,7 +39,7 @@ import numpy as np
 import scipy.fft
 
 from .. import _config, _native
-from .._dispatch import NotAccelerated, Route, accelerated, counters, record
+from .._dispatch import NotAccelerated, accelerated
 from . import _native_fft
 from ._native_fft import C2R, FORWARD, INVERSE, R2C
 
@@ -61,20 +59,6 @@ class Declined(NotAccelerated):
     def __init__(self, reason: str, threaded: bool = False):
         super().__init__(reason)
         self.threaded = threaded
-
-
-@functools.cache
-def performance_cores() -> int:
-    """Physical performance cores: the worker count handed to SciPy for batches."""
-    try:
-        libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
-        value, size = ctypes.c_int(0), ctypes.c_size_t(ctypes.sizeof(ctypes.c_int))
-        if libc.sysctlbyname(b"hw.perflevel0.physicalcpu", ctypes.byref(value), ctypes.byref(size), None, 0) == 0 \
-                and value.value > 0:
-            return value.value
-    except (OSError, AttributeError):
-        pass
-    return _CPU_COUNT
 
 
 def _workers(workers) -> int:
@@ -105,8 +89,11 @@ def _input(x, norm, workers, plan):
     device = _config.get_device()
     if device == "cpu":
         raise Declined("device policy 'cpu': there is no native CPU FFT", threaded=True)
-    if device == "auto" and x.size < _native_fft.auto_min_points():
-        raise Declined("below the GPU crossover", threaded=True)
+    if device == "auto":
+        try:
+            _native.decline_small(x.size, _native_fft.auto_min_points())
+        except NotAccelerated as why:
+            raise Declined(why.reason, threaded=True) from None
     try:
         norm = _native_fft.NORMS[norm]
     except (KeyError, TypeError):
@@ -248,28 +235,6 @@ def run_threaded(reference, x, arguments, threads):
         _delegating.reset(token)
 
 
-def _decline(name, reference, why, x, arguments, workers, plan):
-    """What a declined call does next.
-
-    Normally the exception goes on to the ``@accelerated`` wrapper, which calls
-    SciPy with the caller's arguments. A call SciPy can thread is made here
-    instead, with workers. ``arguments`` are the positional arguments between
-    ``x`` and ``workers``: (n, axis, norm, overwrite_x) or (s, axes, norm,
-    overwrite_x).
-    """
-    threads = threaded_fallback(x, arguments[1], why, workers, plan)
-    if threads is None:
-        raise why
-    qualified = f"fft.{name}"
-    result = run_threaded(reference, x, arguments, threads)
-    record(Route(qualified, "scipy", "as given", _config.get_precision(), f"{why}; SciPy with workers={threads}"))
-    # The @accelerated wrapper counts a returned result as a native call.
-    tally = counters[qualified]
-    tally[0] -= 1
-    tally[1] += 1
-    return result
-
-
 def threaded_fallback(x, axes, why, workers, plan):
     """Worker count for a declined call, or None to leave the call as the caller made it.
 
@@ -277,8 +242,8 @@ def threaded_fallback(x, axes, why, workers, plan):
     inside one long transform of a 1-D array. They do not help (and cost time)
     when an axis of a multi-dimensional array holds a single transform.
     """
-    if not (_THREADED_FALLBACK and why.threaded) or workers is not None or plan is not None \
-            or scipy.fft.get_workers() != 1:
+    if not (_THREADED_FALLBACK and getattr(why, "threaded", False)) or workers is not None or plan is not None \
+            or scipy.fft.get_workers() != 1 or _config.get_precision() == "strict":
         return None
     if not isinstance(x, np.ndarray) or x.size < _THREADED_MIN_POINTS:
         return None
@@ -289,19 +254,8 @@ def threaded_fallback(x, axes, why, workers, plan):
                 return None
         except (TypeError, ValueError, IndexError, ZeroDivisionError):
             return None  # arguments SciPy will reject
-    threads = performance_cores()
+    threads = _native.performance_cores()
     return threads if threads > 1 else None
-
-
-def _public(wrapper, name):
-    """The wrapper as ``metal_sci.fft.<name>``.
-
-    It carries SciPy's name and documentation; left with SciPy's module too it
-    would not pickle (pickle would find SciPy's own function under that name),
-    and so could not be handed to ``multiprocessing``.
-    """
-    wrapper.__module__, wrapper.__qualname__ = "metal_sci.fft", name
-    return wrapper
 
 
 def _one_dimensional(name, kind):
@@ -315,13 +269,16 @@ def _one_dimensional(name, kind):
         try:
             return _transform_1d(function, kind, x, n, axis, norm, workers, plan)
         except Declined as why:
-            return _decline(name, reference, why, x, (n, axis, norm, overwrite_x), workers, plan)
+            threads = threaded_fallback(x, axis, why, workers, plan)
+            if threads is not None:
+                raise NotAccelerated(f"{why}; SciPy with workers={threads}", workers=threads) from None
+            raise
 
     implementation.__name__ = implementation.__qualname__ = name
     # The native attempt alone, for the uarray backend: (result) or Declined.
     implementation.core = core
     implementation.reference = reference
-    return _public(accelerated(function)(implementation), name)
+    return accelerated(function)(implementation)
 
 
 def _n_dimensional(name, kind, default_axes):
@@ -335,12 +292,15 @@ def _n_dimensional(name, kind, default_axes):
         try:
             return _transform_nd(function, kind, x, s, axes, norm, workers, plan)
         except Declined as why:
-            return _decline(name, reference, why, x, (s, axes, norm, overwrite_x), workers, plan)
+            threads = threaded_fallback(x, axes, why, workers, plan)
+            if threads is not None:
+                raise NotAccelerated(f"{why}; SciPy with workers={threads}", workers=threads) from None
+            raise
 
     implementation.__name__ = implementation.__qualname__ = name
     implementation.core = core
     implementation.reference = reference
-    return _public(accelerated(function)(implementation), name)
+    return accelerated(function)(implementation)
 
 
 fft = _one_dimensional("fft", FORWARD)
@@ -355,3 +315,184 @@ fft2 = _n_dimensional("fft2", FORWARD, (-2, -1))
 ifft2 = _n_dimensional("ifft2", INVERSE, (-2, -1))
 rfft2 = _n_dimensional("rfft2", R2C, (-2, -1))
 irfft2 = _n_dimensional("irfft2", C2R, (-2, -1))
+
+_PREPARE_KINDS = {
+    "fft": (FORWARD, False, None),
+    "ifft": (INVERSE, False, None),
+    "rfft": (R2C, False, None),
+    "irfft": (C2R, False, None),
+    "fft2": (FORWARD, True, (-2, -1)),
+    "ifft2": (INVERSE, True, (-2, -1)),
+    "rfft2": (R2C, True, (-2, -1)),
+    "irfft2": (C2R, True, (-2, -1)),
+    "fftn": (FORWARD, True, None),
+    "ifftn": (INVERSE, True, None),
+    "rfftn": (R2C, True, None),
+    "irfftn": (C2R, True, None),
+}
+
+
+def prepare(shape, dtype=np.complex128, *, kind="fft", axes=None, n=None, s=None, norm=None) -> bool:
+    """Compile and cache GPU FFT pipelines ahead of time for the given request.
+
+    Returns ``True`` when the current policies and device can run the transform
+    natively and its pipelines are ready, or ``False`` when the request would
+    fall back to SciPy. Raises ``ValueError`` on invalid arguments.
+    """
+    try:
+        fft_kind, is_nd, default_axes = _PREPARE_KINDS[kind]
+    except (KeyError, TypeError):
+        raise ValueError(f"unknown FFT kind {kind!r}") from None
+
+    if isinstance(shape, (int, np.integer)):
+        shape_tuple = (operator.index(shape),)
+    else:
+        try:
+            shape_tuple = tuple(operator.index(d) for d in shape)
+        except TypeError:
+            raise ValueError("shape must be an integer or sequence of integers") from None
+    ndim = len(shape_tuple)
+    if not 1 <= ndim <= _native.MS_MAX_NDIM:
+        raise ValueError(f"shape rank must be between 1 and {_native.MS_MAX_NDIM}, got {ndim}")
+    if any(d < 0 for d in shape_tuple):
+        raise ValueError(f"shape dimensions must be non-negative, got {shape_tuple}")
+
+    try:
+        np_dtype = np.dtype(dtype)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"invalid dtype {dtype!r}") from exc
+    dtype_kind = np_dtype.kind
+    if dtype_kind == "f" and np_dtype.itemsize == 2:
+        np_dtype = np.dtype(np.float32)
+    elif dtype_kind in "iub":
+        np_dtype = np.dtype(np.float64)
+    else:
+        np_dtype = np_dtype.newbyteorder("=")
+    if _native.native_dtype(np_dtype) is None:
+        raise ValueError(f"unsupported dtype {dtype!r}")
+    if fft_kind == R2C and np_dtype.kind == "c":
+        raise ValueError("a real-to-complex FFT needs a real input")
+
+    try:
+        norm_code = _native_fft.NORMS[norm]
+    except (KeyError, TypeError):
+        raise ValueError(f"unknown norm {norm!r}") from None
+
+    if n is not None and s is not None:
+        raise ValueError("n and s cannot both be specified")
+
+    def _int_seq(values, what):
+        if isinstance(values, (int, np.integer)):
+            return [operator.index(values)]
+        try:
+            return [operator.index(v) for v in values]
+        except TypeError:
+            raise ValueError(f"{what} must be an integer or sequence of integers") from None
+
+    c_n = 0
+    too_large = False
+    off_last_declined = False
+
+    if not is_nd:
+        if s is not None:
+            raise ValueError(f"s is not valid for 1-D FFT kind {kind!r}")
+        if axes is None:
+            axes_list = [ndim - 1]
+        else:
+            axes_list = _int_seq(axes, "axes")
+            if len(axes_list) != 1:
+                raise ValueError("1-D FFT expects a single axis")
+            axis = axes_list[0]
+            if not -ndim <= axis < ndim:
+                raise ValueError(f"axis {axis} is out of bounds for array of dimension {ndim}")
+            axes_list = [axis % ndim]
+        if n is not None:
+            try:
+                n_val = operator.index(n)
+            except TypeError:
+                raise ValueError("n must be an integer") from None
+            if n_val < 1:
+                raise ValueError(f"invalid number of data points {n_val} specified")
+            if n_val >= 1 << 31:
+                too_large = True
+            if axes_list[0] != ndim - 1:
+                if fft_kind in (R2C, C2R) or n_val != shape_tuple[axes_list[0]]:
+                    off_last_declined = True
+            else:
+                c_n = n_val
+        elif axes_list[0] != ndim - 1 and fft_kind in (R2C, C2R):
+            off_last_declined = True
+    else:
+        if n is not None:
+            raise ValueError(f"n is not valid for multi-dimensional FFT kind {kind!r}")
+        effective_axes = default_axes if axes is None else axes
+        if effective_axes is not None:
+            raw_axes = _int_seq(effective_axes, "axes")
+            axes_list = [a + ndim if a < 0 else a for a in raw_axes]
+            if any(a < 0 or a >= ndim for a in axes_list) or len(set(axes_list)) != len(axes_list):
+                raise ValueError("axes are out of range or repeated")
+        else:
+            axes_list = None
+        natural = s is None
+        if s is not None:
+            s_raw = _int_seq(s, "s")
+            if axes_list is not None and len(s_raw) != len(axes_list):
+                raise ValueError("when given, axes and s must have the same length")
+            if axes_list is None:
+                if len(s_raw) > ndim:
+                    raise ValueError("s has more entries than the input has axes")
+                axes_list = list(range(ndim - len(s_raw), ndim))
+            if not axes_list:
+                raise ValueError("at least one axis must be transformed")
+            s_list = []
+            for length, axis in zip(s_raw, axes_list):
+                if length == -1:
+                    s_list.append(shape_tuple[axis])
+                elif length < 1:
+                    raise ValueError(f"invalid number of data points {length} specified")
+                else:
+                    s_list.append(length)
+        else:
+            if axes_list is None:
+                axes_list = list(range(ndim))
+            if not axes_list:
+                raise ValueError("at least one axis must be transformed")
+            s_list = [shape_tuple[axis] for axis in axes_list]
+
+        if any(length >= 1 << 31 for length in s_list):
+            too_large = True
+        last = ndim - 1
+        if fft_kind in (R2C, C2R) and axes_list[-1] != last:
+            off_last_declined = True
+        for length, axis in zip(s_list, axes_list):
+            if axis == last:
+                if fft_kind == C2R:
+                    c_n = 0 if natural else length
+                elif length != shape_tuple[axis]:
+                    c_n = length
+            elif length != shape_tuple[axis]:
+                off_last_declined = True
+
+    if too_large or off_last_declined or any(d == 0 for d in shape_tuple):
+        return False
+    device = _config.get_device()
+    if device == "cpu":
+        return False
+    double = np_dtype.itemsize // (2 if np_dtype.kind == "c" else 1) == 8
+    if double and _config.get_precision() == "strict":
+        return False
+    if device == "auto":
+        total = 1
+        for d in shape_tuple:
+            total *= d
+        try:
+            _native.decline_small(total, _native_fft.auto_min_points())
+        except NotAccelerated:
+            return False
+
+    opts = _native_fft.options(fft_kind, norm_code, axes_list, c_n, scipy.fft.get_workers())
+    try:
+        info = _native_fft.plan(np_dtype, shape_tuple, opts, prepare=True)
+    except NotAccelerated:
+        return False
+    return info.status == _native.MS_OK

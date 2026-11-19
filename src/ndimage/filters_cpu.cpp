@@ -15,9 +15,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <cstring>
 #include <type_traits>
 #include <vector>
+#if defined(__aarch64__) && defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 
 // A product is fused into a sum only where __builtin_fma says so: the
 // difference is visible in the last bit, and SciPy's binary fixes which taps
@@ -194,13 +198,40 @@ struct CorrelateWorkspace {
     std::vector<const double*> a, b;
 };
 
+enum class StoreOp : uint32_t {
+    write = 0,
+    add = 1,
+    square = 2,
+    square_add = 3,
+    square_sqrt = 4,
+    square_add_sqrt = 5,
+};
+
+template<class DstT, StoreOp Op>
+inline void store_val(DstT& dst, double val) noexcept {
+    const DstT v = static_cast<DstT>(val);
+    if constexpr (Op == StoreOp::write) {
+        dst = v;
+    } else if constexpr (Op == StoreOp::add) {
+        dst = dst + v;
+    } else if constexpr (Op == StoreOp::square) {
+        dst = v * v;
+    } else if constexpr (Op == StoreOp::square_add) {
+        dst = dst + v * v;
+    } else if constexpr (Op == StoreOp::square_sqrt) {
+        dst = std::sqrt(v * v);
+    } else {
+        dst = std::sqrt(dst + v * v);
+    }
+}
+
 // Tiles: for one block of the array, columns [c0, c0 + n) and rows [y0, y1)
 // along the axis. A ring holds the `size` extended rows the current output row
 // reads, as doubles: one contiguous, L1-resident copy of the input instead of
 // `size` row segments a whole row apart (which evict each other when the row
 // length is a power of two), and float32 rows are widened once, not per tap.
-template<class T>
-void correlate_tiles(const Pass& pass, const T* src, T* dst) {
+template<class SrcT, class DstT, StoreOp Op = StoreOp::write>
+void correlate_tiles(const Pass& pass, const SrcT* src, DstT* dst) {
     const size_t taps = static_cast<size_t>(pass.size);
     const size_t inner = static_cast<size_t>(pass.inner);
     const int64_t length = static_cast<int64_t>(pass.length);
@@ -224,7 +255,7 @@ void correlate_tiles(const Pass& pass, const T* src, T* dst) {
     const auto make = [&] {
         CorrelateWorkspace ws;
         ws.window.resize(taps * pitch);
-        if (!std::is_same_v<T, double>) ws.acc.resize(pitch);
+        if constexpr (!(std::is_same_v<DstT, double> && Op == StoreOp::write)) ws.acc.resize(pitch);
         ws.a.resize(taps);
         ws.b.resize(taps);
         return ws;
@@ -235,8 +266,8 @@ void correlate_tiles(const Pass& pass, const T* src, T* dst) {
         const int64_t y1 = std::min(length, y0 + rows);
         const size_t c0 = static_cast<size_t>(item % tiles) * tile;
         const size_t n = std::min(tile, inner - c0);
-        const T* in = src + block * pass.length * pass.inner + c0;
-        T* out = dst + block * pass.length * pass.inner + c0;
+        const SrcT* in = src + block * pass.length * pass.inner + c0;
+        DstT* out = dst + block * pass.length * pass.inner + c0;
         double* ring = ws.window.data();
         const auto load = [&](int64_t position, size_t slot) {
             double* row = ring + slot * pitch;
@@ -247,7 +278,7 @@ void correlate_tiles(const Pass& pass, const T* src, T* dst) {
             }
             to_double(in + static_cast<size_t>(source) * inner, row, n);
             if (source + prefetch_rows < length)
-                prefetch(in + static_cast<size_t>(source + prefetch_rows) * inner, n * sizeof(T), 0);
+                prefetch(in + static_cast<size_t>(source + prefetch_rows) * inner, n * sizeof(SrcT), 0);
         };
         // Slot s holds extension row y0 - before + s (mod size).
         for (size_t slot = 0; slot + 1 < taps; ++slot) load(y0 - before + static_cast<int64_t>(slot), slot);
@@ -255,18 +286,18 @@ void correlate_tiles(const Pass& pass, const T* src, T* dst) {
         for (int64_t y = y0; y < y1; ++y) {
             load(y + after, incoming);
             incoming = incoming + 1 == taps ? 0 : incoming + 1;
-            T* target = out + static_cast<size_t>(y) * inner;
-            if (y + prefetch_rows < length) prefetch(target + static_cast<size_t>(prefetch_rows) * inner, n * sizeof(T), 1);
+            DstT* target = out + static_cast<size_t>(y) * inner;
+            if (y + prefetch_rows < length) prefetch(target + static_cast<size_t>(prefetch_rows) * inner, n * sizeof(DstT), 1);
             const auto tap = [&](size_t j) -> const double* {
                 const size_t slot = head + j;
                 return ring + (slot >= taps ? slot - taps : slot) * pitch;
             };
-            if constexpr (std::is_same_v<T, double>) {
+            if constexpr (std::is_same_v<DstT, double> && Op == StoreOp::write) {
                 correlate_row(pass, target, n, tap, ws.a.data(), ws.b.data());
             } else {
                 double* acc = ws.acc.data();
                 correlate_row(pass, acc, n, tap, ws.a.data(), ws.b.data());
-                for (size_t c = 0; c < n; ++c) target[c] = static_cast<T>(acc[c]);
+                for (size_t c = 0; c < n; ++c) store_val<DstT, Op>(target[c], acc[c]);
             }
             head = head + 1 == taps ? 0 : head + 1;
         }
@@ -301,8 +332,8 @@ void extended_line(const Pass& pass, const T* in, size_t stride, int64_t first, 
 }
 
 // Lines: every tap of a chunk of one line is the same extended buffer, shifted.
-template<class T>
-void correlate_lines(const Pass& pass, const T* src, T* dst) {
+template<class SrcT, class DstT, StoreOp Op = StoreOp::write>
+void correlate_lines(const Pass& pass, const SrcT* src, DstT* dst) {
     const size_t taps = static_cast<size_t>(pass.size);
     const size_t stride = static_cast<size_t>(pass.inner);
     const int64_t length = static_cast<int64_t>(pass.length);
@@ -329,8 +360,8 @@ void correlate_lines(const Pass& pass, const T* src, T* dst) {
         const double* window = ws.window.data();
         extended_line(pass, src + offset, stride, begin - before, n + taps - 1, ws.window.data());
         const auto tap = [&](size_t j) { return window + j; };
-        T* out = dst + offset + static_cast<size_t>(begin) * stride;
-        if constexpr (std::is_same_v<T, double>) {
+        DstT* out = dst + offset + static_cast<size_t>(begin) * stride;
+        if constexpr (std::is_same_v<DstT, double> && Op == StoreOp::write) {
             if (stride == 1) {
                 correlate_row(pass, out, n, tap, ws.a.data(), ws.b.data());
                 return;
@@ -338,7 +369,7 @@ void correlate_lines(const Pass& pass, const T* src, T* dst) {
         }
         double* acc = ws.acc.data();
         correlate_row(pass, acc, n, tap, ws.a.data(), ws.b.data());
-        for (size_t i = 0; i < n; ++i) out[i * stride] = static_cast<T>(acc[i]);
+        for (size_t i = 0; i < n; ++i) store_val<DstT, Op>(out[i * stride], acc[i]);
     });
 }
 
@@ -353,20 +384,30 @@ struct UniformWorkspace {
     std::vector<double> sum, entering, leaving, constant;
 };
 
-template<class T>
-void uniform_tiles(const Pass& pass, const T* src, T* dst) {
+template<class SrcT, class DstT, StoreOp Op = StoreOp::write>
+void uniform_tiles(const Pass& pass, const SrcT* src, DstT* dst) {
     const size_t inner = static_cast<size_t>(pass.inner);
     const int64_t length = static_cast<int64_t>(pass.length), taps = static_cast<int64_t>(pass.size);
     const int64_t before = static_cast<int64_t>(pass.before), after = static_cast<int64_t>(pass.after);
-    const size_t tile = std::min<size_t>(inner, 2048);
-    const uint64_t tiles = (inner + tile - 1) / tile;
     const unsigned lanes = lanes_for(pass.outer * pass.length * pass.inner, 2);
+    size_t tile = std::min<size_t>(inner, 2048);
+    if (lanes > 1) {
+        const uint64_t initial_tiles = (inner + tile - 1) / tile;
+        if (pass.outer * initial_tiles < uint64_t{4} * lanes) {
+            const uint64_t wanted_tiles = (uint64_t{4} * lanes + pass.outer - 1) / pass.outer;
+            const size_t scaled = (inner / static_cast<size_t>(wanted_tiles)) & ~size_t{7};
+            tile = std::clamp<size_t>(scaled, std::min<size_t>(inner, 32), 2048);
+        }
+    }
+    const uint64_t tiles = (inner + tile - 1) / tile;
     const double size = static_cast<double>(pass.size);
+    const int64_t inside_begin = std::min(length, before + 1);
+    const int64_t inside_end = std::max(inside_begin, length - after);
     const auto make = [&] {
         UniformWorkspace ws;
         ws.sum.resize(tile);
         ws.constant.assign(tile, pass.cval);
-        if (!std::is_same_v<T, double>) {
+        if constexpr (!std::is_same_v<SrcT, double>) {
             ws.entering.resize(tile);
             ws.leaving.resize(tile);
         }
@@ -375,14 +416,14 @@ void uniform_tiles(const Pass& pass, const T* src, T* dst) {
     for_each_item(pass.outer * tiles, 1, lanes, make, [&](uint64_t item, UniformWorkspace& ws) {
         const size_t c0 = static_cast<size_t>(item % tiles) * tile;
         const size_t n = std::min(tile, inner - c0);
-        const T* in = src + (item / tiles) * pass.length * pass.inner + c0;
-        T* out = dst + (item / tiles) * pass.length * pass.inner + c0;
+        const SrcT* in = src + (item / tiles) * pass.length * pass.inner + c0;
+        DstT* out = dst + (item / tiles) * pass.length * pass.inner + c0;
         // The n values of one extended row, as doubles.
         const auto row = [&](int64_t position, std::vector<double>& converted) -> const double* {
             const int64_t source = position >= 0 && position < length ? position : extend(position, length, pass.mode);
             if (source < 0) return ws.constant.data();
-            const T* values = in + static_cast<size_t>(source) * inner;
-            if constexpr (std::is_same_v<T, double>) {
+            const SrcT* values = in + static_cast<size_t>(source) * inner;
+            if constexpr (std::is_same_v<SrcT, double>) {
                 (void)converted;
                 return values;
             } else {
@@ -396,87 +437,409 @@ void uniform_tiles(const Pass& pass, const T* src, T* dst) {
             const double* values = row(k - before, ws.entering);
             for (size_t c = 0; c < n; ++c) sum[c] = sum[c] + values[c];
         }
-        for (size_t c = 0; c < n; ++c) out[c] = static_cast<T>(sum[c] / size);
-        for (int64_t y = 1; y < length; ++y) {
+        for (size_t c = 0; c < n; ++c) store_val<DstT, Op>(out[c], sum[c] / size);
+        int64_t y = 1;
+        for (; y < inside_begin; ++y) {
             const double* entering = row(y + after, ws.entering);
             const double* leaving = row(y - 1 - before, ws.leaving);
-            T* __restrict target = out + static_cast<size_t>(y) * inner;
+            DstT* __restrict target = out + static_cast<size_t>(y) * inner;
             for (size_t c = 0; c < n; ++c) {
                 const double s = sum[c] + (entering[c] - leaving[c]);
                 sum[c] = s;
-                target[c] = static_cast<T>(s / size);
+                store_val<DstT, Op>(target[c], s / size);
+            }
+        }
+        for (; y < inside_end; ++y) {
+            const SrcT* e_src = in + static_cast<size_t>(y + after) * inner;
+            const SrcT* l_src = in + static_cast<size_t>(y - 1 - before) * inner;
+            if (y + after + prefetch_rows < length)
+                prefetch(in + static_cast<size_t>(y + after + prefetch_rows) * inner, n * sizeof(SrcT), 0);
+            if (y + prefetch_rows < length)
+                prefetch(out + static_cast<size_t>(y + prefetch_rows) * inner, n * sizeof(DstT), 1);
+            const double* __restrict entering;
+            const double* __restrict leaving;
+            if constexpr (std::is_same_v<SrcT, double>) {
+                entering = e_src;
+                leaving = l_src;
+            } else {
+                to_double(e_src, ws.entering.data(), n);
+                to_double(l_src, ws.leaving.data(), n);
+                entering = ws.entering.data();
+                leaving = ws.leaving.data();
+            }
+            DstT* __restrict target = out + static_cast<size_t>(y) * inner;
+            for (size_t c = 0; c < n; ++c) {
+                const double s = sum[c] + (entering[c] - leaving[c]);
+                sum[c] = s;
+                store_val<DstT, Op>(target[c], s / size);
+            }
+        }
+        for (; y < length; ++y) {
+            const double* entering = row(y + after, ws.entering);
+            const double* leaving = row(y - 1 - before, ws.leaving);
+            DstT* __restrict target = out + static_cast<size_t>(y) * inner;
+            for (size_t c = 0; c < n; ++c) {
+                const double s = sum[c] + (entering[c] - leaving[c]);
+                sum[c] = s;
+                store_val<DstT, Op>(target[c], s / size);
             }
         }
     });
 }
 
-template<class T>
-void uniform_lines(const Pass& pass, const T* src, T* dst) {
+#if defined(__aarch64__) && defined(__ARM_NEON)
+template<size_t Pairs, class SrcT, class DstT, StoreOp Op>
+void uniform_lines_neon_bundle(const Pass& pass, const SrcT* src, DstT* dst, uint64_t line_begin,
+                               int64_t inside_begin, int64_t inside_end) {
+    constexpr size_t Lines = Pairs * 2;
+    const int64_t length = static_cast<int64_t>(pass.length);
+    const int64_t taps = static_cast<int64_t>(pass.size);
+    const int64_t before = static_cast<int64_t>(pass.before);
+    const int64_t after = static_cast<int64_t>(pass.after);
+    const double size = static_cast<double>(pass.size);
+    const float64x2_t vsize = vdupq_n_f64(size);
+
+    const SrcT* ins[Lines];
+    DstT* outs[Lines];
+    for (size_t m = 0; m < Lines; ++m) {
+        const size_t offset = static_cast<size_t>(line_begin + m) * static_cast<size_t>(pass.length);
+        ins[m] = src + offset;
+        outs[m] = dst + offset;
+    }
+
+    auto load1_pair = [&](size_t pair_idx, int64_t source) -> float64x2_t {
+        if (source < 0) return vdupq_n_f64(pass.cval);
+        const size_t s = static_cast<size_t>(source);
+        const double d0 = static_cast<double>(ins[pair_idx * 2][s]);
+        const double d1 = static_cast<double>(ins[pair_idx * 2 + 1][s]);
+        return vsetq_lane_f64(d1, vdupq_n_f64(d0), 1);
+    };
+
+    auto store1_pair = [&](size_t pair_idx, int64_t y, float64x2_t q) {
+        const size_t u = static_cast<size_t>(y);
+        store_val<DstT, Op>(outs[pair_idx * 2][u], vgetq_lane_f64(q, 0));
+        store_val<DstT, Op>(outs[pair_idx * 2 + 1][u], vgetq_lane_f64(q, 1));
+    };
+
+    auto load2 = [](const SrcT* p) -> float64x2_t {
+        if constexpr (std::is_same_v<SrcT, double>) {
+            return vld1q_f64(p);
+        } else {
+            return vcvt_f64_f32(vld1_f32(p));
+        }
+    };
+
+    auto store2 = [](DstT* p, float64x2_t v) {
+        if constexpr (Op == StoreOp::write) {
+            if constexpr (std::is_same_v<DstT, double>) {
+                vst1q_f64(p, v);
+            } else {
+                vst1_f32(p, vcvt_f32_f64(v));
+            }
+        } else {
+            store_val<DstT, Op>(p[0], vgetq_lane_f64(v, 0));
+            store_val<DstT, Op>(p[1], vgetq_lane_f64(v, 1));
+        }
+    };
+
+    float64x2_t sum[Pairs];
+    for (size_t p = 0; p < Pairs; ++p) sum[p] = vdupq_n_f64(0.0);
+
+    for (int64_t k = 0; k < taps; ++k) {
+        const int64_t pos = k - before;
+        const int64_t source = pos >= 0 && pos < length ? pos : extend(pos, length, pass.mode);
+        for (size_t p = 0; p < Pairs; ++p) {
+            sum[p] = vaddq_f64(sum[p], load1_pair(p, source));
+        }
+    }
+    for (size_t p = 0; p < Pairs; ++p) {
+        store1_pair(p, 0, vdivq_f64(sum[p], vsize));
+    }
+
+    int64_t y = 1;
+    for (; y < inside_begin; ++y) {
+        const int64_t pe = y + after;
+        const int64_t pl = y - 1 - before;
+        const int64_t se = pe >= 0 && pe < length ? pe : extend(pe, length, pass.mode);
+        const int64_t sl = pl >= 0 && pl < length ? pl : extend(pl, length, pass.mode);
+        for (size_t p = 0; p < Pairs; ++p) {
+            const float64x2_t e = load1_pair(p, se);
+            const float64x2_t l = load1_pair(p, sl);
+            sum[p] = vaddq_f64(sum[p], vsubq_f64(e, l));
+            store1_pair(p, y, vdivq_f64(sum[p], vsize));
+        }
+    }
+
+    for (; y + 1 < inside_end; y += 2) {
+        const size_t oe = static_cast<size_t>(y + after);
+        const size_t ol = static_cast<size_t>(y - 1 - before);
+        const size_t u = static_cast<size_t>(y);
+        for (size_t p = 0; p < Pairs; ++p) {
+            const SrcT* ina = ins[p * 2];
+            const SrcT* inb = ins[p * 2 + 1];
+            const float64x2_t ea = load2(ina + oe);
+            const float64x2_t eb = load2(inb + oe);
+            const float64x2_t la = load2(ina + ol);
+            const float64x2_t lb = load2(inb + ol);
+            const float64x2_t d0 = vsubq_f64(vtrn1q_f64(ea, eb), vtrn1q_f64(la, lb));
+            const float64x2_t d1 = vsubq_f64(vtrn2q_f64(ea, eb), vtrn2q_f64(la, lb));
+            sum[p] = vaddq_f64(sum[p], d0);
+            const float64x2_t q0 = vdivq_f64(sum[p], vsize);
+            sum[p] = vaddq_f64(sum[p], d1);
+            const float64x2_t q1 = vdivq_f64(sum[p], vsize);
+            store2(outs[p * 2] + u, vtrn1q_f64(q0, q1));
+            store2(outs[p * 2 + 1] + u, vtrn2q_f64(q0, q1));
+        }
+    }
+
+    for (; y < inside_end; ++y) {
+        const int64_t se = y + after;
+        const int64_t sl = y - 1 - before;
+        for (size_t p = 0; p < Pairs; ++p) {
+            const float64x2_t e = load1_pair(p, se);
+            const float64x2_t l = load1_pair(p, sl);
+            sum[p] = vaddq_f64(sum[p], vsubq_f64(e, l));
+            store1_pair(p, y, vdivq_f64(sum[p], vsize));
+        }
+    }
+
+    for (; y < length; ++y) {
+        const int64_t pe = y + after;
+        const int64_t pl = y - 1 - before;
+        const int64_t se = pe >= 0 && pe < length ? pe : extend(pe, length, pass.mode);
+        const int64_t sl = pl >= 0 && pl < length ? pl : extend(pl, length, pass.mode);
+        for (size_t p = 0; p < Pairs; ++p) {
+            const float64x2_t e = load1_pair(p, se);
+            const float64x2_t l = load1_pair(p, sl);
+            sum[p] = vaddq_f64(sum[p], vsubq_f64(e, l));
+            store1_pair(p, y, vdivq_f64(sum[p], vsize));
+        }
+    }
+}
+#endif
+
+template<class SrcT, class DstT, StoreOp Op = StoreOp::write>
+void uniform_lines(const Pass& pass, const SrcT* src, DstT* dst) {
     const size_t stride = static_cast<size_t>(pass.inner);
     const int64_t length = static_cast<int64_t>(pass.length), taps = static_cast<int64_t>(pass.size);
     const int64_t before = static_cast<int64_t>(pass.before), after = static_cast<int64_t>(pass.after);
     const uint64_t lines = pass.outer * pass.inner;
     const unsigned lanes = lanes_for(lines * pass.length, 2);
-    const uint64_t grain = std::max<uint64_t>(1, 16384 / pass.length);
     const double size = static_cast<double>(pass.size);
     // Outputs whose entering and leaving values both lie inside the line.
     const int64_t inside_begin = std::min(length, before + 1);
     const int64_t inside_end = std::max(inside_begin, length - after);
-    for_each_item(lines, grain, lanes, [] { return 0; }, [&](uint64_t line, int&) {
+
+    auto run_scalar_line = [&](uint64_t line) {
         const uint64_t offset = (line / pass.inner) * pass.length * pass.inner + line % pass.inner;
-        const T* in = src + offset;
-        T* out = dst + offset;
+        const SrcT* in = src + offset;
+        DstT* out = dst + offset;
         const auto at = [&](int64_t position) -> double {
             const int64_t source = position >= 0 && position < length ? position : extend(position, length, pass.mode);
             return source < 0 ? pass.cval : static_cast<double>(in[static_cast<size_t>(source) * stride]);
         };
         double sum = 0.0;
         for (int64_t k = 0; k < taps; ++k) sum = sum + at(k - before);
-        out[0] = static_cast<T>(sum / size);
+        store_val<DstT, Op>(out[0], sum / size);
         int64_t y = 1;
         for (; y < inside_begin; ++y) {
             sum = sum + (at(y + after) - at(y - 1 - before));
-            out[static_cast<size_t>(y) * stride] = static_cast<T>(sum / size);
+            store_val<DstT, Op>(out[static_cast<size_t>(y) * stride], sum / size);
         }
         for (; y < inside_end; ++y) {
             sum = sum + (static_cast<double>(in[static_cast<size_t>(y + after) * stride]) -
                          static_cast<double>(in[static_cast<size_t>(y - 1 - before) * stride]));
-            out[static_cast<size_t>(y) * stride] = static_cast<T>(sum / size);
+            store_val<DstT, Op>(out[static_cast<size_t>(y) * stride], sum / size);
         }
         for (; y < length; ++y) {
             sum = sum + (at(y + after) - at(y - 1 - before));
-            out[static_cast<size_t>(y) * stride] = static_cast<T>(sum / size);
+            store_val<DstT, Op>(out[static_cast<size_t>(y) * stride], sum / size);
+        }
+    };
+
+#if defined(__aarch64__) && defined(__ARM_NEON)
+    if (stride == 1 && lines >= 4) {
+        const uint64_t bundles4 = lines / 4;
+        const uint64_t bundle_grain = std::max<uint64_t>(1, 4096 / pass.length);
+        if (bundles4) {
+            for_each_item(bundles4, bundle_grain, lanes, [] { return 0; }, [&](uint64_t bundle, int&) {
+                uniform_lines_neon_bundle<2, SrcT, DstT, Op>(pass, src, dst, bundle * 4, inside_begin, inside_end);
+            });
+        }
+        for (uint64_t line = bundles4 * 4; line < lines; ++line) {
+            run_scalar_line(line);
+        }
+        return;
+    }
+#endif
+
+    const uint64_t grain = std::max<uint64_t>(1, 16384 / pass.length);
+    for_each_item(lines, grain, lanes, [] { return 0; }, [&](uint64_t line, int&) {
+        run_scalar_line(line);
+    });
+}
+
+template<class SrcT, class DstT, StoreOp Op = StoreOp::write>
+void run_pass(const Pass& pass, const SrcT* src, DstT* dst) {
+    const bool tiles = pass.inner >= min_tile_columns;
+    if (pass.kind == MS_NDIMAGE_UNIFORM) {
+        if (tiles) uniform_tiles<SrcT, DstT, Op>(pass, src, dst);
+        else uniform_lines<SrcT, DstT, Op>(pass, src, dst);
+    } else {
+        if (tiles && pass.size <= max_ring_taps) correlate_tiles<SrcT, DstT, Op>(pass, src, dst);
+        else correlate_lines<SrcT, DstT, Op>(pass, src, dst);
+    }
+}
+
+template<class SrcT, class DstT, StoreOp Op>
+void run_pass_op(const Pass& pass, const void* src, void* dst) {
+    run_pass<SrcT, DstT, Op>(pass, static_cast<const SrcT*>(src), static_cast<DstT*>(dst));
+}
+
+template<class SrcT, class DstT>
+void run_pass_with_op(const Pass& pass, const void* src, void* dst, StoreOp op) {
+    switch (op) {
+    case StoreOp::write: run_pass_op<SrcT, DstT, StoreOp::write>(pass, src, dst); break;
+    case StoreOp::add: run_pass_op<SrcT, DstT, StoreOp::add>(pass, src, dst); break;
+    case StoreOp::square: run_pass_op<SrcT, DstT, StoreOp::square>(pass, src, dst); break;
+    case StoreOp::square_add: run_pass_op<SrcT, DstT, StoreOp::square_add>(pass, src, dst); break;
+    case StoreOp::square_sqrt: run_pass_op<SrcT, DstT, StoreOp::square_sqrt>(pass, src, dst); break;
+    case StoreOp::square_add_sqrt: run_pass_op<SrcT, DstT, StoreOp::square_add_sqrt>(pass, src, dst); break;
+    }
+}
+
+template<class SrcT, class DstT, StoreOp Op>
+void apply_identity_op(uint64_t elements, const SrcT* src, DstT* dst) {
+    parallel::parallel_for(elements, min_work_per_lane, [&](unsigned, uint64_t begin, uint64_t end) {
+        for (uint64_t i = begin; i < end; ++i) {
+            store_val<DstT, Op>(dst[i], static_cast<double>(src[i]));
         }
     });
 }
 
-template<class T>
-void run_pass(const Pass& pass, const T* src, T* dst) {
-    const bool tiles = pass.inner >= min_tile_columns;
-    if (pass.kind == MS_NDIMAGE_UNIFORM) {
-        if (tiles) uniform_tiles(pass, src, dst);
-        else uniform_lines(pass, src, dst);
+template<class SrcT, class DstT>
+void apply_identity(uint64_t elements, const void* src, void* dst, StoreOp op) {
+    const SrcT* s = static_cast<const SrcT*>(src);
+    DstT* d = static_cast<DstT*>(dst);
+    switch (op) {
+    case StoreOp::write: apply_identity_op<SrcT, DstT, StoreOp::write>(elements, s, d); break;
+    case StoreOp::add: apply_identity_op<SrcT, DstT, StoreOp::add>(elements, s, d); break;
+    case StoreOp::square: apply_identity_op<SrcT, DstT, StoreOp::square>(elements, s, d); break;
+    case StoreOp::square_add: apply_identity_op<SrcT, DstT, StoreOp::square_add>(elements, s, d); break;
+    case StoreOp::square_sqrt: apply_identity_op<SrcT, DstT, StoreOp::square_sqrt>(elements, s, d); break;
+    case StoreOp::square_add_sqrt: apply_identity_op<SrcT, DstT, StoreOp::square_add_sqrt>(elements, s, d); break;
+    }
+}
+
+void dispatch_pass(const Pass& pass, uint32_t src_dtype, uint32_t dst_dtype, const void* src, void* dst, StoreOp op) {
+    if (src_dtype == MS_FLOAT64 && dst_dtype == MS_FLOAT64) {
+        run_pass_with_op<double, double>(pass, src, dst, op);
+    } else if (src_dtype == MS_FLOAT32 && dst_dtype == MS_FLOAT32) {
+        run_pass_with_op<float, float>(pass, src, dst, op);
+    } else if (src_dtype == MS_FLOAT32 && dst_dtype == MS_FLOAT64) {
+        run_pass_with_op<float, double>(pass, src, dst, op);
     } else {
-        if (tiles && pass.size <= max_ring_taps) correlate_tiles(pass, src, dst);
-        else correlate_lines(pass, src, dst);
+        run_pass_with_op<double, float>(pass, src, dst, op);
+    }
+}
+
+void dispatch_identity(uint64_t elements, uint32_t src_dtype, uint32_t dst_dtype, const void* src, void* dst,
+                       StoreOp op) {
+    if (src_dtype == MS_FLOAT64 && dst_dtype == MS_FLOAT64) {
+        apply_identity<double, double>(elements, src, dst, op);
+    } else if (src_dtype == MS_FLOAT32 && dst_dtype == MS_FLOAT32) {
+        apply_identity<float, float>(elements, src, dst, op);
+    } else if (src_dtype == MS_FLOAT32 && dst_dtype == MS_FLOAT64) {
+        apply_identity<float, double>(elements, src, dst, op);
+    } else {
+        apply_identity<double, float>(elements, src, dst, op);
     }
 }
 } // namespace
 
 BufferPtr run_cpu(ms_context* context, const Plan& plan, const void* input) {
-    const uint64_t bytes = plan.shape.elements * array::dtype_size(plan.dtype);
+    const uint32_t out_dtype = plan.out_dtype ? plan.out_dtype : plan.dtype;
+    const uint64_t bytes = plan.shape.elements * array::dtype_size(out_dtype);
     const size_t count = plan.passes.size();
     BufferPtr result = array::allocate(context, bytes);
+    if (count == 0) {
+        if (plan.shape.elements) {
+            dispatch_identity(plan.shape.elements, plan.dtype, out_dtype, input, mutable_data(result.get()),
+                              StoreOp::write);
+        }
+        return result;
+    }
     BufferPtr scratch = count > 1 ? array::allocate(context, bytes) : BufferPtr();
     const void* src = input;
+    uint32_t src_dtype = plan.dtype;
     for (size_t i = 0; i < count; ++i) {
         // Passes alternate between the two buffers so that the last one writes the result.
         void* dst = mutable_data((count - 1 - i) % 2 == 0 ? result.get() : scratch.get());
-        if (plan.dtype == MS_FLOAT64)
-            run_pass(plan.passes[i], static_cast<const double*>(src), static_cast<double*>(dst));
-        else
-            run_pass(plan.passes[i], static_cast<const float*>(src), static_cast<float*>(dst));
+        dispatch_pass(plan.passes[i], src_dtype, out_dtype, src, dst, StoreOp::write);
         src = dst;
+        src_dtype = out_dtype;
+    }
+    return result;
+}
+
+BufferPtr run_cpu_composite(ms_context* context, const CompositePlan& plan, const void* input) {
+    const uint64_t elements = plan.shape.elements;
+    const uint64_t out_bytes = elements * array::dtype_size(plan.out_dtype);
+    BufferPtr result = array::allocate(context, out_bytes);
+    if (!elements) return result;
+
+    size_t max_passes = 0;
+    for (const auto& chain : plan.chains) max_passes = std::max(max_passes, chain.size());
+
+    // Chain 0 can alternate with result and scratch[0]; chains >= 1 keep result
+    // intact and alternate between scratch[0] and scratch[1] before fusing into result.
+    BufferPtr scratch[2];
+    if (max_passes >= 2) scratch[0] = array::allocate(context, out_bytes);
+    if (plan.chains.size() >= 2 && max_passes >= 3) scratch[1] = array::allocate(context, out_bytes);
+
+    void* result_ptr = mutable_data(result.get());
+    const size_t num_chains = plan.chains.size();
+    const bool is_grad = plan.combine_op == MS_NDIMAGE_COMBINE_SQRT_SUM_SQ;
+
+    for (size_t k = 0; k < num_chains; ++k) {
+        const auto& chain = plan.chains[k];
+        const bool is_first = (k == 0);
+        const bool is_last = (k + 1 == num_chains);
+
+        StoreOp final_op = StoreOp::write;
+        if (is_grad) {
+            if (is_first && is_last) final_op = StoreOp::square_sqrt;
+            else if (is_first) final_op = StoreOp::square;
+            else if (is_last) final_op = StoreOp::square_add_sqrt;
+            else final_op = StoreOp::square_add;
+        } else {
+            final_op = is_first ? StoreOp::write : StoreOp::add;
+        }
+
+        if (chain.empty()) {
+            dispatch_identity(elements, plan.in_dtype, plan.out_dtype, input, result_ptr, final_op);
+            continue;
+        }
+
+        const size_t count = chain.size();
+        const void* src = input;
+        uint32_t src_dtype = plan.in_dtype;
+        for (size_t i = 0; i < count; ++i) {
+            const bool last_pass = (i + 1 == count);
+            void* dst;
+            if (last_pass) {
+                dst = result_ptr;
+            } else if (is_first) {
+                dst = mutable_data((count - 1 - i) % 2 == 0 ? result.get() : scratch[0].get());
+            } else {
+                // Intermediate passes for k >= 1 alternate in scratch[0], scratch[1], ending in
+                // scratch[(count - 2 - i) % 2] before the final pass reads it and writes result_ptr.
+                dst = mutable_data(scratch[(count - 2 - i) % 2].get());
+            }
+            dispatch_pass(chain[i], src_dtype, plan.out_dtype, src, dst, last_pass ? final_op : StoreOp::write);
+            src = dst;
+            src_dtype = plan.out_dtype;
+        }
     }
     return result;
 }

@@ -30,14 +30,25 @@ void check_options(const ms_route_options* options);
 // Comes from the context's buffer cache when a buffer of that capacity is idle.
 BufferPtr allocate(ms_context*, uint64_t bytes);
 
+struct ConvertReport {
+    bool overflowed = false;     // finite double magnitude >= 0x1.ffffffp127 (rounded to +-inf in float32)
+    bool has_nonfinite = false;  // input contained at least one +-inf or NaN
+    double max_finite = 0.0;     // largest |x| among finite elements
+    double max_magnitude = 0.0;  // max_finite, or INFINITY if +-inf was present
+};
+
 // dst[i] = (dst type) src[i] for `elements` elements, across the P-core lanes.
 // Converts between single and double precision of the same kind (real or
 // complex), or copies when the dtypes match. src and dst must not overlap.
-void convert(const void* src, uint32_t src_dtype, void* dst, uint32_t dst_dtype, uint64_t elements);
+// When `report` is non-null and narrowing double -> single, populates `report`
+// in the same pass.
+void convert(const void* src, uint32_t src_dtype, void* dst, uint32_t dst_dtype, uint64_t elements,
+             ConvertReport* report = nullptr);
 
 // A single-precision copy of a host array in owned (device-visible) storage.
-BufferPtr load_single(ms_context*, const ms_array& array, const Shape& shape);
+BufferPtr load_single(ms_context*, const ms_array& array, const Shape& shape, ConvertReport* report = nullptr);
 
+void check_route_info(const ms_route_info* info);
 void publish(ms_array_result* out, BufferPtr buffer, uint32_t dtype, const Shape& shape) noexcept;
-void report(ms_route_info* info, uint32_t engine, uint32_t compute_dtype) noexcept;
+void report(ms_route_info* info, uint32_t engine, uint32_t compute_dtype, const char* reason = "") noexcept;
 } // namespace ms::detail::array
