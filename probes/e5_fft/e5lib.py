@@ -83,7 +83,7 @@ class Plan:
     .x is a numpy view of the input buffer, .y of the output buffer.
 
     factors=None  -> faithful port of MLX 0.31.1's plan ("mlx" mode)
-    factors=[..]  -> metal-sci multi-step plan, n == prod(factors),
+    factors=[..]  -> SciMetal multi-step plan, n == prod(factors),
                      `coalesce` = requested FFTs per threadgroup (MLX uses 4)."""
 
     def __init__(self, n, rows=1, inverse=False, kind=C2C, factors=None, coalesce=4):

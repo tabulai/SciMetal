@@ -4,14 +4,14 @@
 // order dispatches and make earlier writes visible to later ones (all buffers
 // are hazard-tracked). The CPU reads results only after commit_and_wait().
 #include "metal_device.hpp"
-#include "ms/detail/storage.hpp"
+#include "sm/detail/storage.hpp"
 
 #include <initializer_list>
 #include <string>
 #include <type_traits>
 #include <vector>
 
-namespace ms::detail::gpu {
+namespace sm::detail::gpu {
 // Limits every dispatch keeps (docs/s1/kernel-conventions.md): the buffer
 // argument table has 31 entries and parameters take index 0; setBytes takes at
 // most 4 KiB. (Kernels also keep static threadgroup memory within 16 KiB, half
@@ -27,22 +27,22 @@ inline constexpr size_t max_params_bytes = 4096;
 struct Binding {
     MTL::Buffer* buffer = nullptr;
     uint64_t offset = 0;
-    const ms_buffer* handle = nullptr;
+    const sm_buffer* handle = nullptr;
 };
-Binding bind(const ms_buffer*, ms_context*);
+Binding bind(const sm_buffer*, sm_context*);
 
-// Loads the compute runtime on first use: MS_ESTATE after fork, MS_EBACKEND
+// Loads the compute runtime on first use: SM_ESTATE after fork, SM_EBACKEND
 // when the embedded kernel library cannot load.
 void require_runtime();
 
 // For chunk tables: the GPU address of a buffer's first byte, and the
 // resource a batch must make resident to read through that address.
-uint64_t address(const ms_buffer*, ms_context*);
-MTL::Buffer* resource(const ms_buffer*, ms_context*);
+uint64_t address(const sm_buffer*, sm_context*);
+MTL::Buffer* resource(const sm_buffer*, sm_context*);
 
 // The dispatch geometry: `groups` threadgroups of `threads` threads along each
 // axis. Kernels written to the 1-D convention use Grid::linear, which keeps
-// metal-arrow's MS_GPU_THREADS-thread threadgroups.
+// metal-arrow's SM_GPU_THREADS-thread threadgroups.
 struct Grid {
     uint64_t groups[3] = {0, 1, 1};
     uint32_t threads[3] = {1, 1, 1};
@@ -90,14 +90,14 @@ uint32_t max_threads_per_group(const char* kernel, const Specialization* special
 
 class Batch {
 public:
-    explicit Batch(ms_context*);
+    explicit Batch(sm_context*);
     ~Batch();
     Batch(const Batch&) = delete;
     Batch& operator=(const Batch&) = delete;
     // Dispatches `grid`; buffers bind at indices 1, 2, ... after the parameters
     // at 0. More than max_bound_buffers buffers, parameters that are not a
     // multiple of 8 bytes or exceed max_params_bytes, or a threadgroup larger
-    // than the pipeline allows are MS_EBACKEND before anything is encoded.
+    // than the pipeline allows are SM_EBACKEND before anything is encoded.
     void dispatch(MTL::ComputePipelineState* state, const void* params, size_t bytes, const Binding* buffers,
                   size_t count, const Grid& grid);
     void dispatch(const char* kernel, const void* params, size_t bytes, const Binding* buffers, size_t count,
@@ -117,7 +117,7 @@ public:
                           const Grid& grid) {
         dispatch_indexed(kernel, specialization, buffers.begin(), buffers.size(), bytes.begin(), bytes.size(), grid);
     }
-    // The 1-D convention: `threadgroups` groups of MS_GPU_THREADS threads.
+    // The 1-D convention: `threadgroups` groups of SM_GPU_THREADS threads.
     void dispatch(MTL::ComputePipelineState* state, const void* params, size_t bytes, const Binding* buffers,
                   size_t count, uint64_t threadgroups) {
         dispatch(state, params, bytes, buffers, count, Grid::linear(threadgroups));
@@ -152,12 +152,12 @@ public:
     }
     // Encodes an explicit device-side byte fill in the batch's blit pass before
     // its compute dispatches run.
-    void fill(const ms_buffer* buffer, uint64_t byte_offset, uint64_t bytes, uint8_t value);
+    void fill(const sm_buffer* buffer, uint64_t byte_offset, uint64_t bytes, uint8_t value);
     // Makes buffers reached only through GPU addresses (chunk tables, address
     // tables) resident for later dispatches; duplicates are declared once.
     // Buffers that kernels write through addresses need ResourceUsageWrite.
     void use(const std::vector<MTL::Buffer*>&, MTL::ResourceUsage usage = MTL::ResourceUsageRead);
-    // Commits and waits; command errors become MS_EBACKEND. Records counters.
+    // Commits and waits; command errors become SM_EBACKEND. Records counters.
     struct Timing {
         uint64_t encode_ns = 0;     // submit_mutex + commandBuffer + encode_batch + commit
         uint64_t gpu_ns = 0;        // GPUEndTime - GPUStartTime
@@ -168,8 +168,8 @@ public:
     // Commits without waiting, signaling the runtime MTLSharedEvent and marking
     // `outputs` with that producer event so downstream GPU batches chain via
     // encodeWait and host reads synchronize automatically.
-    void commit_async(std::initializer_list<const ms_buffer*> outputs = {});
-    void commit_async(const std::vector<const ms_buffer*>& outputs);
+    void commit_async(std::initializer_list<const sm_buffer*> outputs = {});
+    void commit_async(const std::vector<const sm_buffer*>& outputs);
 
 private:
     template<class Params> static constexpr void check_params() {
@@ -202,10 +202,10 @@ private:
     };
     void encode_use(MTL::ComputeCommandEncoder* encoder, const std::vector<MTL::Buffer*>& buffers,
                     MTL::ResourceUsage usage);
-    PreparedGpuBatch encode_batch(const ms_buffer* const* outputs, size_t output_count);
-    void commit_async_impl(const ms_buffer* const* outputs, size_t count);
+    PreparedGpuBatch encode_batch(const sm_buffer* const* outputs, size_t output_count);
+    void commit_async_impl(const sm_buffer* const* outputs, size_t count);
 
-    ms_context* context_;
+    sm_context* context_;
     MTL::CommandBuffer* command_ = nullptr;
     std::vector<uint8_t> param_storage_;
     std::vector<Binding> binding_storage_;
@@ -213,8 +213,8 @@ private:
     std::vector<RecordedDispatch> commands_;
     std::vector<RecordedUse> uses_;
     std::vector<BlitFill> explicit_fills_;
-    std::vector<const ms_buffer*> explicit_buffers_;
+    std::vector<const sm_buffer*> explicit_buffers_;
     uint64_t dispatches_ = 0;
     bool committed_ = false;
 };
-} // namespace ms::detail::gpu
+} // namespace sm::detail::gpu

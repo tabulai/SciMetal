@@ -1,4 +1,4 @@
-"""SciPy's own signal convolution/correlation test-suite, run against metal-sci (the oracle)."""
+"""SciPy's own signal convolution/correlation test-suite, run against SciMetal (the oracle)."""
 import os
 import pathlib
 import re
@@ -21,11 +21,11 @@ FUNCTIONS = (
 
 def run_oracle(*, extra_args=(), **settings):
     env = dict(os.environ)
-    env.pop("METAL_SCI_PRECISION", None)
-    env.pop("METAL_SCI_DEVICE", None)
+    env.pop("SCIMETAL_PRECISION", None)
+    env.pop("SCIMETAL_DEVICE", None)
     env.update(settings)
     parts = [str(ROOT / "tests/oracle")]
-    if not os.environ.get("METAL_SCI_TEST_INSTALLED"):
+    if not os.environ.get("SCIMETAL_TEST_INSTALLED"):
         parts.insert(0, str(ROOT / "python"))
     if env.get("PYTHONPATH"):
         parts.append(env["PYTHONPATH"])
@@ -35,7 +35,7 @@ def run_oracle(*, extra_args=(), **settings):
         "-m",
         "pytest",
         "-p",
-        "metal_sci_oracle",
+        "scimetal_oracle",
         "-p",
         "no:cacheprovider",
         "--pyargs",
@@ -65,21 +65,21 @@ def summary(output):
 def native_signal():
     import numpy as np
 
-    import metal_sci
-    import metal_sci.signal as msig
+    import scimetal
+    import scimetal.signal as msig
 
-    with metal_sci.precision("strict"), metal_sci.device("cpu"):
+    with scimetal.precision("strict"), scimetal.device("cpu"):
         msig.convolve(np.ones(4), np.ones(2), method="direct")
-        if metal_sci.last_route().engine != "cpu":
-            pytest.skip(f"no native signal routes: {metal_sci.last_route().reason}")
+        if scimetal.last_route().engine != "cpu":
+            pytest.skip(f"no native signal routes: {scimetal.last_route().reason}")
 
 
 def test_scipys_signal_tests_pass_in_strict_mode(native_signal):
     # Note: TestOAConvolve non-slow subset is run here for speed; full suite runs in integration gate.
     code, output, counters = run_oracle(
         extra_args=["-m", "not slow"],
-        METAL_SCI_ORACLE_PRECISION="strict",
-        METAL_SCI_ORACLE_DEVICE="auto",
+        SCIMETAL_ORACLE_PRECISION="strict",
+        SCIMETAL_ORACLE_DEVICE="auto",
     )
     assert code == 0 and re.search(r"\b\d+ passed", output), summary(output)
     assert set(counters) == set(FUNCTIONS), summary(output)
@@ -91,14 +91,14 @@ def test_scipys_signal_tests_pass_in_strict_mode(native_signal):
 
 
 def test_gpu_route_fails_only_scipy_tests_that_need_more_than_float32(native_signal):
-    import metal_sci._native as _native
+    import scimetal._native as _native
 
     if not _native.has_metal():
         pytest.skip("no GPU engine in CPU-only build")
     code, output, counters = run_oracle(
         extra_args=["-m", "not slow"],
-        METAL_SCI_ORACLE_PRECISION="fast",
-        METAL_SCI_ORACLE_DEVICE="gpu",
+        SCIMETAL_ORACLE_PRECISION="fast",
+        SCIMETAL_ORACLE_DEVICE="gpu",
     )
     assert code in (0, 1), summary(output)
     assert set(counters) == set(FUNCTIONS), summary(output)

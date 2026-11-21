@@ -7,7 +7,7 @@ using namespace metal;
 // float32 bits -> float64 bits as a C cast does it: exact for every finite
 // value including subnormals, NaNs quieted with their payload kept (the code
 // probes/e3_narrow validated bit for bit against numpy.astype).
-static inline ulong ms_ndimage_widen(uint b) {
+static inline ulong sm_ndimage_widen(uint b) {
     const uint sign = b & 0x80000000u;
     const uint e = (b >> 23) & 0xFFu;
     uint m = b & 0x007FFFFFu;
@@ -25,9 +25,9 @@ static inline ulong ms_ndimage_widen(uint b) {
     return (ulong(hi) << 32) | ulong(m << 29);
 }
 
-static inline void ms_ndimage_store(device float* dst, uint index, float value) { dst[index] = value; }
-static inline void ms_ndimage_store(device ulong* dst, uint index, float value) {
-    dst[index] = ms_ndimage_widen(as_type<uint>(value));
+static inline void sm_ndimage_store(device float* dst, uint index, float value) { dst[index] = value; }
+static inline void sm_ndimage_store(device ulong* dst, uint index, float value) {
+    dst[index] = sm_ndimage_widen(as_type<uint>(value));
 }
 
 // SymmetryKind is a compile-time constant: one kernel per summation order
@@ -38,7 +38,7 @@ static inline void ms_ndimage_store(device ulong* dst, uint index, float value) 
 // loop with 3-segment direct loops (NEAREST/CONSTANT) and modulo-free cursor
 // stepping (WRAP/REFLECT/MIRROR).
 template <typename Destination, uint SymmetryKind>
-static inline void ms_ndimage_correlate1d(constant MSNdimageCorrelateParams& p, device const float* src,
+static inline void sm_ndimage_correlate1d(constant SMNdimageCorrelateParams& p, device const float* src,
                                           Destination dst, constant float* all_weights, uint3 pos) {
     if (pos.x >= p.extent[0] || pos.y >= p.extent[1] || pos.z >= p.extent[2]) return;
     const uint index = (pos.z * p.extent[1] + pos.y) * p.extent[0] + pos.x;
@@ -53,7 +53,7 @@ static inline void ms_ndimage_correlate1d(constant MSNdimageCorrelateParams& p, 
     if (first >= 0 && first + taps <= length) {
         // Every tap is inside the line: plain strided loads.
         device const float* window = src + (int(index) - int(p.before) * stride);
-        if (SymmetryKind == MS_NDIMAGE_SYMMETRY_NONE) {
+        if (SymmetryKind == SM_NDIMAGE_SYMMETRY_NONE) {
             acc = window[(taps - 1) * stride] * w[taps - 1];
             for (int j = 0; j < taps - 1; ++j) acc += window[j * stride] * w[j];
         } else {
@@ -61,14 +61,14 @@ static inline void ms_ndimage_correlate1d(constant MSNdimageCorrelateParams& p, 
             acc = centre[0] * w[pairs];
             for (int d = pairs; d >= 1; --d) {
                 const float below = centre[-d * stride], above = centre[d * stride];
-                acc += (SymmetryKind == MS_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
+                acc += (SymmetryKind == SM_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
             }
         }
     } else {
         device const float* line_src = src + (int(index) - at * stride);
         const uint mode = p.mode;
         const float cval = p.cval;
-        if (SymmetryKind == MS_NDIMAGE_SYMMETRY_NONE) {
+        if (SymmetryKind == SM_NDIMAGE_SYMMETRY_NONE) {
             const int last_pos = first + taps - 1;
             if (mode == 0u) {  // nearest
                 const float last_v = line_src[clamp(last_pos, 0, length - 1) * stride];
@@ -151,19 +151,19 @@ static inline void ms_ndimage_correlate1d(constant MSNdimageCorrelateParams& p, 
                 if (d > d_both_out) {
                     const float left_v = line_src[0];
                     const float right_v = line_src[(length - 1) * stride];
-                    const float diff = (SymmetryKind == MS_NDIMAGE_SYMMETRY_ODD ? left_v - right_v : left_v + right_v);
+                    const float diff = (SymmetryKind == SM_NDIMAGE_SYMMETRY_ODD ? left_v - right_v : left_v + right_v);
                     for (; d > d_both_out; --d) acc += diff * w[pairs - d];
                 }
                 for (; d > d_in_stop; --d) {
                     const float below = line_src[clamp(centre - d, 0, length - 1) * stride];
                     const float above = line_src[clamp(centre + d, 0, length - 1) * stride];
-                    acc += (SymmetryKind == MS_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
+                    acc += (SymmetryKind == SM_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
                 }
                 if (d >= 1) {
                     device const float* c_src = line_src + centre * stride;
                     for (; d >= 1; --d) {
                         const float below = c_src[-d * stride], above = c_src[d * stride];
-                        acc += (SymmetryKind == MS_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
+                        acc += (SymmetryKind == SM_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
                     }
                 }
             } else if (mode == 1u) {  // wrap
@@ -178,7 +178,7 @@ static inline void ms_ndimage_correlate1d(constant MSNdimageCorrelateParams& p, 
                     for (int d = pairs; d >= 1; --d) {
                         const float below = line_src[qb * stride];
                         const float above = line_src[qa * stride];
-                        acc += (SymmetryKind == MS_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
+                        acc += (SymmetryKind == SM_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
                         if (++qb == length) qb = 0;
                         if (--qa < 0) qa = length - 1;
                     }
@@ -199,7 +199,7 @@ static inline void ms_ndimage_correlate1d(constant MSNdimageCorrelateParams& p, 
                         const int qa = ma < length ? ma : period - 1 - ma;
                         const float below = line_src[qb * stride];
                         const float above = line_src[qa * stride];
-                        acc += (SymmetryKind == MS_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
+                        acc += (SymmetryKind == SM_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
                         if (++mb == period) mb = 0;
                         if (--ma < 0) ma = period - 1;
                     }
@@ -208,7 +208,7 @@ static inline void ms_ndimage_correlate1d(constant MSNdimageCorrelateParams& p, 
                 if (length == 1) {
                     const float v0 = line_src[0];
                     acc = v0 * w[pairs];
-                    const float diff = (SymmetryKind == MS_NDIMAGE_SYMMETRY_ODD ? v0 - v0 : v0 + v0);
+                    const float diff = (SymmetryKind == SM_NDIMAGE_SYMMETRY_ODD ? v0 - v0 : v0 + v0);
                     for (int d = pairs; d >= 1; --d) acc += diff * w[pairs - d];
                 } else {
                     const int period = 2 * length - 2;
@@ -226,7 +226,7 @@ static inline void ms_ndimage_correlate1d(constant MSNdimageCorrelateParams& p, 
                             const int qa = ma < length ? ma : period - ma;
                             const float below = line_src[qb * stride];
                             const float above = line_src[qa * stride];
-                            acc += (SymmetryKind == MS_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
+                            acc += (SymmetryKind == SM_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
                             if (++mb == period) mb = 0;
                             if (--ma < 0) ma = period - 1;
                         }
@@ -239,46 +239,46 @@ static inline void ms_ndimage_correlate1d(constant MSNdimageCorrelateParams& p, 
                 const int d_in_stop = max(0, min(pairs, min(centre, length - 1 - centre)));
                 int d = pairs;
                 if (d > d_both_out) {
-                    const float diff = (SymmetryKind == MS_NDIMAGE_SYMMETRY_ODD ? cval - cval : cval + cval);
+                    const float diff = (SymmetryKind == SM_NDIMAGE_SYMMETRY_ODD ? cval - cval : cval + cval);
                     for (; d > d_both_out; --d) acc += diff * w[pairs - d];
                 }
                 for (; d > d_in_stop; --d) {
                     const int pb = centre - d, pa = centre + d;
                     const float below = (pb >= 0 && pb < length) ? line_src[pb * stride] : cval;
                     const float above = (pa >= 0 && pa < length) ? line_src[pa * stride] : cval;
-                    acc += (SymmetryKind == MS_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
+                    acc += (SymmetryKind == SM_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
                 }
                 if (d >= 1) {
                     device const float* c_src = line_src + centre * stride;
                     for (; d >= 1; --d) {
                         const float below = c_src[-d * stride], above = c_src[d * stride];
-                        acc += (SymmetryKind == MS_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
+                        acc += (SymmetryKind == SM_NDIMAGE_SYMMETRY_ODD ? below - above : below + above) * w[pairs - d];
                     }
                 }
             }
         }
     }
-    ms_ndimage_store(dst, index, acc);
+    sm_ndimage_store(dst, index, acc);
 }
 
-#define MS_NDIMAGE_CORRELATE1D_KERNEL(name, element, symmetry)                                      \
-    kernel void name(constant MSNdimageCorrelateParams& p [[buffer(0)]],                            \
+#define SM_NDIMAGE_CORRELATE1D_KERNEL(name, element, symmetry)                                      \
+    kernel void name(constant SMNdimageCorrelateParams& p [[buffer(0)]],                            \
                      device const float* src [[buffer(1)]],                                         \
                      device element* dst [[buffer(2)]],                                             \
                      constant float* weights [[buffer(3)]],                                         \
                      uint3 pos [[thread_position_in_grid]]) {                                       \
-        ms_ndimage_correlate1d<device element*, symmetry>(p, src, dst, weights, pos);              \
+        sm_ndimage_correlate1d<device element*, symmetry>(p, src, dst, weights, pos);              \
     }
 
-MS_NDIMAGE_CORRELATE1D_KERNEL(ms_ndimage_correlate1d_any_f32, float, MS_NDIMAGE_SYMMETRY_NONE)
-MS_NDIMAGE_CORRELATE1D_KERNEL(ms_ndimage_correlate1d_even_f32, float, MS_NDIMAGE_SYMMETRY_EVEN)
-MS_NDIMAGE_CORRELATE1D_KERNEL(ms_ndimage_correlate1d_odd_f32, float, MS_NDIMAGE_SYMMETRY_ODD)
-MS_NDIMAGE_CORRELATE1D_KERNEL(ms_ndimage_correlate1d_any_f64, ulong, MS_NDIMAGE_SYMMETRY_NONE)
-MS_NDIMAGE_CORRELATE1D_KERNEL(ms_ndimage_correlate1d_even_f64, ulong, MS_NDIMAGE_SYMMETRY_EVEN)
-MS_NDIMAGE_CORRELATE1D_KERNEL(ms_ndimage_correlate1d_odd_f64, ulong, MS_NDIMAGE_SYMMETRY_ODD)
+SM_NDIMAGE_CORRELATE1D_KERNEL(sm_ndimage_correlate1d_any_f32, float, SM_NDIMAGE_SYMMETRY_NONE)
+SM_NDIMAGE_CORRELATE1D_KERNEL(sm_ndimage_correlate1d_even_f32, float, SM_NDIMAGE_SYMMETRY_EVEN)
+SM_NDIMAGE_CORRELATE1D_KERNEL(sm_ndimage_correlate1d_odd_f32, float, SM_NDIMAGE_SYMMETRY_ODD)
+SM_NDIMAGE_CORRELATE1D_KERNEL(sm_ndimage_correlate1d_any_f64, ulong, SM_NDIMAGE_SYMMETRY_NONE)
+SM_NDIMAGE_CORRELATE1D_KERNEL(sm_ndimage_correlate1d_even_f64, ulong, SM_NDIMAGE_SYMMETRY_EVEN)
+SM_NDIMAGE_CORRELATE1D_KERNEL(sm_ndimage_correlate1d_odd_f64, ulong, SM_NDIMAGE_SYMMETRY_ODD)
 
 template <typename Destination>
-static inline void ms_ndimage_combine_impl(constant MSNdimageCombineParams& p,
+static inline void sm_ndimage_combine_impl(constant SMNdimageCombineParams& p,
                                            device const float* a,
                                            device const float* b,
                                            Destination dst,
@@ -286,40 +286,40 @@ static inline void ms_ndimage_combine_impl(constant MSNdimageCombineParams& p,
     if (gid >= p.elements) return;
     const float va = a[gid];
     float out;
-    if (p.op == MS_NDIMAGE_COMBINE_OP_COPY) {
+    if (p.op == SM_NDIMAGE_COMBINE_OP_COPY) {
         out = va;
-    } else if (p.op == MS_NDIMAGE_COMBINE_OP_SUM2) {
+    } else if (p.op == SM_NDIMAGE_COMBINE_OP_SUM2) {
         out = va + b[gid];
-    } else if (p.op == MS_NDIMAGE_COMBINE_OP_SQRT_SQ1) {
+    } else if (p.op == SM_NDIMAGE_COMBINE_OP_SQRT_SQ1) {
         out = sqrt(va * va);
-    } else if (p.op == MS_NDIMAGE_COMBINE_OP_SUM_SQ2) {
+    } else if (p.op == SM_NDIMAGE_COMBINE_OP_SUM_SQ2) {
         const float vb = b[gid];
         out = va * va + vb * vb;
-    } else if (p.op == MS_NDIMAGE_COMBINE_OP_ADD_SQ) {
+    } else if (p.op == SM_NDIMAGE_COMBINE_OP_ADD_SQ) {
         const float vb = b[gid];
         out = va + vb * vb;
-    } else if (p.op == MS_NDIMAGE_COMBINE_OP_SQRT_SUM_SQ2) {
+    } else if (p.op == SM_NDIMAGE_COMBINE_OP_SQRT_SUM_SQ2) {
         const float vb = b[gid];
         out = sqrt(va * va + vb * vb);
     } else {
         const float vb = b[gid];
         out = sqrt(va + vb * vb);
     }
-    ms_ndimage_store(dst, gid, out);
+    sm_ndimage_store(dst, gid, out);
 }
 
-kernel void ms_ndimage_combine_f32(constant MSNdimageCombineParams& p [[buffer(0)]],
+kernel void sm_ndimage_combine_f32(constant SMNdimageCombineParams& p [[buffer(0)]],
                                    device const float* a [[buffer(1)]],
                                    device const float* b [[buffer(2)]],
                                    device float* dst [[buffer(3)]],
                                    uint gid [[thread_position_in_grid]]) {
-    ms_ndimage_combine_impl<device float*>(p, a, b, dst, gid);
+    sm_ndimage_combine_impl<device float*>(p, a, b, dst, gid);
 }
 
-kernel void ms_ndimage_combine_f64(constant MSNdimageCombineParams& p [[buffer(0)]],
+kernel void sm_ndimage_combine_f64(constant SMNdimageCombineParams& p [[buffer(0)]],
                                    device const float* a [[buffer(1)]],
                                    device const float* b [[buffer(2)]],
                                    device ulong* dst [[buffer(3)]],
                                    uint gid [[thread_position_in_grid]]) {
-    ms_ndimage_combine_impl<device ulong*>(p, a, b, dst, gid);
+    sm_ndimage_combine_impl<device ulong*>(p, a, b, dst, gid);
 }

@@ -20,7 +20,7 @@ void set_metallib(std::string dir, std::string name);
 std::string metallib_path();
 
 // passes == 1: one dispatch.  passes == 2: the kernel is applied twice inside
-// ONE primitive through a scratch array -- the shape a multi-step metal-sci
+// ONE primitive through a scratch array -- the shape a multi-step SciMetal
 // plan takes (several dispatches + temporaries behind a single graph node).
 class Correlate1DReflect : public mx::Primitive {
  public:

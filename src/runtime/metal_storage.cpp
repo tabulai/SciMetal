@@ -12,7 +12,7 @@
 #include <utility>
 #include <unistd.h>
 
-namespace ms::detail {
+namespace sm::detail {
 static_assert(VM_PAGE_QUERY_PAGE_PRESENT == 0x1 && VM_PAGE_QUERY_PAGE_PAGED_OUT == 0x10 &&
               VM_PAGE_QUERY_PAGE_REF == 0x4 && VM_PAGE_QUERY_PAGE_DIRTY == 0x8 && VM_PAGE_QUERY_PAGE_COPIED == 0x20);
 const std::shared_ptr<DeviceOwner>& shared_device() {
@@ -21,11 +21,11 @@ const std::shared_ptr<DeviceOwner>& shared_device() {
         auto result = std::make_shared<DeviceOwner>();
         result->device = MTL::CreateSystemDefaultDevice();
         if (!result->device)
-            throw Error(MS_ENOTSUP, "No Metal device is available for shared storage");
+            throw Error(SM_ENOTSUP, "No Metal device is available for shared storage");
         result->registry_id = result->device->registryID();
         result->max_buffer_length = result->device->maxBufferLength();
         if (!result->registry_id || !result->max_buffer_length)
-            throw Error(MS_EBACKEND, "Metal device returned invalid allocation capabilities");
+            throw Error(SM_EBACKEND, "Metal device returned invalid allocation capabilities");
         return result;
     }();
     return owner;
@@ -58,28 +58,28 @@ uint64_t wait_metal_event(void* event, uint64_t value) {
     if (shared->signaledValue() >= value) return 0;
     const auto start = std::chrono::steady_clock::now();
     if (!shared->waitUntilSignaledValue(value, 60000) && shared->signaledValue() < value)
-        throw Error(MS_ETIMEOUT, "timed out waiting on Metal shared event");
+        throw Error(SM_ETIMEOUT, "timed out waiting on Metal shared event");
     return static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count());
 }
 
-void verify_metal_import(const ms_buffer_view& view) {
+void verify_metal_import(const sm_buffer_view& view) {
     require_original_process();
     AutoreleasePool pool;
     auto device = shared_device();
     if (view.device_id != device->registry_id)
-        throw Error(MS_ENOTSUP, "foreign Metal device is unsupported");
+        throw Error(SM_ENOTSUP, "foreign Metal device is unsupported");
     auto* buffer = static_cast<MTL::Buffer*>(view.metal_buffer);
     if (!buffer->device() || buffer->device()->registryID() != device->registry_id ||
         buffer->length() != view.capacity || buffer->storageMode() != MTL::StorageModeShared)
-        throw Error(MS_ENOTSUP, "Metal descriptor requires a shared MTLBuffer on the system device");
-    if ((view.flags & MS_BUFFER_HOST_READABLE) && buffer->contents() != view.host_base)
-        throw Error(MS_EINVAL, "Metal descriptor host_base does not match MTLBuffer contents");
+        throw Error(SM_ENOTSUP, "Metal descriptor requires a shared MTLBuffer on the system device");
+    if ((view.flags & SM_BUFFER_HOST_READABLE) && buffer->contents() != view.host_base)
+        throw Error(SM_EINVAL, "Metal descriptor host_base does not match MTLBuffer contents");
     if (view.completion_event) {
         auto* event = static_cast<MTL::SharedEvent*>(view.completion_event);
         if (MTL::Device* event_device = event->device();
             event_device && event_device->registryID() != device->registry_id)
-            throw Error(MS_ENOTSUP, "Metal completion event belongs to another device");
+            throw Error(SM_ENOTSUP, "Metal completion event belongs to another device");
     }
 }
 
@@ -96,26 +96,26 @@ void discard_cached_metal(RawAllocation& raw) {
         raw.in_flight_value = 0;
     }
     if (!raw.owner || raw.owner.use_count() != 1 || !raw.metal || !raw.host || !raw.capacity || !raw.device_id)
-        throw Error(MS_ESTATE, "discard requires exclusive owned Metal storage");
+        throw Error(SM_ESTATE, "discard requires exclusive owned Metal storage");
     auto* buffer = static_cast<MTL::Buffer*>(raw.metal);
     if (buffer->length() != raw.capacity || buffer->device()->registryID() != raw.device_id ||
         buffer->storageMode() != MTL::StorageModeShared ||
         buffer->hazardTrackingMode() != MTL::HazardTrackingModeTracked ||
         buffer->cpuCacheMode() != MTL::CPUCacheModeDefaultCache)
-        throw Error(MS_EBACKEND, "cached Metal resource properties changed");
+        throw Error(SM_EBACKEND, "cached Metal resource properties changed");
     if (buffer->setPurgeableState(MTL::PurgeableStateKeepCurrent) != MTL::PurgeableStateNonVolatile)
-        throw Error(MS_EBACKEND, "cached Metal resource was unexpectedly purgeable");
+        throw Error(SM_EBACKEND, "cached Metal resource was unexpectedly purgeable");
     // The setter returns the prior state; query the resulting state separately.
     if (buffer->setPurgeableState(MTL::PurgeableStateEmpty) != MTL::PurgeableStateNonVolatile ||
         buffer->setPurgeableState(MTL::PurgeableStateKeepCurrent) != MTL::PurgeableStateEmpty)
-        throw Error(MS_EBACKEND, "cached Metal resource did not enter the empty state");
+        throw Error(SM_EBACKEND, "cached Metal resource did not enter the empty state");
     if (buffer->setPurgeableState(MTL::PurgeableStateNonVolatile) != MTL::PurgeableStateEmpty ||
         buffer->setPurgeableState(MTL::PurgeableStateKeepCurrent) != MTL::PurgeableStateNonVolatile)
-        throw Error(MS_EBACKEND, "cached Metal resource did not return to nonvolatile state");
+        throw Error(SM_EBACKEND, "cached Metal resource did not return to nonvolatile state");
     void* host = buffer->contents();
     if (!host || reinterpret_cast<uintptr_t>(host) % 64 || buffer->length() != raw.capacity ||
         buffer->device()->registryID() != raw.device_id || buffer->allocatedSize() > raw.capacity)
-        throw Error(MS_EBACKEND, "restored Metal resource has incompatible storage");
+        throw Error(SM_EBACKEND, "restored Metal resource has incompatible storage");
     raw.host = host;
 }
 
@@ -130,7 +130,7 @@ void prepare_cached_metal(RawAllocation& raw) {
     raw.in_flight_event = nullptr;
     raw.in_flight_value = 0;
     if (!raw.owner || raw.owner.use_count() != 1 || !raw.metal || !raw.host || !raw.device_id)
-        throw Error(MS_ESTATE, "cache checkout requires exclusive owned Metal storage");
+        throw Error(SM_ESTATE, "cache checkout requires exclusive owned Metal storage");
     const auto queried_page = sysconf(_SC_PAGESIZE);
     if (queried_page < 64 || (queried_page & (queried_page - 1))) return;
     const auto page = static_cast<uint64_t>(queried_page);
@@ -155,14 +155,14 @@ void prepare_cached_metal(RawAllocation& raw) {
 
 RawAllocation allocate_metal(uint64_t capacity) {
     require_original_process();
-    if (!capacity) throw Error(MS_EINVAL, "Metal allocation capacity must be positive");
+    if (!capacity) throw Error(SM_EINVAL, "Metal allocation capacity must be positive");
     if (capacity > std::numeric_limits<NS::UInteger>::max())
-        throw Error(MS_EOVERFLOW, "Metal allocation capacity exceeds NSUInteger");
+        throw Error(SM_EOVERFLOW, "Metal allocation capacity exceeds NSUInteger");
 
     AutoreleasePool pool;
     auto device = shared_device();
     if (capacity > device->max_buffer_length)
-        throw Error(MS_EOOM, "Metal allocation exceeds device maxBufferLength");
+        throw Error(SM_EOOM, "Metal allocation exceeds device maxBufferLength");
 
     // Allocate the C++ owner before acquiring the native object, so an owner
     // allocation failure cannot leak a retained MTLBuffer.
@@ -171,18 +171,18 @@ RawAllocation allocate_metal(uint64_t capacity) {
     constexpr MTL::ResourceOptions options = MTL::ResourceStorageModeShared |
         MTL::ResourceHazardTrackingModeTracked | MTL::ResourceCPUCacheModeDefaultCache;
     owner->buffer = owner->device->device->newBuffer(static_cast<NS::UInteger>(capacity), options);
-    if (!owner->buffer) throw Error(MS_EOOM, "Metal shared-buffer allocation failed");
+    if (!owner->buffer) throw Error(SM_EOOM, "Metal shared-buffer allocation failed");
 
     void* host = owner->buffer->contents();
     if (!host || reinterpret_cast<uintptr_t>(host) % 64 ||
         owner->buffer->length() != capacity ||
         owner->buffer->storageMode() != MTL::StorageModeShared ||
         owner->buffer->hazardTrackingMode() != MTL::HazardTrackingModeTracked)
-        throw Error(MS_EBACKEND, "Metal returned an incompatible shared-buffer allocation");
+        throw Error(SM_EBACKEND, "Metal returned an incompatible shared-buffer allocation");
     // Metal can round a non-page-aligned length up internally. The runtime
     // reserves page-rounded Metal capacities; never undercharge extra bytes.
     if (owner->buffer->allocatedSize() > capacity)
-        throw Error(MS_EBACKEND, "Metal allocatedSize exceeds the reserved capacity");
+        throw Error(SM_EBACKEND, "Metal allocatedSize exceeds the reserved capacity");
 
     return {owner, host, owner->buffer, owner->device->registry_id, capacity, nullptr, 0, nullptr};
 }
@@ -199,13 +199,13 @@ RawAllocation wrap_metal_pages(const void* base, uint64_t capacity, std::shared_
         reinterpret_cast<vm_region_recurse_info_t>(&info), &count);
     if (status != KERN_SUCCESS || info.is_submap || !(info.protection & VM_PROT_READ) ||
         region > first || first - region > size || capacity > size - (first - region))
-        throw Error(MS_ENOTSUP, "no-copy pages must be in one readable VM region");
+        throw Error(SM_ENOTSUP, "no-copy pages must be in one readable VM region");
 
     AutoreleasePool pool;
     auto owner = std::make_shared<BufferOwner>();
     owner->device = shared_device();
     if (capacity > owner->device->max_buffer_length)
-        throw Error(MS_ENOTSUP, "no-copy span exceeds Metal maxBufferLength");
+        throw Error(SM_ENOTSUP, "no-copy span exceeds Metal maxBufferLength");
     constexpr auto options = MTL::ResourceStorageModeShared | MTL::ResourceHazardTrackingModeTracked;
     // Metal may retain this resource past the last column or descriptor.
     // Its deallocator block keeps the source alive until Metal is actually
@@ -215,7 +215,7 @@ RawAllocation wrap_metal_pages(const void* base, uint64_t capacity, std::shared_
         ^(void*, NS::UInteger) { (void)producer; });
     if (!owner->buffer || owner->buffer->contents() != base || owner->buffer->length() != capacity ||
         owner->buffer->storageMode() != MTL::StorageModeShared || owner->buffer->allocatedSize() > capacity)
-        throw Error(MS_ENOTSUP, "Metal could not wrap these immutable pages without copying");
+        throw Error(SM_ENOTSUP, "Metal could not wrap these immutable pages without copying");
     return {owner, owner->buffer->contents(), owner->buffer, owner->device->registry_id, capacity, nullptr, 0, nullptr};
 }
-} // namespace ms::detail
+} // namespace sm::detail

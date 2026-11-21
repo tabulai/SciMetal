@@ -1,5 +1,5 @@
 // FFT kernels: the vendored MLX kernels (third_party/mlx-kernels, MIT, byte
-// identical to MLX 0.31.1) plus metal-sci's own passes built on their radix
+// identical to MLX 0.31.1) plus SciMetal's own passes built on their radix
 // codelets.
 //
 // MLX's four-step kernels stop at two passes and power-of-two sizes. The
@@ -26,7 +26,7 @@
 // of unity for every k, where forming -2 pi k / p directly (MLX's get_twiddle)
 // loses up to ~1e-6 near k = p, and it does not depend on the accuracy of the
 // device's fast trigonometric functions.
-METAL_FUNC float2 ms_fft_twiddle(uint k, uint p, float inverse_p) {
+METAL_FUNC float2 sm_fft_twiddle(uint k, uint p, float inverse_p) {
   // octant = floor(8k / p). The float estimate is within one of it; the
   // remainder, computed exactly, corrects it without an integer division.
   uint octant = uint(8.0f * float(k) * inverse_p);
@@ -80,7 +80,7 @@ METAL_FUNC float2 ms_fft_twiddle(uint k, uint p, float inverse_p) {
 }
 
 template <int tg_mem_size>
-[[kernel]] void ms_fft_strided(
+[[kernel]] void sm_fft_strided(
     const device float2* in [[buffer(0)]],
     device float2* out [[buffer(1)]],
     constant MSFFTStridedParams& p [[buffer(2)]],
@@ -131,7 +131,7 @@ template <int tg_mem_size>
     float2 value = 0.0f;
     if (live) {
       value = in[source + uint(first + e) * uint(stride)];
-      if (p.flags & MS_FFT_CONJ_LOAD) {
+      if (p.flags & SM_FFT_CONJ_LOAD) {
         value.y = -value.y;
       }
     }
@@ -176,9 +176,9 @@ template <int tg_mem_size>
     const uint k = uint(first + e);
     float2 value = shared[slot + e];
     if (remaining > 1u) {
-      value = complex_mul(value, ms_fft_twiddle(k * r, period, inverse_period));
+      value = complex_mul(value, sm_fft_twiddle(k * r, period, inverse_period));
     }
-    if (p.flags & MS_FFT_CONJ_STORE) {
+    if (p.flags & SM_FFT_CONJ_STORE) {
       value.y = -value.y;
     }
     const uint target = ((lead * uint(n) + k) * outer + done) * uint(stride) + uint(column);
@@ -186,30 +186,30 @@ template <int tg_mem_size>
   }
 }
 
-#define instantiate_ms_fft_strided(tg_mem_size) \
-  instantiate_kernel("ms_fft_strided_mem_" #tg_mem_size, ms_fft_strided, tg_mem_size)
+#define instantiate_sm_fft_strided(tg_mem_size) \
+  instantiate_kernel("sm_fft_strided_mem_" #tg_mem_size, sm_fft_strided, tg_mem_size)
 
-instantiate_ms_fft_strided(256)
-instantiate_ms_fft_strided(512)
-instantiate_ms_fft_strided(1024)
-instantiate_ms_fft_strided(2048)
-instantiate_ms_fft_strided(4096)
+instantiate_sm_fft_strided(256)
+instantiate_sm_fft_strided(512)
+instantiate_sm_fft_strided(1024)
+instantiate_sm_fft_strided(2048)
+instantiate_sm_fft_strided(4096)
 
 // Normalisation that no transform pass could absorb: data[i] *= scale.
-kernel void ms_fft_scale(constant MSFFTScaleParams& p [[buffer(0)]],
+kernel void sm_fft_scale(constant MSFFTScaleParams& p [[buffer(0)]],
                          device float* data [[buffer(1)]],
                          uint pos [[thread_position_in_grid]]) {
-  const ulong begin = ulong(pos) * MS_FFT_SCALE_CHUNK;
+  const ulong begin = ulong(pos) * SM_FFT_SCALE_CHUNK;
   if (begin >= p.count) {
     return;
   }
-  const ulong end = min(begin + MS_FFT_SCALE_CHUNK, p.count);
+  const ulong end = min(begin + SM_FFT_SCALE_CHUNK, p.count);
   for (ulong i = begin; i < end; i++) {
     data[i] *= p.scale;
   }
 }
 
-kernel void ms_fft_c2r_hermitian_fix(constant MSFFTC2RHermitianParams& p [[buffer(0)]],
+kernel void sm_fft_c2r_hermitian_fix(constant MSFFTC2RHermitianParams& p [[buffer(0)]],
                                      device float2* data [[buffer(1)]],
                                      uint row [[thread_position_in_grid]]) {
   if (row >= p.rows) {

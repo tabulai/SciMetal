@@ -35,7 +35,7 @@ endif()
 
 # ----------------------------- Main module -----------------------------
 # The kernel metallib is NOT built here: it is compiled offline by build.sh
-# (it is metal-sci's own artifact, shared with the standalone runner).
+# (it is SciMetal's own artifact, shared with the standalone runner).
 nanobind_add_module(
   _e8_mlx
   NB_STATIC

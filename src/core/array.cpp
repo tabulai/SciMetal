@@ -1,5 +1,5 @@
 #include "array.hpp"
-#include "ms/detail/parallel.hpp"
+#include "sm/detail/parallel.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -9,7 +9,7 @@
 #include <arm_neon.h>
 #endif
 
-namespace ms::detail::array {
+namespace sm::detail::array {
 namespace {
 uint64_t scalars_per_element(uint32_t dtype) { return is_complex(dtype) ? 2 : 1; }
 // Lanes get at least this many scalars each: below it one core is faster than
@@ -96,7 +96,7 @@ void convert_int_or_bool_to_float32(const void* src, uint32_t src_dtype, float* 
         float* __restrict__ out = dst + begin;
         LaneStats& st = lane_stats[lane];
         switch (src_dtype) {
-        case MS_BOOL: {
+        case SM_BOOL: {
             const uint8_t* __restrict__ in = static_cast<const uint8_t*>(src) + begin;
             uint8_t any = 0;
             for (uint64_t i = 0; i < count; ++i) {
@@ -108,14 +108,14 @@ void convert_int_or_bool_to_float32(const void* src, uint32_t src_dtype, float* 
             st.max_magnitude = st.max_finite;
             break;
         }
-        case MS_INT8: int_to_float32_lane(static_cast<const int8_t*>(src) + begin, out, count, report, st); break;
-        case MS_INT16: int_to_float32_lane(static_cast<const int16_t*>(src) + begin, out, count, report, st); break;
-        case MS_INT32: int_to_float32_lane(static_cast<const int32_t*>(src) + begin, out, count, report, st); break;
-        case MS_INT64: int_to_float32_lane(static_cast<const int64_t*>(src) + begin, out, count, report, st); break;
-        case MS_UINT8: int_to_float32_lane(static_cast<const uint8_t*>(src) + begin, out, count, report, st); break;
-        case MS_UINT16: int_to_float32_lane(static_cast<const uint16_t*>(src) + begin, out, count, report, st); break;
-        case MS_UINT32: int_to_float32_lane(static_cast<const uint32_t*>(src) + begin, out, count, report, st); break;
-        case MS_UINT64: int_to_float32_lane(static_cast<const uint64_t*>(src) + begin, out, count, report, st); break;
+        case SM_INT8: int_to_float32_lane(static_cast<const int8_t*>(src) + begin, out, count, report, st); break;
+        case SM_INT16: int_to_float32_lane(static_cast<const int16_t*>(src) + begin, out, count, report, st); break;
+        case SM_INT32: int_to_float32_lane(static_cast<const int32_t*>(src) + begin, out, count, report, st); break;
+        case SM_INT64: int_to_float32_lane(static_cast<const int64_t*>(src) + begin, out, count, report, st); break;
+        case SM_UINT8: int_to_float32_lane(static_cast<const uint8_t*>(src) + begin, out, count, report, st); break;
+        case SM_UINT16: int_to_float32_lane(static_cast<const uint16_t*>(src) + begin, out, count, report, st); break;
+        case SM_UINT32: int_to_float32_lane(static_cast<const uint32_t*>(src) + begin, out, count, report, st); break;
+        case SM_UINT64: int_to_float32_lane(static_cast<const uint64_t*>(src) + begin, out, count, report, st); break;
         default: break;
         }
     });
@@ -131,47 +131,47 @@ void convert_int_or_bool_to_float32(const void* src, uint32_t src_dtype, float* 
 
 void int_or_bool_to_float64_slice(const void* src, uint32_t src_dtype, double* dst, uint64_t begin, uint64_t count) {
     switch (src_dtype) {
-    case MS_BOOL: {
+    case SM_BOOL: {
         const uint8_t* in = static_cast<const uint8_t*>(src) + begin;
         for (uint64_t i = 0; i < count; ++i) dst[i] = in[i] ? 1.0 : 0.0;
         break;
     }
-    case MS_INT8: {
+    case SM_INT8: {
         const int8_t* in = static_cast<const int8_t*>(src) + begin;
         for (uint64_t i = 0; i < count; ++i) dst[i] = static_cast<double>(in[i]);
         break;
     }
-    case MS_INT16: {
+    case SM_INT16: {
         const int16_t* in = static_cast<const int16_t*>(src) + begin;
         for (uint64_t i = 0; i < count; ++i) dst[i] = static_cast<double>(in[i]);
         break;
     }
-    case MS_INT32: {
+    case SM_INT32: {
         const int32_t* in = static_cast<const int32_t*>(src) + begin;
         for (uint64_t i = 0; i < count; ++i) dst[i] = static_cast<double>(in[i]);
         break;
     }
-    case MS_INT64: {
+    case SM_INT64: {
         const int64_t* in = static_cast<const int64_t*>(src) + begin;
         for (uint64_t i = 0; i < count; ++i) dst[i] = static_cast<double>(in[i]);
         break;
     }
-    case MS_UINT8: {
+    case SM_UINT8: {
         const uint8_t* in = static_cast<const uint8_t*>(src) + begin;
         for (uint64_t i = 0; i < count; ++i) dst[i] = static_cast<double>(in[i]);
         break;
     }
-    case MS_UINT16: {
+    case SM_UINT16: {
         const uint16_t* in = static_cast<const uint16_t*>(src) + begin;
         for (uint64_t i = 0; i < count; ++i) dst[i] = static_cast<double>(in[i]);
         break;
     }
-    case MS_UINT32: {
+    case SM_UINT32: {
         const uint32_t* in = static_cast<const uint32_t*>(src) + begin;
         for (uint64_t i = 0; i < count; ++i) dst[i] = static_cast<double>(in[i]);
         break;
     }
-    case MS_UINT64: {
+    case SM_UINT64: {
         const uint64_t* in = static_cast<const uint64_t*>(src) + begin;
         for (uint64_t i = 0; i < count; ++i) dst[i] = static_cast<double>(in[i]);
         break;
@@ -184,47 +184,47 @@ template<class FloatT>
 void float_to_int_or_bool_slice(const FloatT* src, void* dst, uint32_t dst_dtype, uint64_t begin, uint64_t count) {
     const FloatT* in = src + begin;
     switch (dst_dtype) {
-    case MS_BOOL: {
+    case SM_BOOL: {
         uint8_t* out = static_cast<uint8_t*>(dst) + begin;
         for (uint64_t i = 0; i < count; ++i) out[i] = (in[i] != FloatT{0}) ? uint8_t{1} : uint8_t{0};
         break;
     }
-    case MS_INT8: {
+    case SM_INT8: {
         int8_t* out = static_cast<int8_t*>(dst) + begin;
         for (uint64_t i = 0; i < count; ++i) out[i] = cast_double_ndimage<int8_t>(static_cast<double>(in[i]));
         break;
     }
-    case MS_INT16: {
+    case SM_INT16: {
         int16_t* out = static_cast<int16_t*>(dst) + begin;
         for (uint64_t i = 0; i < count; ++i) out[i] = cast_double_ndimage<int16_t>(static_cast<double>(in[i]));
         break;
     }
-    case MS_INT32: {
+    case SM_INT32: {
         int32_t* out = static_cast<int32_t*>(dst) + begin;
         for (uint64_t i = 0; i < count; ++i) out[i] = cast_double_ndimage<int32_t>(static_cast<double>(in[i]));
         break;
     }
-    case MS_INT64: {
+    case SM_INT64: {
         int64_t* out = static_cast<int64_t*>(dst) + begin;
         for (uint64_t i = 0; i < count; ++i) out[i] = cast_double_ndimage<int64_t>(static_cast<double>(in[i]));
         break;
     }
-    case MS_UINT8: {
+    case SM_UINT8: {
         uint8_t* out = static_cast<uint8_t*>(dst) + begin;
         for (uint64_t i = 0; i < count; ++i) out[i] = cast_double_ndimage<uint8_t>(static_cast<double>(in[i]));
         break;
     }
-    case MS_UINT16: {
+    case SM_UINT16: {
         uint16_t* out = static_cast<uint16_t*>(dst) + begin;
         for (uint64_t i = 0; i < count; ++i) out[i] = cast_double_ndimage<uint16_t>(static_cast<double>(in[i]));
         break;
     }
-    case MS_UINT32: {
+    case SM_UINT32: {
         uint32_t* out = static_cast<uint32_t*>(dst) + begin;
         for (uint64_t i = 0; i < count; ++i) out[i] = cast_double_ndimage<uint32_t>(static_cast<double>(in[i]));
         break;
     }
-    case MS_UINT64: {
+    case SM_UINT64: {
         uint64_t* out = static_cast<uint64_t*>(dst) + begin;
         for (uint64_t i = 0; i < count; ++i) out[i] = cast_double_ndimage<uint64_t>(static_cast<double>(in[i]));
         break;
@@ -235,47 +235,47 @@ void float_to_int_or_bool_slice(const FloatT* src, void* dst, uint32_t dst_dtype
 
 void int_load_u64(const void* src, uint32_t src_dtype, uint64_t offset, uint64_t* dst, size_t n) {
     switch (src_dtype) {
-    case MS_BOOL: {
+    case SM_BOOL: {
         const uint8_t* p = static_cast<const uint8_t*>(src) + offset;
         for (size_t i = 0; i < n; ++i) dst[i] = p[i] ? uint64_t{1} : uint64_t{0};
         break;
     }
-    case MS_INT8: {
+    case SM_INT8: {
         const int8_t* p = static_cast<const int8_t*>(src) + offset;
         for (size_t i = 0; i < n; ++i) dst[i] = static_cast<uint64_t>(static_cast<int64_t>(p[i]));
         break;
     }
-    case MS_INT16: {
+    case SM_INT16: {
         const int16_t* p = static_cast<const int16_t*>(src) + offset;
         for (size_t i = 0; i < n; ++i) dst[i] = static_cast<uint64_t>(static_cast<int64_t>(p[i]));
         break;
     }
-    case MS_INT32: {
+    case SM_INT32: {
         const int32_t* p = static_cast<const int32_t*>(src) + offset;
         for (size_t i = 0; i < n; ++i) dst[i] = static_cast<uint64_t>(static_cast<int64_t>(p[i]));
         break;
     }
-    case MS_INT64: {
+    case SM_INT64: {
         const int64_t* p = static_cast<const int64_t*>(src) + offset;
         for (size_t i = 0; i < n; ++i) dst[i] = static_cast<uint64_t>(p[i]);
         break;
     }
-    case MS_UINT8: {
+    case SM_UINT8: {
         const uint8_t* p = static_cast<const uint8_t*>(src) + offset;
         for (size_t i = 0; i < n; ++i) dst[i] = static_cast<uint64_t>(p[i]);
         break;
     }
-    case MS_UINT16: {
+    case SM_UINT16: {
         const uint16_t* p = static_cast<const uint16_t*>(src) + offset;
         for (size_t i = 0; i < n; ++i) dst[i] = static_cast<uint64_t>(p[i]);
         break;
     }
-    case MS_UINT32: {
+    case SM_UINT32: {
         const uint32_t* p = static_cast<const uint32_t*>(src) + offset;
         for (size_t i = 0; i < n; ++i) dst[i] = static_cast<uint64_t>(p[i]);
         break;
     }
-    case MS_UINT64: {
+    case SM_UINT64: {
         const uint64_t* p = static_cast<const uint64_t*>(src) + offset;
         std::memcpy(dst, p, n * sizeof(uint64_t));
         break;
@@ -286,47 +286,47 @@ void int_load_u64(const void* src, uint32_t src_dtype, uint64_t offset, uint64_t
 
 void u64_store_int(const uint64_t* src, void* dst, uint32_t dst_dtype, uint64_t offset, size_t n) {
     switch (dst_dtype) {
-    case MS_BOOL: {
+    case SM_BOOL: {
         uint8_t* p = static_cast<uint8_t*>(dst) + offset;
         for (size_t i = 0; i < n; ++i) p[i] = src[i] ? uint8_t{1} : uint8_t{0};
         break;
     }
-    case MS_INT8: {
+    case SM_INT8: {
         int8_t* p = static_cast<int8_t*>(dst) + offset;
         for (size_t i = 0; i < n; ++i) p[i] = static_cast<int8_t>(static_cast<uint8_t>(src[i]));
         break;
     }
-    case MS_INT16: {
+    case SM_INT16: {
         int16_t* p = static_cast<int16_t*>(dst) + offset;
         for (size_t i = 0; i < n; ++i) p[i] = static_cast<int16_t>(static_cast<uint16_t>(src[i]));
         break;
     }
-    case MS_INT32: {
+    case SM_INT32: {
         int32_t* p = static_cast<int32_t*>(dst) + offset;
         for (size_t i = 0; i < n; ++i) p[i] = static_cast<int32_t>(static_cast<uint32_t>(src[i]));
         break;
     }
-    case MS_INT64: {
+    case SM_INT64: {
         int64_t* p = static_cast<int64_t*>(dst) + offset;
         for (size_t i = 0; i < n; ++i) p[i] = static_cast<int64_t>(src[i]);
         break;
     }
-    case MS_UINT8: {
+    case SM_UINT8: {
         uint8_t* p = static_cast<uint8_t*>(dst) + offset;
         for (size_t i = 0; i < n; ++i) p[i] = static_cast<uint8_t>(src[i]);
         break;
     }
-    case MS_UINT16: {
+    case SM_UINT16: {
         uint16_t* p = static_cast<uint16_t*>(dst) + offset;
         for (size_t i = 0; i < n; ++i) p[i] = static_cast<uint16_t>(src[i]);
         break;
     }
-    case MS_UINT32: {
+    case SM_UINT32: {
         uint32_t* p = static_cast<uint32_t*>(dst) + offset;
         for (size_t i = 0; i < n; ++i) p[i] = static_cast<uint32_t>(src[i]);
         break;
     }
-    case MS_UINT64: {
+    case SM_UINT64: {
         uint64_t* p = static_cast<uint64_t*>(dst) + offset;
         std::memcpy(p, src, n * sizeof(uint64_t));
         break;
@@ -338,81 +338,81 @@ void u64_store_int(const uint64_t* src, void* dst, uint32_t dst_dtype, uint64_t 
 
 uint64_t dtype_size(uint32_t dtype) {
     switch (dtype) {
-    case MS_BOOL:
-    case MS_INT8:
-    case MS_UINT8: return 1;
-    case MS_INT16:
-    case MS_UINT16: return 2;
-    case MS_FLOAT32:
-    case MS_INT32:
-    case MS_UINT32: return 4;
-    case MS_FLOAT64:
-    case MS_COMPLEX64:
-    case MS_INT64:
-    case MS_UINT64: return 8;
-    case MS_COMPLEX128: return 16;
-    default: throw Error(MS_EINVAL, "unknown array dtype");
+    case SM_BOOL:
+    case SM_INT8:
+    case SM_UINT8: return 1;
+    case SM_INT16:
+    case SM_UINT16: return 2;
+    case SM_FLOAT32:
+    case SM_INT32:
+    case SM_UINT32: return 4;
+    case SM_FLOAT64:
+    case SM_COMPLEX64:
+    case SM_INT64:
+    case SM_UINT64: return 8;
+    case SM_COMPLEX128: return 16;
+    default: throw Error(SM_EINVAL, "unknown array dtype");
     }
 }
 uint64_t scalar_alignment(uint32_t dtype) {
     const uint64_t width = dtype_size(dtype);
     return is_complex(dtype) ? width / 2 : width;
 }
-bool is_double(uint32_t dtype) { return dtype == MS_FLOAT64 || dtype == MS_COMPLEX128; }
-bool is_complex(uint32_t dtype) { return dtype == MS_COMPLEX64 || dtype == MS_COMPLEX128; }
-bool is_float(uint32_t dtype) { return dtype == MS_FLOAT32 || dtype == MS_FLOAT64; }
-bool is_bool(uint32_t dtype) { return dtype == MS_BOOL; }
-bool is_integer(uint32_t dtype) { return dtype >= MS_INT8 && dtype <= MS_UINT64; }
-bool is_signed_int(uint32_t dtype) { return dtype >= MS_INT8 && dtype <= MS_INT64; }
-bool is_unsigned_int(uint32_t dtype) { return dtype >= MS_UINT8 && dtype <= MS_UINT64; }
-bool is_int_or_bool(uint32_t dtype) { return dtype >= MS_BOOL && dtype <= MS_UINT64; }
-bool is_real(uint32_t dtype) { return dtype == MS_FLOAT32 || dtype == MS_FLOAT64 || is_int_or_bool(dtype); }
+bool is_double(uint32_t dtype) { return dtype == SM_FLOAT64 || dtype == SM_COMPLEX128; }
+bool is_complex(uint32_t dtype) { return dtype == SM_COMPLEX64 || dtype == SM_COMPLEX128; }
+bool is_float(uint32_t dtype) { return dtype == SM_FLOAT32 || dtype == SM_FLOAT64; }
+bool is_bool(uint32_t dtype) { return dtype == SM_BOOL; }
+bool is_integer(uint32_t dtype) { return dtype >= SM_INT8 && dtype <= SM_UINT64; }
+bool is_signed_int(uint32_t dtype) { return dtype >= SM_INT8 && dtype <= SM_INT64; }
+bool is_unsigned_int(uint32_t dtype) { return dtype >= SM_UINT8 && dtype <= SM_UINT64; }
+bool is_int_or_bool(uint32_t dtype) { return dtype >= SM_BOOL && dtype <= SM_UINT64; }
+bool is_real(uint32_t dtype) { return dtype == SM_FLOAT32 || dtype == SM_FLOAT64 || is_int_or_bool(dtype); }
 uint32_t single_of(uint32_t dtype) {
-    if (is_complex(dtype)) return MS_COMPLEX64;
-    return MS_FLOAT32;
+    if (is_complex(dtype)) return SM_COMPLEX64;
+    return SM_FLOAT32;
 }
 
-Shape checked_shape(const ms_array* array) {
-    if (!array) throw Error(MS_EINVAL, "null array");
-    if (array->struct_size != sizeof(ms_array) || array->abi_version != MS_ARRAY_ABI_VERSION)
-        throw Error(MS_EINVAL, "array descriptor size or ABI version mismatch");
-    if (array->ndim < 1 || array->ndim > MS_MAX_NDIM) throw Error(MS_EINVAL, "array rank must be 1 to 8");
+Shape checked_shape(const sm_array* array) {
+    if (!array) throw Error(SM_EINVAL, "null array");
+    if (array->struct_size != sizeof(sm_array) || array->abi_version != SM_ARRAY_ABI_VERSION)
+        throw Error(SM_EINVAL, "array descriptor size or ABI version mismatch");
+    if (array->ndim < 1 || array->ndim > SM_MAX_NDIM) throw Error(SM_EINVAL, "array rank must be 1 to 8");
     const uint64_t width = dtype_size(array->dtype);
     Shape shape;
     shape.ndim = array->ndim;
     shape.elements = 1;
     for (uint32_t axis = 0; axis < array->ndim; ++axis) {
         shape.dims[axis] = array->shape[axis];
-        if (ms_checked_mul(shape.elements, array->shape[axis], &shape.elements) != MS_OK)
-            throw Error(MS_EOVERFLOW, "array element count overflows");
+        if (sm_checked_mul(shape.elements, array->shape[axis], &shape.elements) != SM_OK)
+            throw Error(SM_EOVERFLOW, "array element count overflows");
     }
     uint64_t bytes = 0;
-    if (ms_checked_mul(shape.elements, width, &bytes) != MS_OK)
-        throw Error(MS_EOVERFLOW, "array byte size overflows");
+    if (sm_checked_mul(shape.elements, width, &bytes) != SM_OK)
+        throw Error(SM_EOVERFLOW, "array byte size overflows");
     if (shape.elements) {
-        if (!array->data) throw Error(MS_EINVAL, "null data for a non-empty array");
+        if (!array->data) throw Error(SM_EINVAL, "null data for a non-empty array");
         const uint64_t align = scalar_alignment(array->dtype);
         if (reinterpret_cast<uintptr_t>(array->data) % align != 0)
-            throw Error(MS_EINVAL, "array data pointer is not aligned for its dtype");
+            throw Error(SM_EINVAL, "array data pointer is not aligned for its dtype");
     }
     return shape;
 }
 
-void check_options(const ms_route_options* options) {
-    if (!options) throw Error(MS_EINVAL, "null route options");
-    if (options->struct_size != sizeof(ms_route_options) || options->abi_version != MS_ARRAY_ABI_VERSION)
-        throw Error(MS_EINVAL, "route options size or ABI version mismatch");
-    if (options->execution != MS_EXECUTION_CPU && options->execution != MS_EXECUTION_GPU &&
-        options->execution != MS_EXECUTION_AUTO)
-        throw Error(MS_EINVAL, "unknown execution mode");
-    if (options->precision != MS_PRECISION_FAST && options->precision != MS_PRECISION_REFINED &&
-        options->precision != MS_PRECISION_STRICT)
-        throw Error(MS_EINVAL, "unknown precision policy");
+void check_options(const sm_route_options* options) {
+    if (!options) throw Error(SM_EINVAL, "null route options");
+    if (options->struct_size != sizeof(sm_route_options) || options->abi_version != SM_ARRAY_ABI_VERSION)
+        throw Error(SM_EINVAL, "route options size or ABI version mismatch");
+    if (options->execution != SM_EXECUTION_CPU && options->execution != SM_EXECUTION_GPU &&
+        options->execution != SM_EXECUTION_AUTO)
+        throw Error(SM_EINVAL, "unknown execution mode");
+    if (options->precision != SM_PRECISION_FAST && options->precision != SM_PRECISION_REFINED &&
+        options->precision != SM_PRECISION_STRICT)
+        throw Error(SM_EINVAL, "unknown precision policy");
     if (options->reserved[0] || options->reserved[1])
-        throw Error(MS_EINVAL, "route options reserved fields must be zero");
+        throw Error(SM_EINVAL, "route options reserved fields must be zero");
 }
 
-BufferPtr allocate(ms_context* context, uint64_t bytes) {
+BufferPtr allocate(sm_context* context, uint64_t bytes) {
     auto reservation = reserve(context, padded_capacity(bytes, context));
     return allocate_reserved(context, reservation, bytes, Fill::unfilled);
 }
@@ -420,17 +420,17 @@ BufferPtr allocate(ms_context* context, uint64_t bytes) {
 void convert(const void* src, uint32_t src_dtype, void* dst, uint32_t dst_dtype, uint64_t elements,
              ConvertReport* report) {
     if (is_complex(src_dtype) != is_complex(dst_dtype))
-        throw Error(MS_EINVAL, "real and complex arrays do not convert into each other");
+        throw Error(SM_EINVAL, "real and complex arrays do not convert into each other");
     const uint64_t src_width = dtype_size(src_dtype);
     (void)dtype_size(dst_dtype);
     if (report) *report = ConvertReport{};
     if (!elements) return;
 
     if (src_dtype == dst_dtype) {
-        if (report && (src_dtype == MS_FLOAT32 || src_dtype == MS_COMPLEX64)) {
+        if (report && (src_dtype == SM_FLOAT32 || src_dtype == SM_COMPLEX64)) {
             uint64_t scalars = 0;
-            if (ms_checked_mul(elements, scalars_per_element(src_dtype), &scalars) != MS_OK)
-                throw Error(MS_EOVERFLOW, "array scalar count overflows");
+            if (sm_checked_mul(elements, scalars_per_element(src_dtype), &scalars) != SM_OK)
+                throw Error(SM_EOVERFLOW, "array scalar count overflows");
             LaneStats lane_stats[parallel::max_lanes] = {};
             parallel::parallel_for(scalars, min_scalars_per_lane, [&](unsigned lane, uint64_t begin, uint64_t end) {
                 const uint64_t count = end - begin;
@@ -520,13 +520,13 @@ void convert(const void* src, uint32_t src_dtype, void* dst, uint32_t dst_dtype,
         return;
     }
 
-    if (is_int_or_bool(src_dtype) && dst_dtype == MS_FLOAT32) {
+    if (is_int_or_bool(src_dtype) && dst_dtype == SM_FLOAT32) {
         convert_int_or_bool_to_float32(src, src_dtype, static_cast<float*>(dst), elements, report);
         return;
     }
 
     const bool from_double = is_double(src_dtype), to_double = is_double(dst_dtype);
-    if ((src_dtype == MS_FLOAT64 && dst_dtype == MS_FLOAT32) ||
+    if ((src_dtype == SM_FLOAT64 && dst_dtype == SM_FLOAT32) ||
         (is_complex(src_dtype) && from_double && !to_double)) {
         const uint64_t scalars = elements * scalars_per_element(src_dtype);
         if (report) {
@@ -630,7 +630,7 @@ void convert(const void* src, uint32_t src_dtype, void* dst, uint32_t dst_dtype,
         return;
     }
 
-    if ((src_dtype == MS_FLOAT32 && dst_dtype == MS_FLOAT64) ||
+    if ((src_dtype == SM_FLOAT32 && dst_dtype == SM_FLOAT64) ||
         (is_complex(src_dtype) && !from_double && to_double)) {
         const uint64_t scalars = elements * scalars_per_element(src_dtype);
         parallel::parallel_for(scalars, min_scalars_per_lane, [&](unsigned, uint64_t begin, uint64_t end) {
@@ -642,7 +642,7 @@ void convert(const void* src, uint32_t src_dtype, void* dst, uint32_t dst_dtype,
         return;
     }
 
-    if (is_int_or_bool(src_dtype) && dst_dtype == MS_FLOAT64) {
+    if (is_int_or_bool(src_dtype) && dst_dtype == SM_FLOAT64) {
         parallel::parallel_for(elements, min_scalars_per_lane, [&](unsigned, uint64_t begin, uint64_t end) {
             int_or_bool_to_float64_slice(src, src_dtype, static_cast<double*>(dst) + begin, begin, end - begin);
         });
@@ -651,7 +651,7 @@ void convert(const void* src, uint32_t src_dtype, void* dst, uint32_t dst_dtype,
 
     if (is_float(src_dtype) && is_int_or_bool(dst_dtype)) {
         parallel::parallel_for(elements, min_scalars_per_lane, [&](unsigned, uint64_t begin, uint64_t end) {
-            if (src_dtype == MS_FLOAT32) {
+            if (src_dtype == SM_FLOAT32) {
                 float_to_int_or_bool_slice(static_cast<const float*>(src), dst, dst_dtype, begin, end - begin);
             } else {
                 float_to_int_or_bool_slice(static_cast<const double*>(src), dst, dst_dtype, begin, end - begin);
@@ -674,7 +674,7 @@ void convert(const void* src, uint32_t src_dtype, void* dst, uint32_t dst_dtype,
 
 void ndimage_cast_from_float(const float* src, uint32_t dst_dtype, void* dst, uint64_t elements, bool dense_safe) {
     if (!elements) return;
-    if (dst_dtype == MS_FLOAT32) {
+    if (dst_dtype == SM_FLOAT32) {
         parallel::parallel_for(elements, min_scalars_per_lane, [&](unsigned, uint64_t begin, uint64_t end) {
             std::memcpy(static_cast<float*>(dst) + begin, src + begin, (end - begin) * sizeof(float));
         });
@@ -690,41 +690,41 @@ void ndimage_cast_from_float(const float* src, uint32_t dst_dtype, void* dst, ui
             }
         };
         switch (dst_dtype) {
-        case MS_FLOAT64: run(static_cast<double*>(dst) + begin); break;
-        case MS_BOOL:
-        case MS_UINT8: run(static_cast<uint8_t*>(dst) + begin); break;
-        case MS_UINT16: run(static_cast<uint16_t*>(dst) + begin); break;
-        case MS_UINT32: run(static_cast<uint32_t*>(dst) + begin); break;
-        case MS_UINT64: run(static_cast<uint64_t*>(dst) + begin); break;
-        case MS_INT8: run(static_cast<int8_t*>(dst) + begin); break;
-        case MS_INT16: run(static_cast<int16_t*>(dst) + begin); break;
-        case MS_INT32: run(static_cast<int32_t*>(dst) + begin); break;
-        case MS_INT64: run(static_cast<int64_t*>(dst) + begin); break;
-        default: throw Error(MS_EINVAL, "unknown ndimage output dtype");
+        case SM_FLOAT64: run(static_cast<double*>(dst) + begin); break;
+        case SM_BOOL:
+        case SM_UINT8: run(static_cast<uint8_t*>(dst) + begin); break;
+        case SM_UINT16: run(static_cast<uint16_t*>(dst) + begin); break;
+        case SM_UINT32: run(static_cast<uint32_t*>(dst) + begin); break;
+        case SM_UINT64: run(static_cast<uint64_t*>(dst) + begin); break;
+        case SM_INT8: run(static_cast<int8_t*>(dst) + begin); break;
+        case SM_INT16: run(static_cast<int16_t*>(dst) + begin); break;
+        case SM_INT32: run(static_cast<int32_t*>(dst) + begin); break;
+        case SM_INT64: run(static_cast<int64_t*>(dst) + begin); break;
+        default: throw Error(SM_EINVAL, "unknown ndimage output dtype");
         }
     });
 }
 
-BufferPtr load_single(ms_context* context, const ms_array& array, const Shape& shape, ConvertReport* report,
+BufferPtr load_single(sm_context* context, const sm_array& array, const Shape& shape, ConvertReport* report,
                       bool raw_bool) {
     const uint32_t single = single_of(array.dtype);
     uint64_t bytes = 0;
-    if (ms_checked_mul(shape.elements, dtype_size(single), &bytes) != MS_OK)
-        throw Error(MS_EOVERFLOW, "single-precision buffer byte size overflows");
+    if (sm_checked_mul(shape.elements, dtype_size(single), &bytes) != SM_OK)
+        throw Error(SM_EOVERFLOW, "single-precision buffer byte size overflows");
     BufferPtr buffer = allocate(context, bytes);
-    const uint32_t src_dtype = (raw_bool && array.dtype == MS_BOOL) ? MS_UINT8 : array.dtype;
+    const uint32_t src_dtype = (raw_bool && array.dtype == SM_BOOL) ? SM_UINT8 : array.dtype;
     convert(array.data, src_dtype, mutable_data(buffer.get()), single, shape.elements, report);
     return buffer;
 }
 
-void check_route_info(const ms_route_info* info) {
+void check_route_info(const sm_route_info* info) {
     if (!info) return;
-    if (info->struct_size != sizeof(ms_route_info) || info->abi_version != MS_ARRAY_ABI_VERSION)
-        throw Error(MS_EINVAL, "route info size or ABI version mismatch");
+    if (info->struct_size != sizeof(sm_route_info) || info->abi_version != SM_ARRAY_ABI_VERSION)
+        throw Error(SM_EINVAL, "route info size or ABI version mismatch");
 }
 
-void publish(ms_array_result* out, BufferPtr buffer, uint32_t dtype, const Shape& shape) noexcept {
-    ms_array_result result{};
+void publish(sm_array_result* out, BufferPtr buffer, uint32_t dtype, const Shape& shape) noexcept {
+    sm_array_result result{};
     result.dtype = dtype;
     result.ndim = shape.ndim;
     for (uint32_t axis = 0; axis < shape.ndim; ++axis) result.shape[axis] = shape.dims[axis];
@@ -732,7 +732,7 @@ void publish(ms_array_result* out, BufferPtr buffer, uint32_t dtype, const Shape
     *out = result;
 }
 
-void report(ms_route_info* info, uint32_t engine, uint32_t compute_dtype, const char* reason) noexcept {
+void report(sm_route_info* info, uint32_t engine, uint32_t compute_dtype, const char* reason) noexcept {
     if (!info) return;
     info->engine = engine;
     info->compute_dtype = compute_dtype;
@@ -744,30 +744,30 @@ void report(ms_route_info* info, uint32_t engine, uint32_t compute_dtype, const 
         std::snprintf(info->reason, sizeof(info->reason), "%s", reason);
     }
 }
-} // namespace ms::detail::array
+} // namespace sm::detail::array
 
-using ms::detail::Error;
+using sm::detail::Error;
 
-ms_status ms_array_astype(ms_context* context, const ms_array* input, uint32_t dtype, ms_array_result* out) {
-    namespace array = ms::detail::array;
-    return ms::detail::api(context, [&] {
-        if (!out) throw Error(MS_EINVAL, "null output");
+sm_status sm_array_astype(sm_context* context, const sm_array* input, uint32_t dtype, sm_array_result* out) {
+    namespace array = sm::detail::array;
+    return sm::detail::api(context, [&] {
+        if (!out) throw Error(SM_EINVAL, "null output");
         const array::Shape shape = array::checked_shape(input);
         const uint64_t width = array::dtype_size(dtype);
         if (array::is_complex(input->dtype) != array::is_complex(dtype))
-            throw Error(MS_EINVAL, "real and complex arrays do not convert into each other");
+            throw Error(SM_EINVAL, "real and complex arrays do not convert into each other");
         uint64_t out_bytes = 0;
-        if (ms_checked_mul(shape.elements, width, &out_bytes) != MS_OK)
-            throw Error(MS_EOVERFLOW, "output array byte size overflows");
+        if (sm_checked_mul(shape.elements, width, &out_bytes) != SM_OK)
+            throw Error(SM_EOVERFLOW, "output array byte size overflows");
         auto buffer = array::allocate(context, out_bytes);
-        array::convert(input->data, input->dtype, ms::detail::mutable_data(buffer.get()), dtype, shape.elements);
+        array::convert(input->data, input->dtype, sm::detail::mutable_data(buffer.get()), dtype, shape.elements);
         array::publish(out, std::move(buffer), dtype, shape);
     });
 }
 
-uint32_t ms_array_capabilities(void) {
-#if defined(MS_ENABLE_METAL)
-    return MS_CAPABILITY_METAL;
+uint32_t sm_array_capabilities(void) {
+#if defined(SM_ENABLE_METAL)
+    return SM_CAPABILITY_METAL;
 #else
     return 0;
 #endif

@@ -1,5 +1,5 @@
 #!/bin/bash
-# metal-sci probe E5 -- build the standalone FFT runtime.
+# SciMetal probe E5 -- build the standalone FFT runtime.
 #
 #   vendor/mlx/backend/metal/kernels/{fft.h,defines.h,fft/radix.h,
 #       fft/readwrite.h,steel/defines.h}   byte-identical copies from the

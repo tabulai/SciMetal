@@ -2,7 +2,7 @@
 // look like, and the invariants every plan must keep for the kernels to be
 // used correctly. Also the C ABI on a context without a GPU, where every
 // transform declines.
-#include "ms_fft.h"
+#include "sm_fft.h"
 #include "fft/plan.hpp"
 #include "fft/fft_kernels.h"
 
@@ -15,7 +15,7 @@
 
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "fft plan test failed line %d: %s\n", __LINE__, #x); std::abort(); } } while (0)
 
-using namespace ms::detail::fft;
+using namespace sm::detail::fft;
 
 namespace {
 bool is_prime(uint64_t n) {
@@ -322,8 +322,8 @@ void test_long_lengths() {
                 CHECK(plan->store == (transform == Transform::r2c ? Store::half
                                       : transform == Transform::c2r ? Store::real_part : Store::direct));
                 const uint32_t inverse = transform == Transform::c2r;
-                CHECK((plan->steps.front().flags & MS_FFT_CONJ_LOAD) == (inverse ? MS_FFT_CONJ_LOAD : 0u));
-                CHECK((plan->steps.back().flags & MS_FFT_CONJ_STORE) == (inverse ? MS_FFT_CONJ_STORE : 0u));
+                CHECK((plan->steps.front().flags & SM_FFT_CONJ_LOAD) == (inverse ? SM_FFT_CONJ_LOAD : 0u));
+                CHECK((plan->steps.back().flags & SM_FFT_CONJ_STORE) == (inverse ? SM_FFT_CONJ_STORE : 0u));
             }
         }
     }
@@ -461,7 +461,7 @@ void test_explicit_factorisations() {
     const Planned chain = build_multipass(request(Transform::r2c, 3000), {30, 100});
     CHECK(chain.plan && chain.plan->steps[0].kind == Kernel::strided && chain.plan->store == Store::half);
     const Planned single = build_multipass(request(Transform::c2c, 96, true, 5), {96});
-    CHECK(single.plan && single.plan->steps.size() == 1 && single.plan->steps[0].flags == (MS_FFT_CONJ_LOAD | MS_FFT_CONJ_STORE));
+    CHECK(single.plan && single.plan->steps.size() == 1 && single.plan->steps[0].flags == (SM_FFT_CONJ_LOAD | SM_FFT_CONJ_STORE));
     check_invariants(*single.plan, {});
 }
 
@@ -523,64 +523,64 @@ void test_constants_key() {
 // On CPU storage (the only kind a build without Metal has) there is no engine
 // for an FFT: well-formed requests decline, malformed ones are still errors.
 void test_abi_without_gpu() {
-    ms_context_options context_options{};
+    sm_context_options context_options{};
     context_options.struct_size = sizeof(context_options);
-    context_options.abi_version = MS_RUNTIME_ABI_VERSION;
-    context_options.storage_kind = MS_BUFFER_CPU;
+    context_options.abi_version = SM_RUNTIME_ABI_VERSION;
+    context_options.storage_kind = SM_BUFFER_CPU;
     context_options.memory_limit_bytes = uint64_t{1} << 26;
-    ms_context* context = nullptr;
-    CHECK(ms_context_create(&context_options, &context) == MS_OK);
+    sm_context* context = nullptr;
+    CHECK(sm_context_create(&context_options, &context) == SM_OK);
 
     std::vector<float> data(2 * 4 * 4096, 1.0f);
-    ms_array array{};
+    sm_array array{};
     array.struct_size = sizeof(array);
-    array.abi_version = MS_ARRAY_ABI_VERSION;
+    array.abi_version = SM_ARRAY_ABI_VERSION;
     array.data = data.data();
-    array.dtype = MS_COMPLEX64;
+    array.dtype = SM_COMPLEX64;
     array.ndim = 2;
     array.shape[0] = 4;
     array.shape[1] = 4096;
-    ms_fft_options options{};
+    sm_fft_options options{};
     options.struct_size = sizeof(options);
-    options.abi_version = MS_FFT_ABI_VERSION;
-    options.kind = MS_FFT_FORWARD;
+    options.abi_version = SM_FFT_ABI_VERSION;
+    options.kind = SM_FFT_FORWARD;
     options.axis_count = 1;
     options.axes[0] = 1;
-    ms_route_options route{};
+    sm_route_options route{};
     route.struct_size = sizeof(route);
-    route.abi_version = MS_ARRAY_ABI_VERSION;
-    route.precision = MS_PRECISION_FAST;
-    ms_array_result result{};
-    ms_route_info info{};
+    route.abi_version = SM_ARRAY_ABI_VERSION;
+    route.precision = SM_PRECISION_FAST;
+    sm_array_result result{};
+    sm_route_info info{};
     info.struct_size = sizeof(info);
-    info.abi_version = MS_ARRAY_ABI_VERSION;
-    for (const uint32_t execution : {MS_EXECUTION_CPU, MS_EXECUTION_GPU, MS_EXECUTION_AUTO}) {
+    info.abi_version = SM_ARRAY_ABI_VERSION;
+    for (const uint32_t execution : {SM_EXECUTION_CPU, SM_EXECUTION_GPU, SM_EXECUTION_AUTO}) {
         route.execution = execution;
-        CHECK(ms_fft_transform(context, &array, &options, &route, &result, &info) == MS_ENOTSUP);
+        CHECK(sm_fft_transform(context, &array, &options, &route, &result, &info) == SM_ENOTSUP);
         CHECK(result.buffer == nullptr && info.engine == 0);
-        ms_fft_plan_info plan_info{};
+        sm_fft_plan_info plan_info{};
         plan_info.struct_size = sizeof(plan_info);
-        plan_info.abi_version = MS_FFT_ABI_VERSION;
-        CHECK(ms_fft_plan(context, MS_COMPLEX64, 2, array.shape, &options, &route, 1, &plan_info) == MS_OK);
-        CHECK(plan_info.status == MS_ENOTSUP && plan_info.passes == 0 && plan_info.description[0] != 0);
+        plan_info.abi_version = SM_FFT_ABI_VERSION;
+        CHECK(sm_fft_plan(context, SM_COMPLEX64, 2, array.shape, &options, &route, 1, &plan_info) == SM_OK);
+        CHECK(plan_info.status == SM_ENOTSUP && plan_info.passes == 0 && plan_info.description[0] != 0);
     }
     options.axes[0] = 2;
-    CHECK(ms_fft_transform(context, &array, &options, &route, &result, &info) == MS_EINVAL);
+    CHECK(sm_fft_transform(context, &array, &options, &route, &result, &info) == SM_EINVAL);
     options.axes[0] = 1;
-    options.kind = MS_FFT_R2C;
-    CHECK(ms_fft_transform(context, &array, &options, &route, &result, &info) == MS_EINVAL);
-    CHECK(ms_fft_auto_min_points() > 1024);
+    options.kind = SM_FFT_R2C;
+    CHECK(sm_fft_transform(context, &array, &options, &route, &result, &info) == SM_EINVAL);
+    CHECK(sm_fft_auto_min_points() > 1024);
 
     // Review regressions: C2R 2*(have-1) overflow check, prime_factors(INT32_MAX),
     // ReadWriter width=1 mitigation, Bluestein C2R input_tail_scalars, clear_hermitian_imag.
     {
         const uint64_t overflow_shape[2] = {2, (uint64_t{1} << 63) + 1};
-        options.kind = MS_FFT_C2R;
+        options.kind = SM_FFT_C2R;
         options.axes[0] = 1;
-        ms_fft_plan_info plan_info{};
+        sm_fft_plan_info plan_info{};
         plan_info.struct_size = sizeof(plan_info);
-        plan_info.abi_version = MS_FFT_ABI_VERSION;
-        CHECK(ms_fft_plan(context, MS_COMPLEX64, 2, overflow_shape, &options, &route, 0, &plan_info) == MS_EOVERFLOW);
+        plan_info.abi_version = SM_FFT_ABI_VERSION;
+        CHECK(sm_fft_plan(context, SM_COMPLEX64, 2, overflow_shape, &options, &route, 0, &plan_info) == SM_EOVERFLOW);
     }
     CHECK((mlx::prime_factors(INT32_MAX) == std::vector<int32_t>{INT32_MAX}));
     for (uint64_t n : {uint64_t{17}, uint64_t{19}, uint64_t{22}, uint64_t{23}, uint64_t{26}, uint64_t{33}}) {
@@ -594,7 +594,7 @@ void test_abi_without_gpu() {
     CHECK(must_plan(request(Transform::c2r, 8192))->clear_hermitian_imag);
     CHECK(must_plan(request(Transform::c2r, 6000))->clear_hermitian_imag);
 
-    ms_context_release(context);
+    sm_context_release(context);
 }
 } // namespace
 

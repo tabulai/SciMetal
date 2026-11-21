@@ -2,18 +2,18 @@
 // GPU engine for FFT plans: encodes the passes of one or more plans into a
 // single command buffer over pooled buffers.
 #include "plan.hpp"
-#include "ms/detail/storage.hpp"
+#include "sm/detail/storage.hpp"
 
 #include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <vector>
 
-namespace ms::detail::gpu {
+namespace sm::detail::gpu {
 class Batch;
 }
 
-namespace ms::detail::fft {
+namespace sm::detail::fft {
 struct Profile {
     uint64_t parse_route_ns = 0;
     uint64_t stage_ns = 0;
@@ -35,7 +35,7 @@ struct Profile {
 
 inline bool profile_enabled() noexcept {
     static const bool enabled = []() noexcept {
-        const char* value = std::getenv("METAL_SCI_FFT_PROFILE");
+        const char* value = std::getenv("SCIMETAL_FFT_PROFILE");
         return value && *value && std::strcmp(value, "0") != 0;
     }();
     return enabled;
@@ -68,22 +68,22 @@ bool refused(std::vector<Stage>& stages, Refusal& refusal);
 // until `batch.commit_and_wait()` finishes.
 class Scratch {
 public:
-    explicit Scratch(ms_context* context);
+    explicit Scratch(sm_context* context);
     Scratch(const Scratch&) = delete;
     Scratch& operator=(const Scratch&) = delete;
     Scratch(Scratch&&) noexcept = default;
     Scratch& operator=(Scratch&&) noexcept = default;
 
-    ms_buffer* acquire(uint64_t bytes);
-    ms_buffer* adopt(BufferPtr buffer);
-    void release(ms_buffer* buffer);
-    BufferPtr take(ms_buffer* buffer);
+    sm_buffer* acquire(uint64_t bytes);
+    sm_buffer* adopt(BufferPtr buffer);
+    void release(sm_buffer* buffer);
+    BufferPtr take(sm_buffer* buffer);
     void clear();
 
 private:
-    ms_context* context_;
+    sm_context* context_;
     std::vector<BufferPtr> owned_;
-    std::vector<ms_buffer*> idle_;
+    std::vector<sm_buffer*> idle_;
 };
 
 // Encodes the stages in order into `batch` without committing. `input` is the
@@ -92,8 +92,8 @@ private:
 // reuse by subsequent stages). `scale` multiplies the final result on the
 // device (pass 1 when the caller applies its own factor). Returns the last
 // stage's result buffer.
-ms_buffer* encode(ms_context* context, gpu::Batch& batch, Scratch& scratch,
-                  const std::vector<Stage>& stages, ms_buffer* input, float scale,
+sm_buffer* encode(sm_context* context, gpu::Batch& batch, Scratch& scratch,
+                  const std::vector<Stage>& stages, sm_buffer* input, float scale,
                   Profile* profile = nullptr);
 
 // Runs the stages in order; each stage's result is the next stage's input.
@@ -101,12 +101,12 @@ ms_buffer* encode(ms_context* context, gpu::Batch& batch, Scratch& scratch,
 // least the bytes that slot needs. `scale` multiplies the final result on the
 // device (pass 1 when the caller applies its own factor). Returns the last
 // stage's result buffer, whose size is exactly the result's.
-// MS_ENOTSUP when a batch exceeds what the kernels can index or a pipeline
+// SM_ENOTSUP when a batch exceeds what the kernels can index or a pipeline
 // holds (refused).
-BufferPtr run(ms_context* context, const std::vector<Stage>& stages, BufferPtr input, float scale,
+BufferPtr run(sm_context* context, const std::vector<Stage>& stages, BufferPtr input, float scale,
               Profile* profile = nullptr);
 
 // Builds every pipeline a run of the stages can need, so that the first run
 // does not pay for them (tens of milliseconds per new kernel specialisation).
 void prepare(const std::vector<Stage>& stages);
-} // namespace ms::detail::fft
+} // namespace sm::detail::fft

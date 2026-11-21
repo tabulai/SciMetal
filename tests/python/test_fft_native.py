@@ -1,4 +1,4 @@
-"""metal_sci.fft against scipy.fft: results, dtypes, shapes, routing and fall-through.
+"""scimetal.fft against scipy.fft: results, dtypes, shapes, routing and fall-through.
 
 Accuracy bound. The GPU engine works in single precision (unit roundoff
 u = 2^-24, about 6e-8). A length-n transform is log2(n)/log2(radix) butterfly
@@ -24,11 +24,11 @@ import numpy as np
 import pytest
 import scipy.fft
 
-import metal_sci
-import metal_sci.fft as mfft
-from metal_sci import _native
-from metal_sci._dispatch import counters
-from metal_sci.fft import _native_fft
+import scimetal
+import scimetal.fft as mfft
+from scimetal import _native
+from scimetal._dispatch import counters
+from scimetal.fft import _native_fft
 
 TOLERANCE = 5e-6
 REAL = {np.complex64: np.float32, np.complex128: np.float64}
@@ -38,7 +38,7 @@ REAL = {np.complex64: np.float32, np.complex128: np.float64}
 def gpu():
     if not _native.has_metal():
         pytest.skip("requires Metal GPU build")
-    with metal_sci.device("gpu"), metal_sci.precision("fast"):
+    with scimetal.device("gpu"), scimetal.precision("fast"):
         yield
 
 
@@ -70,7 +70,7 @@ def check(function, x, *args, transformed=1, **kwargs):
     ``transformed`` is the number of axes the call transforms.
     """
     result = getattr(mfft, function)(x, *args, **kwargs)
-    route = metal_sci.last_route()
+    route = scimetal.last_route()
     assert route.function == f"fft.{function}" and route.engine == "gpu", str(route)
     assert route.compute_dtype in ("complex64", "float32")
     expected = getattr(scipy.fft, function)(x, *args, **kwargs)
@@ -87,7 +87,7 @@ def declined(function, x, *args, **kwargs):
     last place.
     """
     result = getattr(mfft, function)(x, *args, **kwargs)
-    route = metal_sci.last_route()
+    route = scimetal.last_route()
     assert route.function == f"fft.{function}" and route.engine == "scipy", str(route)
     expected = getattr(scipy.fft, function)(x, *args, **kwargs)
     assert result.dtype == expected.dtype and result.shape == expected.shape
@@ -127,7 +127,7 @@ def test_long_powers_of_two(gpu, log2n):
     n = 1 << log2n
     x = random(n, np.complex64, seed=log2n)
     assert error(mfft.fft(x), reference("fft", x)) < TOLERANCE
-    assert metal_sci.last_route().engine == "gpu"
+    assert scimetal.last_route().engine == "gpu"
     assert error(mfft.ifft(x), reference("ifft", x)) < TOLERANCE
     r = random(n, np.float64, seed=log2n)
     spectrum = mfft.rfft(r)
@@ -286,7 +286,7 @@ def test_double_inputs_outside_single_precision_range_fall_through(gpu):
     for scale in (1e-25, 1e-9, 1.0, 1e9, 1e25):          # within range: any scale gives the same relative accuracy
         check("fft", x * scale)
         check("irfft", x * scale)
-    assert not mfft.fft(np.zeros((4, 1000))).any() and metal_sci.last_route().engine == "gpu"   # all zeros
+    assert not mfft.fft(np.zeros((4, 1000))).any() and scimetal.last_route().engine == "gpu"   # all zeros
     mixed = x.copy()
     mixed[0, :10] *= 1e-200                                # a few tiny values among ordinary ones are fine
     check("fft", mixed)
@@ -298,7 +298,7 @@ def test_double_inputs_outside_single_precision_range_fall_through(gpu):
         special = x.copy()
         special[2, 17] = value
         result = mfft.ifft(special)                        # NaN results cannot be compared bit for bit
-        assert metal_sci.last_route().engine == "scipy" and "single precision" in metal_sci.last_route().reason
+        assert scimetal.last_route().engine == "scipy" and "single precision" in scimetal.last_route().reason
         with np.errstate(invalid="ignore"):
             np.testing.assert_array_equal(np.isfinite(result), np.isfinite(scipy.fft.ifft(special)))
     # Beyond the truncation n the values are not read.
@@ -361,7 +361,7 @@ def test_arguments_scipy_rejects_raise_scipys_errors(gpu):
             getattr(scipy.fft, function)(*args, **kwargs)
         assert type(ours.value) is type(theirs.value), (function, kwargs, ours.value, theirs.value)
         assert str(ours.value) == str(theirs.value)
-    # What SciPy accepts and metal-sci does not take is SciPy's result.
+    # What SciPy accepts and SciMetal does not take is SciPy's result.
     declined("fft", [[1.0, 2.0, 3.0, 4.0]])
     declined("fftn", x, axes=())
     declined("fft", x, 96.0) if _accepts(scipy.fft.fft, x, 96.0) else None
@@ -380,18 +380,18 @@ def test_precision_policies():
         pytest.skip("requires Metal GPU build")
     x = random((64, 4096), np.complex128)
     single = x.astype(np.complex64)
-    with metal_sci.device("gpu"):
-        with metal_sci.precision("strict"):
+    with scimetal.device("gpu"):
+        with scimetal.precision("strict"):
             route = declined("fft", x)                     # exact: SciPy
             assert "strict" in route.reason
             declined("rfft2", x.real.copy())
             check("fft", single)                           # single precision is exact on the GPU engine too
             check("irfft", single)
         for policy in ("fast", "refined"):
-            with metal_sci.precision(policy):
+            with scimetal.precision(policy):
                 check("fft", x)
-                assert metal_sci.last_route().policy == policy
-    with metal_sci.device("auto"), metal_sci.precision("strict"):
+                assert scimetal.last_route().policy == policy
+    with scimetal.device("auto"), scimetal.precision("strict"):
         declined("fft", x)
         check("fft", single)
 
@@ -402,10 +402,10 @@ def test_device_policies_and_the_crossover():
     floor = _native_fft.auto_min_points()
     assert 1 << 12 < floor < 1 << 19
     x = random((1024, 4096), np.complex64)
-    with metal_sci.precision("fast"):
-        with metal_sci.device("cpu"):
+    with scimetal.precision("fast"):
+        with scimetal.device("cpu"):
             assert "cpu" in declined("fft", x).reason
-        with metal_sci.device("auto"):
+        with scimetal.device("auto"):
             check("fft", x)                                    # far above the crossover
             check("fft2", x[:256], transformed=2)
             small = random((4, 512), np.complex64)
@@ -416,7 +416,7 @@ def test_device_policies_and_the_crossover():
                 for shape in ((points,), (max(points // 1024, 1), 1024), (max(points // 16, 1), 16)):
                     y = random(shape, np.complex64, seed=points)
                     result = mfft.fft(y)
-                    route = metal_sci.last_route()
+                    route = scimetal.last_route()
                     assert error(result, reference("fft", y)) < (TOLERANCE if route.engine == "gpu" else 1e-6)
                     plan = _native_fft.plan(y.dtype, y.shape, _native_fft.options(_native_fft.FORWARD, 0, [y.ndim - 1]))
                     assert (route.engine == "gpu") == (plan.status == 0)
@@ -430,19 +430,19 @@ def test_device_policies_and_the_crossover():
             batch = random((128, 4096), np.complex64)
             check("fft", batch)
             assert "crossover" in declined("fft", batch, workers=16).reason
-        with metal_sci.device("gpu"):
+        with scimetal.device("gpu"):
             check("fft", random((2, 8), np.complex64))         # forced: any size
 
 
 def test_small_inputs_go_to_scipy_by_default():
     small = random((4, 512), np.complex64)
-    with metal_sci.device("auto"), metal_sci.precision("fast"):
+    with scimetal.device("auto"), scimetal.precision("fast"):
         try:
-            metal_sci.set_small_inputs("scipy")
+            scimetal.set_small_inputs("scipy")
             assert "elements" in declined("fft", small).reason
             assert "elements" in declined("fftn", small).reason
         finally:
-            metal_sci.set_small_inputs("native")
+            scimetal.set_small_inputs("native")
         if _native.has_metal():
             assert "crossover" in declined("fft", small).reason
         else:
@@ -458,20 +458,20 @@ def test_declined_batches_use_scipys_worker_threads():
     tally = counters["fft.fft"]
     native, fell = tally
     # Under strict, declined calls stay on single-worker SciPy so they remain bit-identical.
-    with metal_sci.device("auto"), metal_sci.precision("strict"):
+    with scimetal.device("auto"), scimetal.precision("strict"):
         for fn, arg, ref in ((mfft.fft, x, expected),
                              (mfft.fft, long, scipy.fft.fft(long)),
                              (mfft.fft2, x, scipy.fft.fft2(x))):
             result = fn(arg)
-            route = metal_sci.last_route()
+            route = scimetal.last_route()
             assert route.engine == "scipy" and "strict" in route.reason
             assert "workers=" not in route.reason
             assert result.tobytes() == ref.tobytes()
     # Under fast/refined, large declined calls (e.g. device="cpu") use SciPy's worker threads.
-    with metal_sci.device("cpu"), metal_sci.precision("fast"):
+    with scimetal.device("cpu"), scimetal.precision("fast"):
         before_cpu_fell = tally[1]
         result = mfft.fft(x)
-        route = metal_sci.last_route()
+        route = scimetal.last_route()
         assert route.engine == "scipy" and "cpu" in route.reason
         assert tally == [native, before_cpu_fell + 1]
         if cores > 1:
@@ -481,32 +481,32 @@ def test_declined_batches_use_scipys_worker_threads():
         # Positional workers=None must also receive the override without TypeError.
         result_pos = mfft.fft(x, None, -1, None, False, None)
         if cores > 1:
-            assert f"workers={cores}" in metal_sci.last_route().reason
+            assert f"workers={cores}" in scimetal.last_route().reason
             assert result_pos.tobytes() == scipy.fft.fft(x, workers=cores).tobytes()
         # The caller's own choice of workers is left alone.
         for workers in (1, 2, -1):
             mfft.fft(x, workers=workers)
-            assert "workers=" not in metal_sci.last_route().reason
+            assert "workers=" not in scimetal.last_route().reason
         with scipy.fft.set_workers(2):
             mfft.fft(x)
-            assert "workers=" not in metal_sci.last_route().reason
+            assert "workers=" not in scimetal.last_route().reason
         # Too little data to thread, or an axis holding a single transform of a
         # multi-dimensional array (where SciPy's threads cost time): as made.
         for unthreaded in (x[0], x[:2, :64], x[:16], x[:1].copy(), np.tile(x[0], 40)[None, :]):
             mfft.fft(unthreaded)
-            assert "workers=" not in metal_sci.last_route().reason, unthreaded.shape
+            assert "workers=" not in scimetal.last_route().reason, unthreaded.shape
         mfft.fft2(np.tile(x[0], 40)[None, :])
-        assert "workers=" not in metal_sci.last_route().reason
+        assert "workers=" not in scimetal.last_route().reason
         # One long transform of a 1-D array threads inside SciPy.
         result = mfft.fft(long)
         if cores > 1:
-            assert f"workers={cores}" in metal_sci.last_route().reason
+            assert f"workers={cores}" in scimetal.last_route().reason
             assert result.tobytes() == scipy.fft.fft(long, workers=cores).tobytes()
         np.testing.assert_allclose(result, scipy.fft.fft(long), rtol=0, atol=1e-13 * np.abs(result).max())
         # N-D transforms thread too, and SciPy's errors still come from SciPy.
         result = mfft.fft2(x)
         if cores > 1:
-            assert f"workers={cores}" in metal_sci.last_route().reason
+            assert f"workers={cores}" in scimetal.last_route().reason
             assert result.tobytes() == scipy.fft.fft2(x, workers=cores).tobytes()
         np.testing.assert_allclose(result, scipy.fft.fft2(x), rtol=0, atol=1e-13 * np.abs(result).max())
         with pytest.raises(ValueError):
@@ -519,12 +519,12 @@ def test_counters_and_explain(gpu):
     native, fell = tally
     mfft.rfft(random((8, 1000), np.float32))
     assert tally == [native + 1, fell]
-    text = metal_sci.explain()
+    text = scimetal.explain()
     assert "fft.rfft" in text and "engine=gpu" in text and "float32" in text
     mfft.rfft(random((8, 3001), np.float32))
     assert tally == [native + 1, fell + 1]
-    assert "engine=scipy" in metal_sci.explain() and "3001" in metal_sci.explain()
-    assert set(metal_sci.accelerated()["fft"]) >= {"fft", "ifft", "rfft", "irfft", "fft2", "ifft2", "fftn",
+    assert "engine=scipy" in scimetal.explain() and "3001" in scimetal.explain()
+    assert set(scimetal.accelerated()["fft"]) >= {"fft", "ifft", "rfft", "irfft", "fft2", "ifft2", "fftn",
                                                     "ifftn", "rfft2", "irfft2", "rfftn", "irfftn"}
     # Everything else in the namespace is SciPy's own object.
     assert mfft.dct is scipy.fft.dct and mfft.next_fast_len is scipy.fft.next_fast_len
@@ -535,7 +535,7 @@ def test_functions_pickle_and_work_in_worker_processes():
     for name in ("fft", "ifft", "rfft", "irfft", "fft2", "rfftn"):
         function = getattr(mfft, name)
         assert pickle.loads(pickle.dumps(function)) is function
-        assert function.__module__ == "metal_sci.fft" and function.__name__ == name
+        assert function.__module__ == "scimetal.fft" and function.__name__ == name
     x = [np.ones(100) + index for index in range(4)]
     with multiprocessing.get_context("spawn").Pool(2) as pool:
         results = pool.map(mfft.rfft, x)
@@ -558,7 +558,7 @@ def test_threads_share_the_context(gpu):
     errors = []
 
     def worker(seed):
-        with metal_sci.device("gpu"):
+        with scimetal.device("gpu"):
             for _ in range(20):
                 y = random((32, 4096), np.complex64, seed=seed)
                 if error(mfft.fft(y), reference("fft", y)) > TOLERANCE or error(mfft.fft(x), expected) > TOLERANCE:
@@ -575,7 +575,7 @@ def test_threads_share_the_context(gpu):
 def test_prepare_supported_kinds_and_dtypes(gpu):
     # Sentinel route and counter snapshot: prepare must not mutate either.
     mfft.fft(random((4, 32), np.complex64))
-    route_before = metal_sci.last_route()
+    route_before = scimetal.last_route()
     counters_before = {k: list(v) for k, v in counters.items()}
 
     for kind in ("fft", "ifft", "fft2", "ifft2", "fftn", "ifftn"):
@@ -609,24 +609,24 @@ def test_prepare_supported_kinds_and_dtypes(gpu):
     assert mfft.prepare((8, 17), np.complex64, kind="irfft2", s=(8, 33)) is True
     assert mfft.prepare((8, 17), np.complex64, kind="irfftn", s=(8, 32)) is True
 
-    assert metal_sci.last_route() == route_before
+    assert scimetal.last_route() == route_before
     assert {k: list(v) for k, v in counters.items()} == counters_before
 
 
 def test_prepare_policies_and_declines_return_false():
     if not _native.has_metal():
         pytest.skip("requires Metal GPU build")
-    with metal_sci.device("cpu"), metal_sci.precision("fast"):
+    with scimetal.device("cpu"), scimetal.precision("fast"):
         assert mfft.prepare((1024, 4096), np.complex64) is False
 
     for dev in ("auto", "gpu"):
-        with metal_sci.device(dev), metal_sci.precision("strict"):
+        with scimetal.device(dev), scimetal.precision("strict"):
             assert mfft.prepare((1 << 18,), np.complex128) is False
             assert mfft.prepare((1 << 18,), np.float64, kind="rfft") is False
             assert mfft.prepare((1 << 18,), np.complex64) is True
             assert mfft.prepare((1 << 18,), np.float32, kind="rfft") is True
 
-    with metal_sci.device("auto"), metal_sci.precision("fast"):
+    with scimetal.device("auto"), scimetal.precision("fast"):
         assert mfft.prepare((2, 64), np.complex64) is False
         assert mfft.prepare((1 << 14, 16), np.complex64) is False
         assert mfft.prepare((1 << 18,), np.complex64) is True
@@ -635,7 +635,7 @@ def test_prepare_policies_and_declines_return_false():
         with scipy.fft.set_workers(16):
             assert mfft.prepare((128, 4096), np.complex64) is False
 
-    with metal_sci.device("gpu"), metal_sci.precision("fast"):
+    with scimetal.device("gpu"), scimetal.precision("fast"):
         assert mfft.prepare((4, 3001), np.complex64) is False
         assert mfft.prepare((4, 1), np.complex64) is False
         assert mfft.prepare((17, 64), np.complex64, kind="fft", axes=0) is False
@@ -691,15 +691,15 @@ def test_prepare_warms_pipeline_for_first_call():
         pytest.skip("requires Metal GPU build")
     repo_root = pathlib.Path(__file__).resolve().parents[2]
     env = os.environ.copy()
-    if not os.environ.get("METAL_SCI_TEST_INSTALLED"):
+    if not os.environ.get("SCIMETAL_TEST_INSTALLED"):
         existing_pp = env.get("PYTHONPATH")
         python_dir = str(repo_root / "python")
         env["PYTHONPATH"] = os.pathsep.join([python_dir, existing_pp]) if existing_pp else python_dir
 
     common = (
-        "import time, numpy as np, scipy.fft, metal_sci, metal_sci.fft as mfft\n"
+        "import time, numpy as np, scipy.fft, scimetal, scimetal.fft as mfft\n"
         "x = np.ones((4, 1409), dtype=np.complex64)\n"
-        "with metal_sci.device('gpu'):\n"
+        "with scimetal.device('gpu'):\n"
         "    mfft.fft(np.ones(8, dtype=np.complex64))\n"
     )
     cold_script = common + (
@@ -731,18 +731,18 @@ def test_prepare_exports_and_backend():
 
 
 def test_review_regressions():
-    from metal_sci._dispatch import counters
+    from scimetal._dispatch import counters
 
     # 1. Declined direct mfft.fft() under register() does not re-enter uarray or double-count.
     was_reg = mfft.registered()
     mfft.register()
     try:
         x_big = np.ones((4, 1 << 15), dtype=np.complex128)
-        with metal_sci.device("cpu"), metal_sci.precision("fast"):
+        with scimetal.device("cpu"), scimetal.precision("fast"):
             before_fall = counters["fft.fft"][1]
             out = mfft.fft(x_big)
             after_fall = counters["fft.fft"][1]
-            route = metal_sci.last_route()
+            route = scimetal.last_route()
         assert after_fall == before_fall + 1
         assert route.engine == "scipy"
         if _native.performance_cores() > 1:
@@ -755,14 +755,14 @@ def test_review_regressions():
     # 2. overwrite_x=True on read-only complex array matches SciPy's ValueError.
     ro = np.ones(64, dtype=np.complex64)
     ro.setflags(write=False)
-    prev_small = metal_sci._config.small_to_scipy()
-    metal_sci.set_small_inputs("native")
+    prev_small = scimetal._config.small_to_scipy()
+    scimetal.set_small_inputs("native")
     try:
-        with metal_sci.device("gpu"):
+        with scimetal.device("gpu"):
             with pytest.raises(ValueError, match="writeable|read-only"):
                 mfft.fft(ro, overwrite_x=True)
     finally:
-        metal_sci.set_small_inputs("scipy" if prev_small else "native")
+        scimetal.set_small_inputs("scipy" if prev_small else "native")
 
     # 3. Large workers value doesn't truncate to 0 in uint32 options().
     opts = _native_fft.options(_native_fft.FORWARD, 0, [0], 0, 1 << 32)
@@ -770,7 +770,7 @@ def test_review_regressions():
 
     # 4. Huge shape >= 2^64 returns False from prepare() without uint64 truncation.
     assert mfft.prepare((1 << 65,), np.complex64) is False
-    assert "prepare" not in metal_sci.accelerated()["fft"]
+    assert "prepare" not in scimetal.accelerated()["fft"]
     assert not mfft.registered()
     mfft.register()
     try:

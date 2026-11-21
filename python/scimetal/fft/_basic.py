@@ -5,7 +5,7 @@ accepts. A call it does not accept raises ``Declined`` (a ``NotAccelerated``),
 and SciPy then produces the result or the error: anything SciPy would reject
 is declined rather than diagnosed here, so the messages stay SciPy's.
 
-What runs natively (GPU, single precision, see include/ms_fft.h):
+What runs natively (GPU, single precision, see include/sm_fft.h):
 
 - ``fft`` / ``ifft`` along any axis, ``rfft`` / ``irfft`` along the last axis,
   with ``n`` padding or truncation along the last axis;
@@ -26,7 +26,7 @@ the two round differently in the last place, about 1e-16 relative). Under the
 batch of transforms, or one long 1-D transform of at least 2^17 points, e.g.
 under ``device='cpu'`` or for lengths without a GPU plan) is handed to SciPy
 with ``workers`` set to the performance-core count when the caller left it
-unset. Set ``METAL_SCI_FFT_THREADED_FALLBACK=0`` to leave declined calls
+unset. Set ``SCIMETAL_FFT_THREADED_FALLBACK=0`` to leave declined calls
 exactly as the caller made them.
 """
 from __future__ import annotations
@@ -50,7 +50,7 @@ __all__ = ["fft", "ifft", "rfft", "irfft", "fft2", "ifft2", "fftn", "ifftn",
 # SciPy's own threading starts paying at about this many points, over a batch
 # or within one transform of a 1-D array.
 _THREADED_MIN_POINTS = 1 << 17
-_THREADED_FALLBACK = os.environ.get("METAL_SCI_FFT_THREADED_FALLBACK", "1").strip().lower() not in ("0", "false", "no", "off")
+_THREADED_FALLBACK = os.environ.get("SCIMETAL_FFT_THREADED_FALLBACK", "1").strip().lower() not in ("0", "false", "no", "off")
 _CPU_COUNT = os.cpu_count() or 1
 
 
@@ -90,7 +90,7 @@ def _input(x, norm, workers, plan, overwrite_x=False):
             raise Declined("overwrite_x on a read-only array is SciPy's to handle")
     except (TypeError, ValueError):
         raise Declined("invalid overwrite_x") from None
-    if x.ndim == 0 or x.ndim > _native.MS_MAX_NDIM:
+    if x.ndim == 0 or x.ndim > _native.SM_MAX_NDIM:
         raise Declined(f"no native path for {x.ndim}-dimensional arrays")
     device = _config.get_device()
     if device == "cpu":
@@ -229,7 +229,7 @@ def _transform_nd(function, kind, x, s, axes, norm, overwrite_x, workers, plan):
 
 # Set while a declined call is inside SciPy on our behalf: the uarray backend
 # (see _backend.py) must then stand aside instead of taking the call again.
-_delegating = contextvars.ContextVar("metal_sci_fft_delegating", default=False)
+_delegating = contextvars.ContextVar("scimetal_fft_delegating", default=False)
 
 
 @contextlib.contextmanager
@@ -372,8 +372,8 @@ def prepare(shape, dtype=np.complex128, *, kind="fft", axes=None, n=None, s=None
         except TypeError:
             raise ValueError("shape must be an integer or sequence of integers") from None
     ndim = len(shape_tuple)
-    if not 1 <= ndim <= _native.MS_MAX_NDIM:
-        raise ValueError(f"shape rank must be between 1 and {_native.MS_MAX_NDIM}, got {ndim}")
+    if not 1 <= ndim <= _native.SM_MAX_NDIM:
+        raise ValueError(f"shape rank must be between 1 and {_native.SM_MAX_NDIM}, got {ndim}")
     if any(d < 0 for d in shape_tuple):
         raise ValueError(f"shape dimensions must be non-negative, got {shape_tuple}")
 
@@ -515,4 +515,4 @@ def prepare(shape, dtype=np.complex128, *, kind="fft", axes=None, n=None, s=None
         info = _native_fft.plan(np_dtype, shape_tuple, opts, prepare=True)
     except NotAccelerated:
         return False
-    return info.status == _native.MS_OK
+    return info.status == _native.SM_OK

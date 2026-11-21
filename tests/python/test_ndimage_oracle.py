@@ -1,6 +1,6 @@
 """SciPy's own filter tests, run against the native routes (the oracle).
 
-The oracle (tests/oracle/metal_sci_oracle.py) runs in a subprocess under both
+The oracle (tests/oracle/scimetal_oracle.py) runs in a subprocess under both
 configurations, so the ordinary test suite fails if SciPy's suite stops passing
 in strict mode, if the native routes stop being exercised, or if the GPU route
 starts failing tests other than the ones float32 arithmetic is known to fail.
@@ -26,13 +26,13 @@ def run_oracle(**settings):
     """
     env = dict(os.environ, **settings)
     parts = [str(ROOT / "tests/oracle")]
-    if not os.environ.get("METAL_SCI_TEST_INSTALLED"):
+    if not os.environ.get("SCIMETAL_TEST_INSTALLED"):
         parts.insert(0, str(ROOT / "python"))
     if env.get("PYTHONPATH"):
         parts.append(env["PYTHONPATH"])
     env["PYTHONPATH"] = os.pathsep.join(parts)
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-p", "metal_sci_oracle", "-p", "no:cacheprovider", "--pyargs",
+        [sys.executable, "-m", "pytest", "-p", "scimetal_oracle", "-p", "no:cacheprovider", "--pyargs",
          "scipy.ndimage.tests.test_filters", "-q"],
         cwd=ROOT, env=env, capture_output=True, text=True, timeout=1800)
     output = result.stdout + result.stderr
@@ -50,17 +50,17 @@ def native_filters():
     """Nothing to check where no native filter can run (see test_ndimage_filters)."""
     import numpy as np
 
-    import metal_sci
-    import metal_sci.ndimage as mn
+    import scimetal
+    import scimetal.ndimage as mn
 
-    with metal_sci.precision("strict"), metal_sci.device("cpu"):
+    with scimetal.precision("strict"), scimetal.device("cpu"):
         mn.correlate1d(np.zeros(4), [1.0])
-        if metal_sci.last_route().engine != "cpu":
-            pytest.skip(f"no native ndimage filters: {metal_sci.last_route().reason}")
+        if scimetal.last_route().engine != "cpu":
+            pytest.skip(f"no native ndimage filters: {scimetal.last_route().reason}")
 
 
 def test_scipys_filter_tests_pass_on_the_native_routes_in_strict_mode(native_filters):
-    code, output, counters = run_oracle(METAL_SCI_ORACLE_PRECISION="strict", METAL_SCI_ORACLE_DEVICE="auto")
+    code, output, counters = run_oracle(SCIMETAL_ORACLE_PRECISION="strict", SCIMETAL_ORACLE_DEVICE="auto")
     assert code == 0 and re.search(r"\b\d+ passed", output), summary(output)
     # The suite really ran native code: every function has native calls, including integer/bool dtypes.
     assert set(counters) == set(FUNCTIONS), summary(output)
@@ -93,11 +93,11 @@ INT_INTERMEDIATE_QUANTIZATION = re.compile(
 
 
 def test_gpu_route_fails_only_scipy_tests_that_need_more_than_float32(native_filters):
-    import metal_sci._native as _native
+    import scimetal._native as _native
 
     if not _native.has_metal():
         pytest.skip("no GPU engine in CPU-only build")
-    code, output, counters = run_oracle(METAL_SCI_ORACLE_PRECISION="fast", METAL_SCI_ORACLE_DEVICE="gpu")
+    code, output, counters = run_oracle(SCIMETAL_ORACLE_PRECISION="fast", SCIMETAL_ORACLE_DEVICE="gpu")
     failed = re.findall(r"^FAILED \S*::(.+?)(?: - .*)?$", output, re.M)
     unexpected = [name for name in failed if not (FLOAT32_ACCURACY.fullmatch(name) or INT_INTERMEDIATE_QUANTIZATION.fullmatch(name))]
     assert not unexpected, f"not float32/int-intermediate accuracy: {unexpected}\n{summary(output)}"

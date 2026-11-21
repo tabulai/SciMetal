@@ -1,5 +1,5 @@
 #pragma once
-#include "ms/detail/backend.hpp"
+#include "sm/detail/backend.hpp"
 
 #include <algorithm>
 #include <array>
@@ -20,11 +20,11 @@
 #include <arm_neon.h>
 #endif
 
-namespace ms::detail::parallel {
+namespace sm::detail::parallel {
 
 constexpr unsigned max_lanes = 32;
 
-// metal-sci: lanes are sized to the performance cores. Efficiency cores slow
+// SciMetal: lanes are sized to the performance cores. Efficiency cores slow
 // a statically partitioned loop down to their own pace.
 inline unsigned hardware_lanes() noexcept {
     static const unsigned cached = []() noexcept {
@@ -54,7 +54,7 @@ public:
     bool has_error() const noexcept { return key_.load(std::memory_order_relaxed) != UINT64_MAX; }
     uint64_t min_key() const noexcept { return key_.load(std::memory_order_relaxed); }
 
-    void record(uint64_t key, ms_status status, const char* message) noexcept {
+    void record(uint64_t key, sm_status status, const char* message) noexcept {
         if (key == UINT64_MAX) key = UINT64_MAX - 1;
         if (key >= key_.load(std::memory_order_relaxed)) return;
         std::lock_guard lock(mutex_);
@@ -76,7 +76,7 @@ public:
 private:
     std::atomic<uint64_t> key_{UINT64_MAX};
     mutable std::mutex mutex_;
-    ms_status status_ = MS_EBACKEND;
+    sm_status status_ = SM_EBACKEND;
     char message_[256]{};
 };
 
@@ -98,11 +98,11 @@ inline void run_lanes(unsigned lanes, F&& fn) {
         } catch (const Error& err) {
             unexpected.record(lane, err.status, err.what());
         } catch (const std::bad_alloc&) {
-            unexpected.record(lane, MS_EOOM, "native allocation failed");
+            unexpected.record(lane, SM_EOOM, "native allocation failed");
         } catch (const std::exception& err) {
-            unexpected.record(lane, MS_EBACKEND, err.what());
+            unexpected.record(lane, SM_EBACKEND, err.what());
         } catch (...) {
-            unexpected.record(lane, MS_EBACKEND, "unknown native exception");
+            unexpected.record(lane, SM_EBACKEND, "unknown native exception");
         }
     };
 #ifdef __APPLE__
@@ -154,9 +154,9 @@ inline unsigned parallel_for(uint64_t count, uint64_t min_items_per_lane, F&& fn
                            [&](unsigned lane, uint64_t begin, uint64_t end) { fn(lane, begin, end); });
 }
 
-} // namespace ms::detail::parallel
+} // namespace sm::detail::parallel
 
-namespace ms::detail::simd {
+namespace sm::detail::simd {
 
 inline uint64_t count_set_bytes(const uint8_t* bytes, uint64_t num_bytes) noexcept {
     uint64_t total = 0;
@@ -233,4 +233,4 @@ inline uint8x16_t narrow_mask_u64(uint64x2_t m0, uint64x2_t m1, uint64x2_t m2, u
 }
 #endif
 
-} // namespace ms::detail::simd
+} // namespace sm::detail::simd

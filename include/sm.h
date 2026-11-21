@@ -1,5 +1,5 @@
-#ifndef MS_H
-#define MS_H
+#ifndef SM_H
+#define SM_H
 #include <stdint.h>
 #ifdef __cplusplus
 extern "C" {
@@ -13,21 +13,21 @@ extern "C" {
  * Without IMMUTABLE, import must enforce a no-concurrent-write agreement or
  * take a snapshot. Structural validation alone does not enforce immutability.
  */
-#define MS_BUFFER_ABI_VERSION 1u
-typedef enum ms_status {
-    MS_OK = 0, MS_EINVAL = 1, MS_ENOTSUP = 2, MS_EOVERFLOW = 3,
-    MS_EOOM = 4, MS_ETIMEOUT = 5, MS_EBACKEND = 6, MS_ESTATE = 7
-} ms_status;
-typedef enum ms_buffer_kind {
-    MS_BUFFER_CPU = 1, MS_BUFFER_METAL = 2
-} ms_buffer_kind;
+#define SM_BUFFER_ABI_VERSION 1u
+typedef enum sm_status {
+    SM_OK = 0, SM_EINVAL = 1, SM_ENOTSUP = 2, SM_EOVERFLOW = 3,
+    SM_EOOM = 4, SM_ETIMEOUT = 5, SM_EBACKEND = 6, SM_ESTATE = 7
+} sm_status;
+typedef enum sm_buffer_kind {
+    SM_BUFFER_CPU = 1, SM_BUFFER_METAL = 2
+} sm_buffer_kind;
 enum {
-    MS_BUFFER_HOST_READABLE = 1u,
-    MS_BUFFER_IMMUTABLE = 2u,
-    MS_BUFFER_PRODUCER_COMPLETE = 4u
+    SM_BUFFER_HOST_READABLE = 1u,
+    SM_BUFFER_IMMUTABLE = 2u,
+    SM_BUFFER_PRODUCER_COMPLETE = 4u
 };
-typedef void (*ms_owner_callback)(void*);
-typedef struct ms_buffer_view {
+typedef void (*sm_owner_callback)(void*);
+typedef struct sm_buffer_view {
     uint32_t struct_size;
     uint32_t abi_version;
     uint32_t kind;
@@ -40,21 +40,21 @@ typedef struct ms_buffer_view {
     uint64_t byte_length;
     uint64_t capacity;
     void* owner;
-    ms_owner_callback retain;
-    ms_owner_callback release;
+    sm_owner_callback retain;
+    sm_owner_callback release;
     void* completion_event;
     uint64_t completion_value;
     uint64_t reserved[2];
-} ms_buffer_view;
+} sm_buffer_view;
 
 /* Structural checks only: does not dereference pointers, retain, wait, or
  * initialize Metal. Resource/device/event identity is checked at import.
  * alignment must be a nonzero power of two; zero-length views are allowed.
  */
-ms_status ms_buffer_validate(const ms_buffer_view* view, uint64_t alignment);
+sm_status sm_buffer_validate(const sm_buffer_view* view, uint64_t alignment);
 /* Leaves *out unchanged on failure. */
-ms_status ms_checked_add(uint64_t a, uint64_t b, uint64_t* out);
-ms_status ms_checked_mul(uint64_t a, uint64_t b, uint64_t* out);
+sm_status sm_checked_add(uint64_t a, uint64_t b, uint64_t* out);
+sm_status sm_checked_mul(uint64_t a, uint64_t b, uint64_t* out);
 
 #ifdef __cplusplus
 }

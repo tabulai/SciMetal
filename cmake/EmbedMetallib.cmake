@@ -1,8 +1,8 @@
 # Embeds a binary file as a hidden C array <NAME>_data with its size <NAME>_size:
 #   cmake -DIN=<metallib> -DOUT=<c file> [-DNAME=<symbol prefix>] -P EmbedMetallib.cmake
-# NAME defaults to ms_metallib, the library every GPU route loads.
+# NAME defaults to sm_metallib, the library every GPU route loads.
 if(NOT DEFINED NAME)
-  set(NAME ms_metallib)
+  set(NAME sm_metallib)
 endif()
 file(READ ${IN} _hex HEX)
 string(LENGTH ${_hex} _hexlen)

@@ -1,6 +1,6 @@
-#ifndef MS_RUNTIME_H
-#define MS_RUNTIME_H
-#include "ms.h"
+#ifndef SM_RUNTIME_H
+#define SM_RUNTIME_H
+#include "sm.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -11,32 +11,32 @@ extern "C" {
  * Retain/release are thread-safe; callers keep handles alive during each call.
  * Inherited handles are unusable after fork (including release); use exec/spawn.
  */
-#define MS_RUNTIME_ABI_VERSION 1u
-typedef struct ms_context ms_context;
-typedef struct ms_buffer ms_buffer;
-typedef enum ms_copy_policy {
-    MS_COPY_AUTO = 0, MS_COPY_NEVER = 1, MS_COPY_ALWAYS = 2
-} ms_copy_policy;
-typedef enum ms_execution {
-    MS_EXECUTION_CPU = 1, MS_EXECUTION_GPU = 2, MS_EXECUTION_AUTO = 3
-} ms_execution;
+#define SM_RUNTIME_ABI_VERSION 1u
+typedef struct sm_context sm_context;
+typedef struct sm_buffer sm_buffer;
+typedef enum sm_copy_policy {
+    SM_COPY_AUTO = 0, SM_COPY_NEVER = 1, SM_COPY_ALWAYS = 2
+} sm_copy_policy;
+typedef enum sm_execution {
+    SM_EXECUTION_CPU = 1, SM_EXECUTION_GPU = 2, SM_EXECUTION_AUTO = 3
+} sm_execution;
 
 /* Context flag: storage that native producers promise to overwrite completely
  * is filled with 0xA5 bytes rather than left uninitialized, so tests can detect
  * output a producer failed to write. Padding is zero either way. */
-#define MS_CONTEXT_POISON_UNWRITTEN 1u
+#define SM_CONTEXT_POISON_UNWRITTEN 1u
 
-typedef struct ms_context_options {
+typedef struct sm_context_options {
     uint32_t struct_size;
     uint32_t abi_version;
-    uint32_t storage_kind; /* MS_BUFFER_CPU or MS_BUFFER_METAL; no eager device */
-    uint32_t flags;        /* MS_CONTEXT_* bits; other bits are invalid */
+    uint32_t storage_kind; /* SM_BUFFER_CPU or SM_BUFFER_METAL; no eager device */
+    uint32_t flags;        /* SM_CONTEXT_* bits; other bits are invalid */
     uint64_t memory_limit_bytes;
     uint64_t external_reservation_bytes;
     uint64_t reserved[2];
-} ms_context_options;
+} sm_context_options;
 
-typedef struct ms_memory_info {
+typedef struct sm_memory_info {
     uint32_t struct_size;
     uint32_t abi_version;
     uint64_t limit_bytes;
@@ -51,23 +51,23 @@ typedef struct ms_memory_info {
     uint64_t allocation_count;  /* live allocations; cached storage excluded */
     uint32_t external_accounting_complete; /* zero: foreign heaps not intercepted */
     uint32_t reserved;
-} ms_memory_info;
+} sm_memory_info;
 
-typedef struct ms_import_result {
-    ms_buffer* buffer;          /* one retained reference on success */
+typedef struct sm_import_result {
+    sm_buffer* buffer;          /* one retained reference on success */
     uint64_t copied_bytes;      /* actual payload copy; padding is separate */
     uint64_t borrowed_bytes;    /* full source capacity retained by result */
-} ms_import_result;
+} sm_import_result;
 
-ms_status ms_context_create(const ms_context_options*, ms_context** out);
-void ms_context_retain(ms_context*);
-void ms_context_release(ms_context*);
+sm_status sm_context_create(const sm_context_options*, sm_context** out);
+void sm_context_retain(sm_context*);
+void sm_context_release(sm_context*);
 /* Initialize out.struct_size and out.abi_version before calling. */
-ms_status ms_context_memory_info(ms_context*, ms_memory_info* out);
+sm_status sm_context_memory_info(sm_context*, sm_memory_info* out);
 /* Copy this thread's latest diagnostic for the context (falling back to the
  * context's latest diagnostic), including NUL; insufficient capacity returns
- * MS_EINVAL without modifying destination. */
-ms_status ms_context_error_copy(ms_context*, char* destination, uint64_t capacity);
+ * SM_EINVAL without modifying destination. */
+sm_status sm_context_error_copy(sm_context*, char* destination, uint64_t capacity);
 /* Monotonic per-context counters, so callers and tests can assert which route
  * ran and where storage came from. gpu_operations counts completed GPU
  * primitive calls; command buffers, dispatches and GPU time (summed
@@ -81,7 +81,7 @@ ms_status ms_context_error_copy(ms_context*, char* destination, uint64_t capacit
  * otherwise; poisoning excluded). Fills a route makes itself later, such as
  * clearing scratch between checks, are not counted.
  * Initialize struct_size and abi_version. */
-typedef struct ms_execution_info {
+typedef struct sm_execution_info {
     uint32_t struct_size;
     uint32_t abi_version;
     uint64_t gpu_operations;
@@ -92,8 +92,8 @@ typedef struct ms_execution_info {
     uint64_t cached_reuses;
     uint64_t host_wait_ns;    /* formerly reserved[0]; the layout is unchanged */
     uint64_t host_fill_bytes; /* formerly reserved[1] */
-} ms_execution_info;
-ms_status ms_context_execution_info(ms_context*, ms_execution_info* out);
+} sm_execution_info;
+sm_status sm_context_execution_info(sm_context*, sm_execution_info* out);
 
 /* Buffer cache. A Metal-storage context keeps owned storage released by its
  * last reference (handle, slice or export) for reuse by a later allocation of
@@ -114,23 +114,23 @@ ms_status ms_context_execution_info(ms_context*, ms_execution_info* out);
  * disabling automatic growth; 0 disables caching. trim frees idle storage
  * without changing the limit or its automatic/explicit mode. Releasing the
  * last context handle frees the cache. CPU storage never
- * caches: its limit is 0 and a nonzero limit returns MS_ENOTSUP. */
-ms_status ms_context_cache_limit(ms_context*, uint64_t* out);
-ms_status ms_context_set_cache_limit(ms_context*, uint64_t bytes); /* shrinking evicts */
-ms_status ms_context_trim(ms_context*); /* frees all cached storage */
-const char* ms_status_message(ms_status);
+ * caches: its limit is 0 and a nonzero limit returns SM_ENOTSUP. */
+sm_status sm_context_cache_limit(sm_context*, uint64_t* out);
+sm_status sm_context_set_cache_limit(sm_context*, uint64_t bytes); /* shrinking evicts */
+sm_status sm_context_trim(sm_context*); /* frees all cached storage */
+const char* sm_status_message(sm_status);
 
 /* Owned storage has 64-byte alignment and zeroed padding from its logical end
  * to its capacity, at least 64 bytes. CPU capacity rounds to 64; Metal capacity rounds
  * to the host VM page size and verifies native allocatedSize fits that charge.
  * Admission charges the rounded capacity. Inputs
  * to copy_from_host must be readable and stable until the synchronous return. */
-ms_status ms_buffer_zeros(ms_context*, uint64_t bytes, ms_buffer** out);
-ms_status ms_buffer_copy_from_host(ms_context*, const void*, uint64_t bytes, ms_buffer** out);
-void ms_buffer_retain(ms_buffer*);
-void ms_buffer_release(ms_buffer*);
-ms_status ms_buffer_data(const ms_buffer*, const void** data, uint64_t* bytes);
-ms_status ms_buffer_slice(const ms_buffer*, uint64_t offset, uint64_t length, ms_buffer** out);
+sm_status sm_buffer_zeros(sm_context*, uint64_t bytes, sm_buffer** out);
+sm_status sm_buffer_copy_from_host(sm_context*, const void*, uint64_t bytes, sm_buffer** out);
+void sm_buffer_retain(sm_buffer*);
+void sm_buffer_release(sm_buffer*);
+sm_status sm_buffer_data(const sm_buffer*, const void** data, uint64_t* bytes);
+sm_status sm_buffer_slice(const sm_buffer*, uint64_t offset, uint64_t length, sm_buffer** out);
 /* Import copies descriptor fields; caller retains its own reference. First
  * slice admits ready CPU descriptors only. Never-copy requires IMMUTABLE and
  * CPU destination storage. Auto borrows eligible CPU inputs, otherwise copies.
@@ -138,11 +138,11 @@ ms_status ms_buffer_slice(const ms_buffer*, uint64_t offset, uint64_t length, ms
  * Metal descriptors, events and unknown device conventions reject explicitly.
  * Source owner is retained during copying; temporary source capacity and output
  * capacity must both fit admission. No pointer validity is inferred from flags. */
-ms_status ms_buffer_import(ms_context*, const ms_buffer_view*, ms_copy_policy, ms_import_result* out);
+sm_status sm_buffer_import(sm_context*, const sm_buffer_view*, sm_copy_policy, sm_import_result* out);
 /* Export acquires one owner reference. Release it exactly once through the
  * returned descriptor's callback. Exported bytes remain immutable by contract.
  * Slice tails are not padding: consumers must obey byte_length exactly. */
-ms_status ms_buffer_export(const ms_buffer*, ms_buffer_view* out);
+sm_status sm_buffer_export(const sm_buffer*, sm_buffer_view* out);
 
 #ifdef __cplusplus
 }

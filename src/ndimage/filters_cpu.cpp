@@ -11,7 +11,7 @@
 //          arithmetic is vectorized across them, row by row.
 // Results do not depend on the split or on the thread count.
 #include "filters.hpp"
-#include "ms/detail/parallel.hpp"
+#include "sm/detail/parallel.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -28,7 +28,7 @@
 // fuse (see correlate_row).
 #pragma STDC FP_CONTRACT OFF
 
-namespace ms::detail::ndimage {
+namespace sm::detail::ndimage {
 namespace {
 // Lines closer together than this are filtered as lines; from here on tiles
 // have enough columns for vector loops.
@@ -50,7 +50,7 @@ constexpr int64_t prefetch_rows = 8;
 
 unsigned lanes_for(uint64_t elements, uint64_t operations_per_element, uint64_t workspace_bytes = 0) {
     uint64_t work = 0;
-    if (ms_checked_mul(elements, operations_per_element, &work) != MS_OK) work = UINT64_MAX;
+    if (sm_checked_mul(elements, operations_per_element, &work) != SM_OK) work = UINT64_MAX;
     uint64_t lanes = std::clamp<uint64_t>(work / min_work_per_lane, 1, parallel::hardware_lanes());
     if (workspace_bytes) lanes = std::clamp<uint64_t>(workspace_budget_bytes / workspace_bytes, 1, lanes);
     return static_cast<unsigned>(lanes);
@@ -682,7 +682,7 @@ void uniform_lines(const Pass& pass, const SrcT* src, DstT* dst) {
 template<class SrcT, class DstT, StoreOp Op = StoreOp::write>
 void run_pass(const Pass& pass, const SrcT* src, DstT* dst) {
     const bool tiles = pass.inner >= min_tile_columns;
-    if (pass.kind == MS_NDIMAGE_UNIFORM) {
+    if (pass.kind == SM_NDIMAGE_UNIFORM) {
         if (tiles) uniform_tiles<SrcT, DstT, Op>(pass, src, dst);
         else uniform_lines<SrcT, DstT, Op>(pass, src, dst);
     } else {
@@ -740,46 +740,46 @@ struct BoolByteTag {};
 
 inline void load_to_double_contig(uint32_t src_dtype, const void* src, double* __restrict__ dst, size_t n) {
     switch (src_dtype) {
-    case MS_FLOAT64: std::memcpy(dst, src, n * sizeof(double)); break;
-    case MS_FLOAT32: to_double(static_cast<const float*>(src), dst, n); break;
+    case SM_FLOAT64: std::memcpy(dst, src, n * sizeof(double)); break;
+    case SM_FLOAT32: to_double(static_cast<const float*>(src), dst, n); break;
     // SciPy NI_ArrayToLineBuffer reads npy_bool as raw uint8_t cast to double.
-    case MS_BOOL:
-    case MS_UINT8: {
+    case SM_BOOL:
+    case SM_UINT8: {
         const uint8_t* __restrict__ p = static_cast<const uint8_t*>(src);
         for (size_t i = 0; i < n; ++i) dst[i] = static_cast<double>(p[i]);
         break;
     }
-    case MS_UINT16: {
+    case SM_UINT16: {
         const uint16_t* __restrict__ p = static_cast<const uint16_t*>(src);
         for (size_t i = 0; i < n; ++i) dst[i] = static_cast<double>(p[i]);
         break;
     }
-    case MS_UINT32: {
+    case SM_UINT32: {
         const uint32_t* __restrict__ p = static_cast<const uint32_t*>(src);
         for (size_t i = 0; i < n; ++i) dst[i] = static_cast<double>(p[i]);
         break;
     }
-    case MS_UINT64: {
+    case SM_UINT64: {
         const uint64_t* __restrict__ p = static_cast<const uint64_t*>(src);
         for (size_t i = 0; i < n; ++i) dst[i] = static_cast<double>(p[i]);
         break;
     }
-    case MS_INT8: {
+    case SM_INT8: {
         const int8_t* __restrict__ p = static_cast<const int8_t*>(src);
         for (size_t i = 0; i < n; ++i) dst[i] = static_cast<double>(p[i]);
         break;
     }
-    case MS_INT16: {
+    case SM_INT16: {
         const int16_t* __restrict__ p = static_cast<const int16_t*>(src);
         for (size_t i = 0; i < n; ++i) dst[i] = static_cast<double>(p[i]);
         break;
     }
-    case MS_INT32: {
+    case SM_INT32: {
         const int32_t* __restrict__ p = static_cast<const int32_t*>(src);
         for (size_t i = 0; i < n; ++i) dst[i] = static_cast<double>(p[i]);
         break;
     }
-    case MS_INT64: {
+    case SM_INT64: {
         const int64_t* __restrict__ p = static_cast<const int64_t*>(src);
         for (size_t i = 0; i < n; ++i) dst[i] = static_cast<double>(p[i]);
         break;
@@ -790,17 +790,17 @@ inline void load_to_double_contig(uint32_t src_dtype, const void* src, double* _
 
 inline double read_scalar_double(uint32_t src_dtype, const void* base, size_t index) noexcept {
     switch (src_dtype) {
-    case MS_FLOAT64: return static_cast<const double*>(base)[index];
-    case MS_FLOAT32: return static_cast<double>(static_cast<const float*>(base)[index]);
-    case MS_BOOL:
-    case MS_UINT8: return static_cast<double>(static_cast<const uint8_t*>(base)[index]);
-    case MS_UINT16: return static_cast<double>(static_cast<const uint16_t*>(base)[index]);
-    case MS_UINT32: return static_cast<double>(static_cast<const uint32_t*>(base)[index]);
-    case MS_UINT64: return static_cast<double>(static_cast<const uint64_t*>(base)[index]);
-    case MS_INT8: return static_cast<double>(static_cast<const int8_t*>(base)[index]);
-    case MS_INT16: return static_cast<double>(static_cast<const int16_t*>(base)[index]);
-    case MS_INT32: return static_cast<double>(static_cast<const int32_t*>(base)[index]);
-    case MS_INT64: return static_cast<double>(static_cast<const int64_t*>(base)[index]);
+    case SM_FLOAT64: return static_cast<const double*>(base)[index];
+    case SM_FLOAT32: return static_cast<double>(static_cast<const float*>(base)[index]);
+    case SM_BOOL:
+    case SM_UINT8: return static_cast<double>(static_cast<const uint8_t*>(base)[index]);
+    case SM_UINT16: return static_cast<double>(static_cast<const uint16_t*>(base)[index]);
+    case SM_UINT32: return static_cast<double>(static_cast<const uint32_t*>(base)[index]);
+    case SM_UINT64: return static_cast<double>(static_cast<const uint64_t*>(base)[index]);
+    case SM_INT8: return static_cast<double>(static_cast<const int8_t*>(base)[index]);
+    case SM_INT16: return static_cast<double>(static_cast<const int16_t*>(base)[index]);
+    case SM_INT32: return static_cast<double>(static_cast<const int32_t*>(base)[index]);
+    case SM_INT64: return static_cast<double>(static_cast<const int64_t*>(base)[index]);
     default: return 0.0;
     }
 }
@@ -894,17 +894,17 @@ inline void store_row_double(StoreOp op, const double* __restrict__ acc, void* b
 inline void store_from_double_generic(uint32_t dst_dtype, StoreOp op, const double* __restrict__ acc, void* base,
                                       size_t stride, size_t n) {
     switch (dst_dtype) {
-    case MS_FLOAT64: store_row_double<double>(op, acc, base, stride, n); break;
-    case MS_FLOAT32: store_row_double<float>(op, acc, base, stride, n); break;
-    case MS_BOOL: store_row_double<BoolByteTag>(op, acc, base, stride, n); break;
-    case MS_UINT8: store_row_double<uint8_t>(op, acc, base, stride, n); break;
-    case MS_UINT16: store_row_double<uint16_t>(op, acc, base, stride, n); break;
-    case MS_UINT32: store_row_double<uint32_t>(op, acc, base, stride, n); break;
-    case MS_UINT64: store_row_double<uint64_t>(op, acc, base, stride, n); break;
-    case MS_INT8: store_row_double<int8_t>(op, acc, base, stride, n); break;
-    case MS_INT16: store_row_double<int16_t>(op, acc, base, stride, n); break;
-    case MS_INT32: store_row_double<int32_t>(op, acc, base, stride, n); break;
-    case MS_INT64: store_row_double<int64_t>(op, acc, base, stride, n); break;
+    case SM_FLOAT64: store_row_double<double>(op, acc, base, stride, n); break;
+    case SM_FLOAT32: store_row_double<float>(op, acc, base, stride, n); break;
+    case SM_BOOL: store_row_double<BoolByteTag>(op, acc, base, stride, n); break;
+    case SM_UINT8: store_row_double<uint8_t>(op, acc, base, stride, n); break;
+    case SM_UINT16: store_row_double<uint16_t>(op, acc, base, stride, n); break;
+    case SM_UINT32: store_row_double<uint32_t>(op, acc, base, stride, n); break;
+    case SM_UINT64: store_row_double<uint64_t>(op, acc, base, stride, n); break;
+    case SM_INT8: store_row_double<int8_t>(op, acc, base, stride, n); break;
+    case SM_INT16: store_row_double<int16_t>(op, acc, base, stride, n); break;
+    case SM_INT32: store_row_double<int32_t>(op, acc, base, stride, n); break;
+    case SM_INT64: store_row_double<int64_t>(op, acc, base, stride, n); break;
     default: break;
     }
 }
@@ -1310,17 +1310,17 @@ void apply_identity_generic(uint64_t elements, uint32_t src_dtype, uint32_t dst_
             void* dst_slice = static_cast<uint8_t*>(dst) + pos * dst_esize;
             array::convert(src_slice, src_dtype, aligned_buf, dst_dtype, n);
             switch (dst_dtype) {
-            case MS_FLOAT64: apply_identity_typed<double>(aligned_buf, dst_slice, n, op); break;
-            case MS_FLOAT32: apply_identity_typed<float>(aligned_buf, dst_slice, n, op); break;
-            case MS_BOOL: apply_identity_typed<BoolByteTag>(aligned_buf, dst_slice, n, op); break;
-            case MS_UINT8: apply_identity_typed<uint8_t>(aligned_buf, dst_slice, n, op); break;
-            case MS_UINT16: apply_identity_typed<uint16_t>(aligned_buf, dst_slice, n, op); break;
-            case MS_UINT32: apply_identity_typed<uint32_t>(aligned_buf, dst_slice, n, op); break;
-            case MS_UINT64: apply_identity_typed<uint64_t>(aligned_buf, dst_slice, n, op); break;
-            case MS_INT8: apply_identity_typed<int8_t>(aligned_buf, dst_slice, n, op); break;
-            case MS_INT16: apply_identity_typed<int16_t>(aligned_buf, dst_slice, n, op); break;
-            case MS_INT32: apply_identity_typed<int32_t>(aligned_buf, dst_slice, n, op); break;
-            case MS_INT64: apply_identity_typed<int64_t>(aligned_buf, dst_slice, n, op); break;
+            case SM_FLOAT64: apply_identity_typed<double>(aligned_buf, dst_slice, n, op); break;
+            case SM_FLOAT32: apply_identity_typed<float>(aligned_buf, dst_slice, n, op); break;
+            case SM_BOOL: apply_identity_typed<BoolByteTag>(aligned_buf, dst_slice, n, op); break;
+            case SM_UINT8: apply_identity_typed<uint8_t>(aligned_buf, dst_slice, n, op); break;
+            case SM_UINT16: apply_identity_typed<uint16_t>(aligned_buf, dst_slice, n, op); break;
+            case SM_UINT32: apply_identity_typed<uint32_t>(aligned_buf, dst_slice, n, op); break;
+            case SM_UINT64: apply_identity_typed<uint64_t>(aligned_buf, dst_slice, n, op); break;
+            case SM_INT8: apply_identity_typed<int8_t>(aligned_buf, dst_slice, n, op); break;
+            case SM_INT16: apply_identity_typed<int16_t>(aligned_buf, dst_slice, n, op); break;
+            case SM_INT32: apply_identity_typed<int32_t>(aligned_buf, dst_slice, n, op); break;
+            case SM_INT64: apply_identity_typed<int64_t>(aligned_buf, dst_slice, n, op); break;
             default: break;
             }
         }
@@ -1328,17 +1328,17 @@ void apply_identity_generic(uint64_t elements, uint32_t src_dtype, uint32_t dst_
 }
 
 void dispatch_pass(const Pass& pass, uint32_t src_dtype, uint32_t dst_dtype, const void* src, void* dst, StoreOp op) {
-    if (src_dtype == MS_FLOAT64 && dst_dtype == MS_FLOAT64) {
+    if (src_dtype == SM_FLOAT64 && dst_dtype == SM_FLOAT64) {
         run_pass_with_op<double, double>(pass, src, dst, op);
-    } else if (src_dtype == MS_FLOAT32 && dst_dtype == MS_FLOAT32) {
+    } else if (src_dtype == SM_FLOAT32 && dst_dtype == SM_FLOAT32) {
         run_pass_with_op<float, float>(pass, src, dst, op);
-    } else if (src_dtype == MS_FLOAT32 && dst_dtype == MS_FLOAT64) {
+    } else if (src_dtype == SM_FLOAT32 && dst_dtype == SM_FLOAT64) {
         run_pass_with_op<float, double>(pass, src, dst, op);
-    } else if (src_dtype == MS_FLOAT64 && dst_dtype == MS_FLOAT32) {
+    } else if (src_dtype == SM_FLOAT64 && dst_dtype == SM_FLOAT32) {
         run_pass_with_op<double, float>(pass, src, dst, op);
     } else {
         const bool tiles = pass.inner >= min_tile_columns;
-        if (pass.kind == MS_NDIMAGE_UNIFORM) {
+        if (pass.kind == SM_NDIMAGE_UNIFORM) {
             if (tiles) uniform_tiles_generic(pass, src_dtype, dst_dtype, src, dst, op);
             else uniform_lines_generic(pass, src_dtype, dst_dtype, src, dst, op);
         } else {
@@ -1350,13 +1350,13 @@ void dispatch_pass(const Pass& pass, uint32_t src_dtype, uint32_t dst_dtype, con
 
 void dispatch_identity(uint64_t elements, uint32_t src_dtype, uint32_t dst_dtype, const void* src, void* dst,
                        StoreOp op) {
-    if (src_dtype == MS_FLOAT64 && dst_dtype == MS_FLOAT64) {
+    if (src_dtype == SM_FLOAT64 && dst_dtype == SM_FLOAT64) {
         apply_identity<double, double>(elements, src, dst, op);
-    } else if (src_dtype == MS_FLOAT32 && dst_dtype == MS_FLOAT32) {
+    } else if (src_dtype == SM_FLOAT32 && dst_dtype == SM_FLOAT32) {
         apply_identity<float, float>(elements, src, dst, op);
-    } else if (src_dtype == MS_FLOAT32 && dst_dtype == MS_FLOAT64) {
+    } else if (src_dtype == SM_FLOAT32 && dst_dtype == SM_FLOAT64) {
         apply_identity<float, double>(elements, src, dst, op);
-    } else if (src_dtype == MS_FLOAT64 && dst_dtype == MS_FLOAT32) {
+    } else if (src_dtype == SM_FLOAT64 && dst_dtype == SM_FLOAT32) {
         apply_identity<double, float>(elements, src, dst, op);
     } else {
         apply_identity_generic(elements, src_dtype, dst_dtype, src, dst, op);
@@ -1364,11 +1364,11 @@ void dispatch_identity(uint64_t elements, uint32_t src_dtype, uint32_t dst_dtype
 }
 } // namespace
 
-BufferPtr run_cpu(ms_context* context, const Plan& plan, const void* input) {
+BufferPtr run_cpu(sm_context* context, const Plan& plan, const void* input) {
     const uint32_t out_dtype = plan.out_dtype ? plan.out_dtype : plan.dtype;
     uint64_t bytes = 0;
-    if (ms_checked_mul(plan.shape.elements, array::dtype_size(out_dtype), &bytes) != MS_OK)
-        throw Error(MS_EOVERFLOW, "output array byte size overflows");
+    if (sm_checked_mul(plan.shape.elements, array::dtype_size(out_dtype), &bytes) != SM_OK)
+        throw Error(SM_EOVERFLOW, "output array byte size overflows");
     const size_t count = plan.passes.size();
     BufferPtr result = array::allocate(context, bytes);
     if (count == 0) {
@@ -1391,11 +1391,11 @@ BufferPtr run_cpu(ms_context* context, const Plan& plan, const void* input) {
     return result;
 }
 
-BufferPtr run_cpu_composite(ms_context* context, const CompositePlan& plan, const void* input) {
+BufferPtr run_cpu_composite(sm_context* context, const CompositePlan& plan, const void* input) {
     const uint64_t elements = plan.shape.elements;
     uint64_t out_bytes = 0;
-    if (ms_checked_mul(elements, array::dtype_size(plan.out_dtype), &out_bytes) != MS_OK)
-        throw Error(MS_EOVERFLOW, "output array byte size overflows");
+    if (sm_checked_mul(elements, array::dtype_size(plan.out_dtype), &out_bytes) != SM_OK)
+        throw Error(SM_EOVERFLOW, "output array byte size overflows");
     BufferPtr result = array::allocate(context, out_bytes);
     if (!elements) return result;
 
@@ -1410,7 +1410,7 @@ BufferPtr run_cpu_composite(ms_context* context, const CompositePlan& plan, cons
 
     void* result_ptr = mutable_data(result.get());
     const size_t num_chains = plan.chains.size();
-    const bool is_grad = plan.combine_op == MS_NDIMAGE_COMBINE_SQRT_SUM_SQ;
+    const bool is_grad = plan.combine_op == SM_NDIMAGE_COMBINE_SQRT_SUM_SQ;
 
     for (size_t k = 0; k < num_chains; ++k) {
         const auto& chain = plan.chains[k];
@@ -1454,4 +1454,4 @@ BufferPtr run_cpu_composite(ms_context* context, const CompositePlan& plan, cons
     }
     return result;
 }
-} // namespace ms::detail::ndimage
+} // namespace sm::detail::ndimage

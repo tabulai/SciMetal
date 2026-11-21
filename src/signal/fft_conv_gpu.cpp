@@ -1,4 +1,4 @@
-// GPU FFT and Overlap-Add convolution engine for metal-sci signal.
+// GPU FFT and Overlap-Add convolution engine for SciMetal signal.
 // Executes pad/OA-chunk -> forward FFT(in1) -> forward FFT(in2) ->
 // spectral multiply -> inverse FFT -> OA-combine/crop/widen in ONE gpu::Batch.
 #include "fft_conv.hpp"
@@ -14,10 +14,10 @@
 #include <string>
 #include <vector>
 
-namespace ms::detail::signal {
+namespace sm::detail::signal {
 namespace {
 
-// Below this many padded FFT elements, MS_EXECUTION_AUTO declines so SciPy
+// Below this many padded FFT elements, SM_EXECUTION_AUTO declines so SciPy
 // handles small calls without GPU hand-off overhead. Calibrated via
 // bench/signal_convolve.py --calibrate.
 constexpr uint64_t fft_gpu_min_elements = uint64_t{1} << 15;
@@ -47,26 +47,26 @@ StagedFft build_stages(const uint64_t* dims, const uint64_t* nsteps, const uint3
                                             uint64_t& out_count, uint64_t& out_tail) {
         out_count = 1;
         for (uint32_t d = 0; d < ax; ++d) {
-            if (ms_checked_mul(out_count, nsteps[d] * dims[d], &out_count) != MS_OK)
-                throw Error(MS_ENOTSUP, "the signal FFT exceeds 32-bit kernel indexing");
+            if (sm_checked_mul(out_count, nsteps[d] * dims[d], &out_count) != SM_OK)
+                throw Error(SM_ENOTSUP, "the signal FFT exceeds 32-bit kernel indexing");
         }
-        if (ms_checked_mul(out_count, nsteps[ax], &out_count) != MS_OK)
-            throw Error(MS_ENOTSUP, "the signal FFT exceeds 32-bit kernel indexing");
+        if (sm_checked_mul(out_count, nsteps[ax], &out_count) != SM_OK)
+            throw Error(SM_ENOTSUP, "the signal FFT exceeds 32-bit kernel indexing");
         out_tail = 1;
         for (uint32_t d = ax + 1; d < ndim; ++d) {
             const uint64_t ext = (d == last) ? (nsteps[d] * last_row_elems) : (nsteps[d] * dims[d]);
-            if (ms_checked_mul(out_tail, ext, &out_tail) != MS_OK)
-                throw Error(MS_ENOTSUP, "the signal FFT exceeds 32-bit kernel indexing");
+            if (sm_checked_mul(out_tail, ext, &out_tail) != SM_OK)
+                throw Error(SM_ENOTSUP, "the signal FFT exceeds 32-bit kernel indexing");
         }
     };
 
     uint64_t rows = 1;
     for (uint32_t d = 0; d < last; ++d) {
-        if (ms_checked_mul(rows, nsteps[d] * dims[d], &rows) != MS_OK)
-            throw Error(MS_ENOTSUP, "the signal FFT exceeds 32-bit kernel indexing");
+        if (sm_checked_mul(rows, nsteps[d] * dims[d], &rows) != SM_OK)
+            throw Error(SM_ENOTSUP, "the signal FFT exceeds 32-bit kernel indexing");
     }
-    if (ms_checked_mul(rows, nsteps[last], &rows) != MS_OK)
-        throw Error(MS_ENOTSUP, "the signal FFT exceeds 32-bit kernel indexing");
+    if (sm_checked_mul(rows, nsteps[last], &rows) != SM_OK)
+        throw Error(SM_ENOTSUP, "the signal FFT exceeds 32-bit kernel indexing");
 
     StagedFft staged;
     std::shared_ptr<const fft::Plan> last_plan;
@@ -78,7 +78,7 @@ StagedFft build_stages(const uint64_t* dims, const uint64_t* nsteps, const uint3
         req.count = rows;
         fft::Planned planned = fft::plan(req, limits);
         if (!planned.plan)
-            throw Error(MS_ENOTSUP, "no GPU plan for signal FFT length " + std::to_string(req.n) + ": " + planned.reason);
+            throw Error(SM_ENOTSUP, "no GPU plan for signal FFT length " + std::to_string(req.n) + ": " + planned.reason);
         last_plan = std::move(planned.plan);
     }
 
@@ -98,7 +98,7 @@ StagedFft build_stages(const uint64_t* dims, const uint64_t* nsteps, const uint3
         compute_inner_tail_and_count(uax, inner_row, req.count, req.tail);
         fft::Planned planned = fft::plan(req, limits);
         if (!planned.plan)
-            throw Error(MS_ENOTSUP, "no GPU plan for signal FFT length " + std::to_string(req.n) +
+            throw Error(SM_ENOTSUP, "no GPU plan for signal FFT length " + std::to_string(req.n) +
                                         " along axis " + std::to_string(uax) + ": " + planned.reason);
         inner.push_back({std::move(planned.plan), req.count});
     }
@@ -106,7 +106,7 @@ StagedFft build_stages(const uint64_t* dims, const uint64_t* nsteps, const uint3
     if (last_plan && !inverse) staged.stages.push_back({last_plan, rows});
     staged.stages.insert(staged.stages.end(), inner.begin(), inner.end());
     if (last_plan && inverse) staged.stages.push_back({last_plan, rows});
-    if (staged.stages.empty()) throw Error(MS_ENOTSUP, "a one-point signal FFT needs no transform");
+    if (staged.stages.empty()) throw Error(SM_ENOTSUP, "a one-point signal FFT needs no transform");
 
     staged.input_real = last_plan && last_plan->input_real;
     staged.result_real = last_plan && last_plan->result_real;
@@ -128,7 +128,7 @@ StagedFft fit_stages(const uint64_t* dims, const uint64_t* nsteps, uint32_t axis
         if (!fft::refused(staged.stages, refusal)) {
             for (const fft::Stage& s : staged.stages) {
                 if (s.plan->load != fft::Load::direct || s.plan->store != fft::Store::direct) {
-                    throw Error(MS_ENOTSUP, "signal FFT requires direct load/store plan");
+                    throw Error(SM_ENOTSUP, "signal FFT requires direct load/store plan");
                 }
             }
             return staged;
@@ -141,11 +141,11 @@ StagedFft fit_stages(const uint64_t* dims, const uint64_t* nsteps, uint32_t axis
         req.count = ref_stage.count;
         fft::Planned replacement = fft::replan(req, limits, next_ceiling);
         if (!replacement.plan) {
-            throw Error(MS_ENOTSUP, "no GPU plan for signal FFT length " + std::to_string(req.n) + ": " +
+            throw Error(SM_ENOTSUP, "no GPU plan for signal FFT length " + std::to_string(req.n) + ": " +
                                         replacement.reason);
         }
         if (replacement.plan->load != fft::Load::direct || replacement.plan->store != fft::Store::direct) {
-            throw Error(MS_ENOTSUP, "signal FFT requires direct load/store plan");
+            throw Error(SM_ENOTSUP, "signal FFT requires direct load/store plan");
         }
         staged.stages[idx].plan = std::move(replacement.plan);
         staged.stages[idx].resolved.reset();
@@ -159,29 +159,29 @@ StagedFft fit_stages(const uint64_t* dims, const uint64_t* nsteps, uint32_t axis
             if (s.plan->divides_by_n) staged.applied /= static_cast<double>(s.plan->request.n);
         }
     }
-    throw Error(MS_ENOTSUP, "could not fit signal FFT plan to device threadgroup limits");
+    throw Error(SM_ENOTSUP, "could not fit signal FFT plan to device threadgroup limits");
 }
 
 void check_single_range(const array::ConvertReport& rep) {
     if (rep.overflowed || rep.has_nonfinite || !(rep.max_finite <= narrow_ceiling) ||
         (rep.max_finite != 0.0 && rep.max_finite < narrow_floor)) {
-        throw Error(MS_ENOTSUP, "input magnitudes do not fit single-precision FFT range; SciPy is used");
+        throw Error(SM_ENOTSUP, "input magnitudes do not fit single-precision FFT range; SciPy is used");
     }
 }
 
 const char* pad_kernel_name(bool src_complex, bool dst_complex) {
-    if (!dst_complex) return "ms_signal_fft_pad_f32_f32";
-    if (!src_complex) return "ms_signal_fft_pad_f32_c64";
-    return "ms_signal_fft_pad_c64_c64";
+    if (!dst_complex) return "sm_signal_fft_pad_f32_f32";
+    if (!src_complex) return "sm_signal_fft_pad_f32_c64";
+    return "sm_signal_fft_pad_c64_c64";
 }
 
 const char* combine_kernel_name(bool src_complex, uint32_t out_dtype) {
     switch (out_dtype) {
-    case MS_FLOAT32: return src_complex ? "ms_signal_oa_combine_c_f32" : "ms_signal_oa_combine_r_f32";
-    case MS_FLOAT64: return src_complex ? "ms_signal_oa_combine_c_f64" : "ms_signal_oa_combine_r_f64";
-    case MS_COMPLEX64: return "ms_signal_oa_combine_c_c64";
-    case MS_COMPLEX128: return "ms_signal_oa_combine_c_c128";
-    default: throw Error(MS_EINVAL, "unknown output dtype");
+    case SM_FLOAT32: return src_complex ? "sm_signal_oa_combine_c_f32" : "sm_signal_oa_combine_r_f32";
+    case SM_FLOAT64: return src_complex ? "sm_signal_oa_combine_c_f64" : "sm_signal_oa_combine_r_f64";
+    case SM_COMPLEX64: return "sm_signal_oa_combine_c_c64";
+    case SM_COMPLEX128: return "sm_signal_oa_combine_c_c128";
+    default: throw Error(SM_EINVAL, "unknown output dtype");
     }
 }
 
@@ -237,24 +237,24 @@ void build_logical_spec_shapes(const FftConvPlan& plan, std::vector<uint32_t>& d
 
 } // namespace
 
-BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const ms_array& in2_orig,
-                           const FftConvPlan& plan_in, const ms_route_options& route_options,
+BufferPtr run_fft_conv_gpu(sm_context* context, const sm_array& in1_orig, const sm_array& in2_orig,
+                           const FftConvPlan& plan_in, const sm_route_options& route_options,
                            uint32_t& out_compute_dtype, uint32_t* out_nf_flags) {
-    if (storage_kind(context) != MS_BUFFER_METAL) {
-        throw Error(MS_ENOTSUP, "GPU execution needs a Metal-storage context");
+    if (storage_kind(context) != SM_BUFFER_METAL) {
+        throw Error(SM_ENOTSUP, "GPU execution needs a Metal-storage context");
     }
-    if (route_options.execution == MS_EXECUTION_CPU) {
-        throw Error(MS_ENOTSUP, "there is no native CPU FFT convolution; SciPy's is used");
+    if (route_options.execution == SM_EXECUTION_CPU) {
+        throw Error(SM_ENOTSUP, "there is no native CPU FFT convolution; SciPy's is used");
     }
     const bool out_double = array::is_double(plan_in.out_dtype);
-    if (out_double && route_options.precision == MS_PRECISION_STRICT) {
-        throw Error(MS_ENOTSUP, "strict precision keeps double-precision FFT convolution on SciPy");
+    if (out_double && route_options.precision == SM_PRECISION_STRICT) {
+        throw Error(SM_ENOTSUP, "strict precision keeps double-precision FFT convolution on SciPy");
     }
     if (plan_in.axis_count == 0) {
-        throw Error(MS_ENOTSUP, "no axes to transform; SciPy is used");
+        throw Error(SM_ENOTSUP, "no axes to transform; SciPy is used");
     }
-    if (route_options.execution == MS_EXECUTION_AUTO && plan_in.effective_fft_elements < fft_gpu_min_elements) {
-        throw Error(MS_ENOTSUP, "the signal FFT convolution is below the GPU crossover; SciPy's is used");
+    if (route_options.execution == SM_EXECUTION_AUTO && plan_in.effective_fft_elements < fft_gpu_min_elements) {
+        throw Error(SM_ENOTSUP, "the signal FFT convolution is below the GPU crossover; SciPy's is used");
     }
 
     const fft::Limits limits = fft::device_limits();
@@ -264,14 +264,14 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
             plan.nsteps1[d] > INT32_MAX / plan.fft_len[d] ||
             plan.nsteps2[d] > INT32_MAX / plan.fft_len[d] ||
             plan.nsteps_out[d] > INT32_MAX / plan.fft_len[d]) {
-            throw Error(MS_ENOTSUP, "the signal FFT convolution exceeds 32-bit kernel indexing");
+            throw Error(SM_ENOTSUP, "the signal FFT convolution exceeds 32-bit kernel indexing");
         }
     }
     if (plan.effective_fft_elements > INT32_MAX) {
-        throw Error(MS_ENOTSUP, "the signal FFT convolution exceeds 32-bit kernel indexing");
+        throw Error(SM_ENOTSUP, "the signal FFT convolution exceeds 32-bit kernel indexing");
     }
 
-    uint64_t dims1[MS_MAX_NDIM] = {}, dims2[MS_MAX_NDIM] = {}, dims_out[MS_MAX_NDIM] = {};
+    uint64_t dims1[SM_MAX_NDIM] = {}, dims2[SM_MAX_NDIM] = {}, dims_out[SM_MAX_NDIM] = {};
     for (uint32_t d = 0; d < plan.ndim; ++d) {
         if (plan.axis_mask & (1u << d)) {
             dims1[d] = dims2[d] = dims_out[d] = plan.fft_len[d];
@@ -302,8 +302,8 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
                     const uint64_t s1_d = plan.s1.dims[last];
                     const uint64_t s2_d = plan.s2.dims[last];
                     uint64_t full_d = 0;
-                    if (ms_checked_add(s1_d, s2_d - 1, &full_d) != MS_OK)
-                        throw Error(MS_EOVERFLOW, "convolution output dimension overflows");
+                    if (sm_checked_add(s1_d, s2_d - 1, &full_d) != SM_OK)
+                        throw Error(SM_EOVERFLOW, "convolution output dimension overflows");
                     if (pow2 >= full_d) {
                         plan.overlap[last] = 0;
                         plan.step1[last] = s1_d;
@@ -325,7 +325,7 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
                             if (s_d <= st_d) return 1;
                             uint64_t n = 1 + s_d / st_d;
                             uint64_t covered = 0;
-                            if (ms_checked_mul(eff_step, n, &covered) == MS_OK && covered < full_d) ++n;
+                            if (sm_checked_mul(eff_step, n, &covered) == SM_OK && covered < full_d) ++n;
                             return n;
                         };
                         plan.nsteps1[last] = calc_n(s1_d, plan.step1[last]);
@@ -336,7 +336,7 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
                 if (plan.nsteps1[last] > INT32_MAX / pow2 ||
                     plan.nsteps2[last] > INT32_MAX / pow2 ||
                     plan.nsteps_out[last] > INT32_MAX / pow2) {
-                    throw Error(MS_ENOTSUP, "the signal FFT convolution exceeds 32-bit kernel indexing");
+                    throw Error(SM_ENOTSUP, "the signal FFT convolution exceeds 32-bit kernel indexing");
                 }
                 continue;
             }
@@ -344,8 +344,8 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
         }
     }
 
-    const ms_array& src1 = plan.swapped ? in2_orig : in1_orig;
-    const ms_array& src2 = plan.swapped ? in1_orig : in2_orig;
+    const sm_array& src1 = plan.swapped ? in2_orig : in1_orig;
+    const sm_array& src2 = plan.swapped ? in1_orig : in2_orig;
 
     // Load inputs into single-precision shared storage and enforce A5 guard rails.
     array::ConvertReport rep1, rep2;
@@ -378,13 +378,13 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
         if (!std::isfinite(prod_max) || prod_max > product_ceiling ||
             !std::isfinite(prod_max * unnorm_inv) || prod_max * unnorm_inv > product_ceiling ||
             peak1 * peak2 * static_cast<double>(plan.overlap_elements) > product_ceiling) {
-            throw Error(MS_ENOTSUP, "the signal convolution product exceeds single-precision range; SciPy is used");
+            throw Error(SM_ENOTSUP, "the signal convolution product exceeds single-precision range; SciPy is used");
         }
         // Guard against single-precision underflow of tiny finite products.
         if (peak1 != 0.0 && peak2 != 0.0) {
             const double prod_min = peak1 * peak2;
             if (prod_min < narrow_floor || (prod_min / total_fft_n) < 0x1p-116) {
-                throw Error(MS_ENOTSUP, "the signal convolution product underflows single-precision range; SciPy is used");
+                throw Error(SM_ENOTSUP, "the signal convolution product underflows single-precision range; SciPy is used");
             }
         }
     }
@@ -392,17 +392,17 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
     uint64_t pad_elems1 = 1, pad_elems2 = 1, conv_elems = 1;
     for (uint32_t d = 0; d < plan.ndim; ++d) {
         uint64_t e1 = 0, e2 = 0, eo = 0;
-        if (ms_checked_mul(plan.nsteps1[d], dims1[d], &e1) != MS_OK ||
-            ms_checked_mul(pad_elems1, e1, &pad_elems1) != MS_OK ||
-            ms_checked_mul(plan.nsteps2[d], dims2[d], &e2) != MS_OK ||
-            ms_checked_mul(pad_elems2, e2, &pad_elems2) != MS_OK ||
-            ms_checked_mul(plan.nsteps_out[d], dims_out[d], &eo) != MS_OK ||
-            ms_checked_mul(conv_elems, eo, &conv_elems) != MS_OK) {
-            throw Error(MS_ENOTSUP, "the signal FFT convolution exceeds 32-bit kernel indexing");
+        if (sm_checked_mul(plan.nsteps1[d], dims1[d], &e1) != SM_OK ||
+            sm_checked_mul(pad_elems1, e1, &pad_elems1) != SM_OK ||
+            sm_checked_mul(plan.nsteps2[d], dims2[d], &e2) != SM_OK ||
+            sm_checked_mul(pad_elems2, e2, &pad_elems2) != SM_OK ||
+            sm_checked_mul(plan.nsteps_out[d], dims_out[d], &eo) != SM_OK ||
+            sm_checked_mul(conv_elems, eo, &conv_elems) != SM_OK) {
+            throw Error(SM_ENOTSUP, "the signal FFT convolution exceeds 32-bit kernel indexing");
         }
     }
     if (pad_elems1 > INT32_MAX || pad_elems2 > INT32_MAX || conv_elems > INT32_MAX) {
-        throw Error(MS_ENOTSUP, "the signal FFT convolution exceeds 32-bit kernel indexing");
+        throw Error(SM_ENOTSUP, "the signal FFT convolution exceeds 32-bit kernel indexing");
     }
 
     const bool buf_complex = !plan.real_last_axis;
@@ -420,20 +420,20 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
     const auto make_pad_params = [&](const array::Shape& s, const uint64_t* nsteps, const uint64_t* step,
                                      const uint64_t* dims, uint64_t dst_elems, bool src_c, bool dst_c,
                                      bool conj_src, uint32_t rev_mask) {
-        MSSignalPadParams p{};
+        SMSignalPadParams p{};
         p.ndim = plan.ndim;
-        p.dst_elements = static_cast<ms_u32>(dst_elems);
-        p.flags = (src_c ? MS_SIGNAL_PAD_SRC_COMPLEX : 0u) |
-                  (dst_c ? MS_SIGNAL_PAD_DST_COMPLEX : 0u) |
-                  (conj_src ? MS_SIGNAL_PAD_CONJ : 0u);
+        p.dst_elements = static_cast<sm_u32>(dst_elems);
+        p.flags = (src_c ? SM_SIGNAL_PAD_SRC_COMPLEX : 0u) |
+                  (dst_c ? SM_SIGNAL_PAD_DST_COMPLEX : 0u) |
+                  (conj_src ? SM_SIGNAL_PAD_CONJ : 0u);
         p.reverse_mask = rev_mask;
         uint32_t in_str = 1, dst_str = 1;
         for (int32_t d = static_cast<int32_t>(plan.ndim) - 1; d >= 0; --d) {
-            p.in_shape[d] = static_cast<ms_u32>(s.dims[d]);
+            p.in_shape[d] = static_cast<sm_u32>(s.dims[d]);
             p.in_stride[d] = in_str;
-            p.nsteps[d] = static_cast<ms_u32>(nsteps[d]);
-            p.step[d] = static_cast<ms_u32>(step[d]);
-            p.fft_len[d] = static_cast<ms_u32>(dims[d]);
+            p.nsteps[d] = static_cast<sm_u32>(nsteps[d]);
+            p.step[d] = static_cast<sm_u32>(step[d]);
+            p.fft_len[d] = static_cast<sm_u32>(dims[d]);
             p.dst_stride[d] = dst_str;
             in_str *= static_cast<uint32_t>(s.dims[d]);
             dst_str *= static_cast<uint32_t>(nsteps[d] * dims[d]);
@@ -444,10 +444,10 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
     const bool src1_complex = array::is_complex(src1.dtype);
     const bool src2_complex = array::is_complex(src2.dtype);
     const bool rev_src2 = plan.correlate;
-    const MSSignalPadParams pad1_params = make_pad_params(
+    const SMSignalPadParams pad1_params = make_pad_params(
         plan.s1, plan.nsteps1, plan.step1, dims1, pad_elems1, src1_complex, buf_complex,
         false, 0u);
-    const MSSignalPadParams pad2_params = make_pad_params(
+    const SMSignalPadParams pad2_params = make_pad_params(
         plan.s2, plan.nsteps2, plan.step2, dims2, pad_elems2, src2_complex, buf_complex,
         rev_src2, rev_src2 ? plan.raw_axis_mask : 0u);
 
@@ -468,36 +468,36 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
         *reinterpret_cast<uint32_t*>(mutable_data(nf_buf.get())) = 0u;
 
         // 1. Pad in1 -> buf1, forward FFT(buf1) -> spec1.
-        ms_buffer* buf1 = scratch.acquire(buf1_bytes);
+        sm_buffer* buf1 = scratch.acquire(buf1_bytes);
         batch.dispatch(pad_kernel_name(src1_complex, buf_complex), pad1_params,
                        {gpu::bind(single1.get(), context), gpu::bind(buf1, context),
                         gpu::bind(nf_buf.get(), context)},
-                       (pad_elems1 + MS_GPU_THREADS - 1) / MS_GPU_THREADS);
-        ms_buffer* spec1 = fft::encode(context, batch, scratch, fwd1.stages, buf1, 1.0f);
+                       (pad_elems1 + SM_GPU_THREADS - 1) / SM_GPU_THREADS);
+        sm_buffer* spec1 = fft::encode(context, batch, scratch, fwd1.stages, buf1, 1.0f);
 
         // 2. Pad in2 -> buf2, forward FFT(buf2) -> spec2.
-        ms_buffer* buf2 = scratch.acquire(buf2_bytes);
+        sm_buffer* buf2 = scratch.acquire(buf2_bytes);
         batch.dispatch(pad_kernel_name(src2_complex, buf_complex), pad2_params,
                        {gpu::bind(single2.get(), context), gpu::bind(buf2, context),
                         gpu::bind(nf_buf.get(), context)},
-                       (pad_elems2 + MS_GPU_THREADS - 1) / MS_GPU_THREADS);
-        ms_buffer* spec2 = fft::encode(context, batch, scratch, fwd2.stages, buf2, 1.0f);
+                       (pad_elems2 + SM_GPU_THREADS - 1) / SM_GPU_THREADS);
+        sm_buffer* spec2 = fft::encode(context, batch, scratch, fwd2.stages, buf2, 1.0f);
 
         // 3. Spectral multiply -> spec_prod.
-        ms_buffer* spec_prod = nullptr;
+        sm_buffer* spec_prod = nullptr;
         if (same_spec_shape) {
-            MSSignalMulInplaceParams mp{};
-            mp.elements = static_cast<ms_u32>(spec_out_elems);
-            batch.dispatch("ms_signal_spectral_mul_inplace", mp,
+            SMSignalMulInplaceParams mp{};
+            mp.elements = static_cast<sm_u32>(spec_out_elems);
+            batch.dispatch("sm_signal_spectral_mul_inplace", mp,
                            {gpu::bind(spec1, context), gpu::bind(spec2, context),
                             gpu::bind(nf_buf.get(), context)},
-                           (spec_out_elems + MS_GPU_THREADS - 1) / MS_GPU_THREADS);
+                           (spec_out_elems + SM_GPU_THREADS - 1) / SM_GPU_THREADS);
             spec_prod = spec1;
             scratch.release(spec2);
         } else {
-            MSSignalMulBroadcastParams bp{};
-            bp.ndim = static_cast<ms_u32>(d_out.size());
-            bp.elements = static_cast<ms_u32>(spec_out_elems);
+            SMSignalMulBroadcastParams bp{};
+            bp.ndim = static_cast<sm_u32>(d_out.size());
+            bp.elements = static_cast<sm_u32>(spec_out_elems);
             uint32_t s_out = 1, s_a = 1, s_b = 1;
             for (int32_t i = static_cast<int32_t>(d_out.size()) - 1; i >= 0; --i) {
                 bp.shape[i] = d_out[i];
@@ -509,26 +509,26 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
                 s_b *= d_b[i];
             }
             if (a_is_full) {
-                batch.dispatch("ms_signal_spectral_mul_broadcast_inplace", bp,
+                batch.dispatch("sm_signal_spectral_mul_broadcast_inplace", bp,
                                {gpu::bind(spec1, context), gpu::bind(spec2, context),
                                 gpu::bind(nf_buf.get(), context)},
-                               (spec_out_elems + MS_GPU_THREADS - 1) / MS_GPU_THREADS);
+                               (spec_out_elems + SM_GPU_THREADS - 1) / SM_GPU_THREADS);
                 spec_prod = spec1;
                 scratch.release(spec2);
             } else if (b_is_full) {
                 std::swap(bp.a_stride, bp.b_stride);
-                batch.dispatch("ms_signal_spectral_mul_broadcast_inplace", bp,
+                batch.dispatch("sm_signal_spectral_mul_broadcast_inplace", bp,
                                {gpu::bind(spec2, context), gpu::bind(spec1, context),
                                 gpu::bind(nf_buf.get(), context)},
-                               (spec_out_elems + MS_GPU_THREADS - 1) / MS_GPU_THREADS);
+                               (spec_out_elems + SM_GPU_THREADS - 1) / SM_GPU_THREADS);
                 spec_prod = spec2;
                 scratch.release(spec1);
             } else {
                 spec_prod = scratch.acquire(spec_out_bytes);
-                batch.dispatch("ms_signal_spectral_mul_broadcast", bp,
+                batch.dispatch("sm_signal_spectral_mul_broadcast", bp,
                                {gpu::bind(spec1, context), gpu::bind(spec2, context),
                                 gpu::bind(spec_prod, context), gpu::bind(nf_buf.get(), context)},
-                               (spec_out_elems + MS_GPU_THREADS - 1) / MS_GPU_THREADS);
+                               (spec_out_elems + SM_GPU_THREADS - 1) / SM_GPU_THREADS);
                 scratch.release(spec1);
                 scratch.release(spec2);
             }
@@ -546,15 +546,15 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
 
         BufferPtr out_buf;
         if (direct_publish) {
-            ms_buffer* conv_buf = fft::encode(context, batch, scratch, inv.stages, spec_prod, remaining_scale);
+            sm_buffer* conv_buf = fft::encode(context, batch, scratch, inv.stages, spec_prod, remaining_scale);
             if (out_nf_flags && plan.out_shape.elements > 0) {
                 const uint64_t scalar_count =
                     plan.out_shape.elements * (plan.is_complex ? uint64_t{2} : uint64_t{1});
                 const uint64_t groups =
-                    std::min<uint64_t>(65536u, (scalar_count + MS_GPU_THREADS - 1) / MS_GPU_THREADS);
-                MSSignalFiniteParams fp{};
+                    std::min<uint64_t>(65536u, (scalar_count + SM_GPU_THREADS - 1) / SM_GPU_THREADS);
+                SMSignalFiniteParams fp{};
                 fp.count = scalar_count;
-                batch.dispatch("ms_signal_check_finite_f32", fp,
+                batch.dispatch("sm_signal_check_finite_f32", fp,
                                {gpu::bind(conv_buf, context), gpu::bind(nf_buf.get(), context)},
                                groups);
             }
@@ -562,36 +562,36 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
             operation.complete();
             out_buf = scratch.take(conv_buf);
         } else {
-            ms_buffer* conv_buf = fft::encode(context, batch, scratch, inv.stages, spec_prod, 1.0f);
+            sm_buffer* conv_buf = fft::encode(context, batch, scratch, inv.stages, spec_prod, 1.0f);
             uint64_t out_bytes = 0;
-            if (ms_checked_mul(plan.out_shape.elements, array::dtype_size(plan.out_dtype), &out_bytes) != MS_OK)
-                throw Error(MS_EOVERFLOW, "signal output byte size overflows");
+            if (sm_checked_mul(plan.out_shape.elements, array::dtype_size(plan.out_dtype), &out_bytes) != SM_OK)
+                throw Error(SM_EOVERFLOW, "signal output byte size overflows");
             out_buf = array::allocate(context, out_bytes);
 
-            MSSignalCombineParams cp{};
+            SMSignalCombineParams cp{};
             cp.ndim = plan.ndim;
-            cp.out_elements = static_cast<ms_u32>(plan.out_shape.elements);
+            cp.out_elements = static_cast<sm_u32>(plan.out_shape.elements);
             const uint32_t rev_out_mask = (plan.correlate && plan.swapped) ? plan.raw_axis_mask : 0u;
-            cp.flags = (inv_src_complex ? MS_SIGNAL_COMBINE_SRC_COMPLEX : 0u) |
-                       (plan.is_complex ? MS_SIGNAL_COMBINE_DST_COMPLEX : 0u) |
-                       (out_double ? MS_SIGNAL_COMBINE_DST_DOUBLE : 0u) |
-                       ((plan.correlate && plan.swapped) ? MS_SIGNAL_COMBINE_REV_CONJ : 0u) |
+            cp.flags = (inv_src_complex ? SM_SIGNAL_COMBINE_SRC_COMPLEX : 0u) |
+                       (plan.is_complex ? SM_SIGNAL_COMBINE_DST_COMPLEX : 0u) |
+                       (out_double ? SM_SIGNAL_COMBINE_DST_DOUBLE : 0u) |
+                       ((plan.correlate && plan.swapped) ? SM_SIGNAL_COMBINE_REV_CONJ : 0u) |
                        (rev_out_mask << 8u);
             cp.scale = remaining_scale;
 
             uint32_t out_str = 1, conv_str = 1;
             for (int32_t d = static_cast<int32_t>(plan.ndim) - 1; d >= 0; --d) {
-                cp.out_shape[d] = static_cast<ms_u32>(plan.out_shape.dims[d]);
+                cp.out_shape[d] = static_cast<sm_u32>(plan.out_shape.dims[d]);
                 cp.out_stride[d] = out_str;
                 cp.conv_stride[d] = conv_str;
-                cp.block_stride[d] = static_cast<ms_u32>(dims_out[d]) * conv_str;
-                cp.crop_start[d] = static_cast<ms_u32>(plan.crop_start[d]);
-                cp.block_size[d] = static_cast<ms_u32>(dims_out[d]);
+                cp.block_stride[d] = static_cast<sm_u32>(dims_out[d]) * conv_str;
+                cp.crop_start[d] = static_cast<sm_u32>(plan.crop_start[d]);
+                cp.block_size[d] = static_cast<sm_u32>(dims_out[d]);
                 const uint64_t st = (plan.nsteps_out[d] > 1)
                                         ? (plan.fft_len[d] - plan.overlap[d])
                                         : dims_out[d];
-                cp.step[d] = static_cast<ms_u32>(st);
-                cp.nsteps[d] = static_cast<ms_u32>(plan.nsteps_out[d]);
+                cp.step[d] = static_cast<sm_u32>(st);
+                cp.nsteps[d] = static_cast<sm_u32>(plan.nsteps_out[d]);
                 out_str *= static_cast<uint32_t>(plan.out_shape.dims[d]);
                 conv_str *= static_cast<uint32_t>(plan.nsteps_out[d] * dims_out[d]);
             }
@@ -599,13 +599,13 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
             batch.dispatch(combine_kernel_name(inv_src_complex, plan.out_dtype), cp,
                            {gpu::bind(conv_buf, context), gpu::bind(out_buf.get(), context),
                             gpu::bind(nf_buf.get(), context)},
-                           (plan.out_shape.elements + MS_GPU_THREADS - 1) / MS_GPU_THREADS);
+                           (plan.out_shape.elements + SM_GPU_THREADS - 1) / SM_GPU_THREADS);
             batch.commit_and_wait();
             operation.complete();
         }
         const uint32_t nf_flags = *reinterpret_cast<const uint32_t*>(read(nf_buf.get(), context).data);
         if (out_double && nf_flags != 0) {
-            throw Error(MS_ENOTSUP, "float64 signal FFT convolution overflowed single precision; SciPy is used");
+            throw Error(SM_ENOTSUP, "float64 signal FFT convolution overflowed single precision; SciPy is used");
         }
         if (out_nf_flags) {
             *out_nf_flags = nf_flags;
@@ -613,11 +613,11 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
         out_compute_dtype = array::single_of(plan.out_dtype);
         return out_buf;
     } catch (const Error& err) {
-        if (err.status == MS_EOOM) {
-            throw Error(MS_ENOTSUP, std::string("the context's memory budget cannot hold the signal FFT buffers: ") + err.what());
+        if (err.status == SM_EOOM) {
+            throw Error(SM_ENOTSUP, std::string("the context's memory budget cannot hold the signal FFT buffers: ") + err.what());
         }
         throw;
     }
 }
 
-} // namespace ms::detail::signal
+} // namespace sm::detail::signal

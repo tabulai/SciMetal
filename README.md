@@ -1,10 +1,10 @@
-# metal-sci
+# SciMetal
 
 SciPy's API, accelerated on Apple Silicon: Metal compute kernels and a multithreaded
-Accelerate/NEON CPU engine behind a versioned C ABI (`MS_ARRAY_ABI_VERSION` 3), with
+Accelerate/NEON CPU engine behind a versioned C ABI (`SM_ARRAY_ABI_VERSION` 3), with
 Python namespaces mirroring `scipy`.
 
-Three families have native routes today (`metal_sci.accelerated()`). Every other function
+Three families have native routes today (`scimetal.accelerated()`). Every other function
 and declined call delegates transparently to SciPy with caller arguments untouched.
 Design rationale, probes, and milestones live in [PLAN.md](PLAN.md).
 
@@ -24,9 +24,9 @@ cmake --preset metal && cmake --build --preset metal && ctest --preset metal --o
 cmake --preset cpu-only && cmake --build --preset cpu-only && ctest --preset cpu-only --output-on-failure
 ```
 
-- The `metal` preset builds `.build/metal/libmetalsci.dylib` with Metal GPU kernels and
+- The `metal` preset builds `.build/metal/libscimetal.dylib` with Metal GPU kernels and
   runs all 20 native tests (including `_validated` runs under Metal API & shader validation).
-- The `cpu-only` preset builds `.build/cpu-only/libmetalsci.dylib` (`MS_ENABLE_METAL=OFF`)
+- The `cpu-only` preset builds `.build/cpu-only/libscimetal.dylib` (`SM_ENABLE_METAL=OFF`)
   and runs all 11 CPU-only native tests.
 
 ### Wheel build
@@ -35,8 +35,8 @@ cmake --preset cpu-only && cmake --build --preset cpu-only && ctest --preset cpu
 MACOSX_DEPLOYMENT_TARGET=15.0 .venv/bin/python -m pip wheel . -w dist --no-deps --no-build-isolation
 ```
 
-This builds `dist/metal_sci-<version>-py3-none-macosx_15_0_arm64.whl` bundling
-`libmetalsci.dylib`.
+This builds `dist/scimetal-<version>-py3-none-macosx_15_0_arm64.whl` bundling
+`libscimetal.dylib`.
 
 ### Verification ladder
 
@@ -48,9 +48,9 @@ This builds `dist/metal_sci-<version>-py3-none-macosx_15_0_arm64.whl` bundling
 Run SciPy's own test suites through the oracle directly:
 
 ```bash
-PYTHONPATH=python:tests/oracle .venv/bin/python -m pytest -p metal_sci_oracle --pyargs scipy.ndimage.tests.test_filters -q
-PYTHONPATH=python:tests/oracle .venv/bin/python -m pytest -p metal_sci_oracle --pyargs scipy.fft.tests.test_basic -q
-PYTHONPATH=python:tests/oracle .venv/bin/python -m pytest -p metal_sci_oracle --pyargs scipy.signal.tests.test_signaltools -k "Convolve or Correlate or choose_conv_method" -q
+PYTHONPATH=python:tests/oracle .venv/bin/python -m pytest -p scimetal_oracle --pyargs scipy.ndimage.tests.test_filters -q
+PYTHONPATH=python:tests/oracle .venv/bin/python -m pytest -p scimetal_oracle --pyargs scipy.fft.tests.test_basic -q
+PYTHONPATH=python:tests/oracle .venv/bin/python -m pytest -p scimetal_oracle --pyargs scipy.signal.tests.test_signaltools -k "Convolve or Correlate or choose_conv_method" -q
 ```
 
 ## Usage
@@ -58,35 +58,35 @@ PYTHONPATH=python:tests/oracle .venv/bin/python -m pytest -p metal_sci_oracle --
 ```python
 import numpy as np
 import scipy.fft
-import metal_sci
-import metal_sci.ndimage as ndimage          # drop-in replacement for scipy.ndimage
-import metal_sci.signal as signal            # drop-in replacement for scipy.signal
-import metal_sci.fft as mfft                 # drop-in replacement for scipy.fft
+import scimetal
+import scimetal.ndimage as ndimage          # drop-in replacement for scipy.ndimage
+import scimetal.signal as signal            # drop-in replacement for scipy.signal
+import scimetal.fft as mfft                 # drop-in replacement for scipy.fft
 
 # Inspect native coverage
-print(metal_sci.accelerated())
+print(scimetal.accelerated())
 
 # fast policy (default): float64 & representable integer images use float32 on Metal
 image = np.random.default_rng(0).standard_normal((2048, 2048))
 smoothed = ndimage.gaussian_filter(image, 3.0)
-print(metal_sci.explain())                   # engine, compute_dtype, policy, any re-route reason
-print(metal_sci.last_route())                # structured Route namedtuple
+print(scimetal.explain())                   # engine, compute_dtype, policy, any re-route reason
+print(scimetal.last_route())                # structured Route namedtuple
 
 # strict policy: bit-identical to SciPy 1.18.1 arm64 (runs on CPU engine / SciPy)
-with metal_sci.precision("strict"):
+with scimetal.precision("strict"):
     exact = ndimage.gaussian_filter(image, 3.0)
 
-# Use metal_sci.fft directly or as a scipy.fft backend
+# Use scimetal.fft directly or as a scipy.fft backend
 mfft.prepare((4096, 4096), np.complex64)     # pre-compiles pipelines to avoid first-call latency
-mfft.register()                              # plain scipy.fft calls now use metal-sci too
+mfft.register()                              # plain scipy.fft calls now use SciMetal too
 spectrum = scipy.fft.fft(np.ones((4096, 4096), dtype=np.complex64))
 mfft.unregister()
 ```
 
-Context managers (`with metal_sci.precision(...)`, `with metal_sci.device("auto" | "cpu" | "gpu")`)
+Context managers (`with scimetal.precision(...)`, `with scimetal.device("auto" | "cpu" | "gpu")`)
 and setters (`set_precision`, `set_device`, `set_small_inputs`) scope per-thread/task state cleanly.
 
-## Accelerated coverage (`metal_sci.accelerated()`)
+## Accelerated coverage (`scimetal.accelerated()`)
 
 - **`ndimage`** (15 filters): `convolve1d`, `correlate1d`, `gaussian_filter1d`,
   `gaussian_filter`, `uniform_filter1d`, `uniform_filter`, `prewitt`, `sobel`,
@@ -96,7 +96,7 @@ and setters (`set_precision`, `set_device`, `set_small_inputs`) scope per-thread
   `output=` among real dtypes; CPU `strict` is bit-identical to SciPy 1.18.1 arm64).
 - **`fft`** (12 transforms + backend + `prepare`): `fft`, `ifft`, `rfft`, `irfft`,
   `fft2`, `ifft2`, `fftn`, `ifftn`, `rfft2`, `irfft2`, `rfftn`, `irfftn`, plus
-  `metal_sci.fft.register()` / `unregister()` and `metal_sci.fft.prepare()`.
+  `scimetal.fft.register()` / `unregister()` and `scimetal.fft.prepare()`.
 - **`signal`** (7 functions): `choose_conv_method`, `convolve`, `convolve2d`,
   `correlate`, `correlate2d`, `fftconvolve`, `oaconvolve`.
 
@@ -105,8 +105,8 @@ and setters (`set_precision`, `set_device`, `set_small_inputs`) scope per-thread
 - **`fast` (default)**: computes float64 and representable (`|x| < 2^24`) integer/bool
   inputs in single precision (`float32`/`complex64`) on the Metal GPU when above the
   cost crossover, widening outputs to the target dtype (~6–7 significant digits on floats).
-  Emits a one-time `metal_sci.PrecisionWarning` when narrowing a double-precision input;
-  silence with `warnings.filterwarnings("ignore", category=metal_sci.PrecisionWarning)`.
+  Emits a one-time `scimetal.PrecisionWarning` when narrowing a double-precision input;
+  silence with `warnings.filterwarnings("ignore", category=scimetal.PrecisionWarning)`.
 - **`refined`**: single-precision compute plus a double-precision correction where one
   exists; otherwise behaves as `fast`.
 - **`strict`**: exact arithmetic in the input's native semantics (`double` accumulation on
@@ -118,7 +118,7 @@ and setters (`set_precision`, `set_device`, `set_small_inputs`) scope per-thread
     automatically re-route to CPU/SciPy with a descriptive `last_route().reason` / `explain()`
     message (and return `scipy` decline under forced `device("gpu")`).
   - 32/64-bit integer inputs containing `|x| >= 2^24` automatically re-route to the CPU
-    engine (`MS_ENOTSUP` / SciPy fallback under forced `gpu`).
+    engine (`SM_ENOTSUP` / SciPy fallback under forced `gpu`).
 
 ## Benchmarks and accuracy (Apple M1 Ultra, 16 P-cores, 64-core GPU, 128 GB)
 

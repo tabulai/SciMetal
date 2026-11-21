@@ -1,9 +1,9 @@
-"""metal-sci: SciPy's API, accelerated on Apple Silicon.
+"""SciMetal: SciPy's API, accelerated on Apple Silicon.
 
 Every namespace mirrors the SciPy one of the same name::
 
-    import metal_sci.ndimage as ndimage      # instead of scipy.ndimage
-    from metal_sci import signal, linalg
+    import scimetal.ndimage as ndimage      # instead of scipy.ndimage
+    from scimetal import signal, linalg
 
 Functions with a native route run on the Apple GPU or on a multithreaded
 Accelerate/NEON CPU engine; everything else is SciPy's own function.
@@ -44,7 +44,7 @@ def accelerated() -> dict[str, list[str]]:
 
 
 def __getattr__(name):
-    # Namespaces: a real metal_sci module when there is one, else SciPy's.
+    # Namespaces: a real scimetal module when there is one, else SciPy's.
     if not name.startswith("_"):
         target = f"{__name__}.{name}"
         try:

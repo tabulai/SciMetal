@@ -4,7 +4,7 @@
 #include <cstdint>
 #include <optional>
 
-namespace ms::detail {
+namespace sm::detail {
 inline constexpr uint64_t cached_metal_sample_min_capacity = uint64_t{256} << 20;
 inline constexpr size_t cached_metal_sample_count = 8;
 
@@ -38,4 +38,4 @@ inline std::optional<uint64_t> cached_metal_sample_offset(uintptr_t host, uint64
         return std::nullopt;
     return sampled - host;
 }
-} // namespace ms::detail
+} // namespace sm::detail

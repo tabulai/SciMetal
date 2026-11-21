@@ -1,20 +1,20 @@
 #pragma once
-#include "ms_runtime.h"
+#include "sm_runtime.h"
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
 #include <string>
 
-namespace ms::detail {
+namespace sm::detail {
 class Error : public std::runtime_error {
 public:
-    ms_status status;
-    Error(ms_status code, const std::string& message)
+    sm_status status;
+    Error(sm_status code, const std::string& message)
         : std::runtime_error(message), status(code) {}
 };
 struct AsyncSync {
     virtual ~AsyncSync() = default;
-    virtual void wait(ms_context* waiter) = 0;
+    virtual void wait(sm_context* waiter) = 0;
     virtual bool completed() noexcept = 0;
 };
 struct RawAllocation {
@@ -28,7 +28,7 @@ struct RawAllocation {
     std::shared_ptr<AsyncSync> in_flight_sync;
 };
 // Called only after checked capacity and budget reservation. Never called for
-// CPU storage. A disabled build returns MS_ENOTSUP without driver initialization.
+// CPU storage. A disabled build returns SM_ENOTSUP without driver initialization.
 RawAllocation allocate_metal(uint64_t capacity);
 // Only for exclusively owned, unpublished Metal storage. Cache checkout calls
 // prepare after removing the raw allocation and releasing the cache mutex,
@@ -40,5 +40,5 @@ RawAllocation wrap_metal_pages(const void* base, uint64_t capacity, std::shared_
 // Shared-event synchronization and foreign Metal descriptor verification.
 bool metal_event_complete(void* event, uint64_t value) noexcept;
 uint64_t wait_metal_event(void* event, uint64_t value);
-void verify_metal_import(const ms_buffer_view& view);
+void verify_metal_import(const sm_buffer_view& view);
 }

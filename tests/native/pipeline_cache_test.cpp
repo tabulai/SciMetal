@@ -21,8 +21,8 @@ struct Pipeline {
         delete this;
     }
 };
-using ms::detail::gpu::cache_pipeline;
-using Owner = ms::detail::gpu::PipelinePtr<Pipeline>;
+using sm::detail::gpu::cache_pipeline;
+using Owner = sm::detail::gpu::PipelinePtr<Pipeline>;
 
 struct Allocations {
     int calls = 0;

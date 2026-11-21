@@ -4,7 +4,7 @@
 #include <memory>
 #include <mutex>
 
-namespace ms::detail::gpu {
+namespace sm::detail::gpu {
 template<class Pipeline>
 struct PipelineDeleter {
     void operator()(Pipeline* pipeline) const noexcept { pipeline->release(); }
@@ -22,4 +22,4 @@ Pipeline* cache_pipeline(Cache& cache, std::mutex& mutex, const char* name, Pipe
     if (inserted) result.release();
     return entry->second;
 }
-} // namespace ms::detail::gpu
+} // namespace sm::detail::gpu

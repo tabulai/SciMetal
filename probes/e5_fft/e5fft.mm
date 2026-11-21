@@ -1,4 +1,4 @@
-// metal-sci probe E5: standalone Metal runtime that drives MLX's GPU FFT
+// SciMetal probe E5: standalone Metal runtime that drives MLX's GPU FFT
 // kernels (vendored, MIT) WITHOUT linking libmlx.
 //
 // The plan/dispatch logic below (prime_factors .. fft_op) is a port of
@@ -513,7 +513,7 @@ struct Plan {
   std::vector<id<MTLBuffer>> bufs; // 0 = in, 1 = out, 2.. = temporaries
   std::vector<size_t> buf_bytes;
   std::vector<Pass> passes;
-  // metal-sci extension (multi-step plans only): requested coalesce width
+  // SciMetal extension (multi-step plans only): requested coalesce width
   // (= FFTs per threadgroup) for strided passes. 0 = MLX's policy.
   int coalesce = 0;
   bool split_cb = false; // one command buffer per pass (diagnostic)
@@ -616,7 +616,7 @@ static bool fft_op(
   int threadgroup_batch_size = std::max(MIN_THREADGROUP_MEM_SIZE / fft_size, 1);
   if (fsp.required) {
     if (P.coalesce > 0) {
-      // metal-sci extension: MLX hard-codes "at least 4", which (a) caps
+      // SciMetal extension: MLX hard-codes "at least 4", which (a) caps
       // four-step sub-FFTs at 1024 and so n at 2^20 and (b) leaves strided
       // passes with only 32 contiguous bytes per row. We let the planner pick
       // any width that fits 32KB of threadgroup memory / 1024 threads.
@@ -707,7 +707,7 @@ static bool fft_op(
   return true;
 }
 
-// metal-sci extension: the transposing middle pass (see e5_ext.metal).
+// SciMetal extension: the transposing middle pass (see e5_ext.metal).
 //   in layout  [row][K (outer_n)][a_j (nj)][rest (stride)]
 //   out layout [row][k_j][K][rest]
 static bool emit_mid_pass(
@@ -749,7 +749,7 @@ static bool emit_mid_pass(
       std::min(
           {want, MAX_STOCKHAM_FFT_SIZE / nj, 1024 / threads_per_fft, stride}));
   int tg_mem = next_power_of_2(std::max(tgb * nj, MIN_THREADGROUP_MEM_SIZE));
-  std::string base = "ms_mid_mem_" + std::to_string(tg_mem);
+  std::string base = "sm_mid_mem_" + std::to_string(tg_mem);
   std::string hash = base + "_n" + std::to_string(nj);
   Pass pass;
   pass.pso = get_kernel(g_lib_ext, base, hash, fc);
@@ -773,9 +773,9 @@ static bool emit_mid_pass(
   return true;
 }
 
-// metal-sci extension: k-pass FFT for N = f_1 * ... * f_k (k >= 2).
+// SciMetal extension: k-pass FFT for N = f_1 * ... * f_k (k >= 2).
 //   pass 1      vendored four_step_fft step 0   (n1 = f_1, n2 = N / f_1)
-//   pass 2..k-1 ms_mid_fft                      (transposing, e5_ext.metal)
+//   pass 2..k-1 sm_mid_fft                      (transposing, e5_ext.metal)
 //   pass k      vendored four_step_fft step 1   (n1 = N / f_k, n2 = f_k)
 // k = 2 is exactly MLX's four-step (with a free choice of split and coalesce
 // width). rfft / irfft reuse MLX's real four-step read/write variants for the
@@ -883,7 +883,7 @@ EXPORT void* e5_plan_create(int kind, int rows, int n, int inverse) {
   }
 }
 
-// metal-sci multi-step plan: n = factors[0] * ... * factors[k-1].
+// SciMetal multi-step plan: n = factors[0] * ... * factors[k-1].
 // coalesce = requested FFTs per threadgroup for the strided passes (clamped
 // to what fits 32KB threadgroup memory / 1024 threads); 4 = MLX's value.
 EXPORT void* e5_plan_create_ms(

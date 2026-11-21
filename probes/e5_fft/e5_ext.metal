@@ -1,4 +1,4 @@
-// metal-sci probe E5 -- additions layered on top of the vendored MLX FFT kernels.
+// SciMetal probe E5 -- additions layered on top of the vendored MLX FFT kernels.
 //
 // This file is NOT part of MLX. It includes the vendored (unmodified) MLX
 // headers and adds one kernel that MLX does not have: the transposing middle
@@ -20,7 +20,7 @@
 #include "mlx/backend/metal/kernels/fft.h"
 
 template <int tg_mem_size>
-[[kernel]] void ms_mid_fft(
+[[kernel]] void sm_mid_fft(
     const device float2* in [[buffer(0)]],
     device float2* out [[buffer(1)]],
     constant const int& n1,
@@ -79,11 +79,11 @@ template <int tg_mem_size>
   }
 }
 
-#define instantiate_ms_mid(tg_mem_size) \
-  instantiate_kernel("ms_mid_mem_" #tg_mem_size, ms_mid_fft, tg_mem_size)
+#define instantiate_sm_mid(tg_mem_size) \
+  instantiate_kernel("sm_mid_mem_" #tg_mem_size, sm_mid_fft, tg_mem_size)
 
-instantiate_ms_mid(256)
-instantiate_ms_mid(512)
-instantiate_ms_mid(1024)
-instantiate_ms_mid(2048)
-instantiate_ms_mid(4096)
+instantiate_sm_mid(256)
+instantiate_sm_mid(512)
+instantiate_sm_mid(1024)
+instantiate_sm_mid(2048)
+instantiate_sm_mid(4096)

@@ -1,4 +1,4 @@
-"""ctypes binding to the native core (libmetalsci) and array hand-off.
+"""ctypes binding to the native core (libscimetal) and array hand-off.
 
 Inputs go in as C-contiguous NumPy memory; results come back as NumPy arrays
 that view the native buffer directly (no copy) and return it to the core's
@@ -40,12 +40,12 @@ def performance_cores() -> int:
         pass
     return _CPU_COUNT
 
-MS_OK, MS_EINVAL, MS_ENOTSUP, MS_EOVERFLOW, MS_EOOM, MS_ETIMEOUT, MS_EBACKEND, MS_ESTATE = range(8)
-MS_BUFFER_CPU, MS_BUFFER_METAL = 1, 2
-MS_EXECUTION_CPU, MS_EXECUTION_GPU, MS_EXECUTION_AUTO = 1, 2, 3
-MS_RUNTIME_ABI_VERSION = 1
-MS_ARRAY_ABI_VERSION = 3
-MS_MAX_NDIM = 8
+SM_OK, SM_EINVAL, SM_ENOTSUP, SM_EOVERFLOW, SM_EOOM, SM_ETIMEOUT, SM_EBACKEND, SM_ESTATE = range(8)
+SM_BUFFER_CPU, SM_BUFFER_METAL = 1, 2
+SM_EXECUTION_CPU, SM_EXECUTION_GPU, SM_EXECUTION_AUTO = 1, 2, 3
+SM_RUNTIME_ABI_VERSION = 1
+SM_ARRAY_ABI_VERSION = 3
+SM_MAX_NDIM = 8
 
 _DTYPES = {np.dtype(np.float32): 1, np.dtype(np.float64): 2,
            np.dtype(np.complex64): 3, np.dtype(np.complex128): 4,
@@ -54,8 +54,8 @@ _DTYPES = {np.dtype(np.float32): 1, np.dtype(np.float64): 2,
            np.dtype(np.uint8): 10, np.dtype(np.uint16): 11, np.dtype(np.uint32): 12, np.dtype(np.uint64): 13}
 _NUMPY_DTYPES = {code: dtype for dtype, code in _DTYPES.items()}
 _PRECISIONS = {"fast": 1, "refined": 2, "strict": 3}
-_EXECUTIONS = {"cpu": MS_EXECUTION_CPU, "gpu": MS_EXECUTION_GPU, "auto": MS_EXECUTION_AUTO}
-_ENGINES = {MS_EXECUTION_CPU: "cpu", MS_EXECUTION_GPU: "gpu"}
+_EXECUTIONS = {"cpu": SM_EXECUTION_CPU, "gpu": SM_EXECUTION_GPU, "auto": SM_EXECUTION_AUTO}
+_ENGINES = {SM_EXECUTION_CPU: "cpu", SM_EXECUTION_GPU: "gpu"}
 
 
 class NativeError(RuntimeError):
@@ -72,7 +72,7 @@ class ContextOptions(ctypes.Structure):
 class Array(ctypes.Structure):
     _fields_ = [("struct_size", ctypes.c_uint32), ("abi_version", ctypes.c_uint32),
                 ("data", ctypes.c_void_p), ("dtype", ctypes.c_uint32), ("ndim", ctypes.c_uint32),
-                ("shape", ctypes.c_uint64 * MS_MAX_NDIM)]
+                ("shape", ctypes.c_uint64 * SM_MAX_NDIM)]
 
 
 class RouteOptions(ctypes.Structure):
@@ -90,21 +90,21 @@ class RouteInfo(ctypes.Structure):
 
 class ArrayResult(ctypes.Structure):
     _fields_ = [("buffer", ctypes.c_void_p), ("dtype", ctypes.c_uint32), ("ndim", ctypes.c_uint32),
-                ("shape", ctypes.c_uint64 * MS_MAX_NDIM)]
+                ("shape", ctypes.c_uint64 * SM_MAX_NDIM)]
 
 
 def _library_path() -> pathlib.Path:
-    override = os.environ.get("METAL_SCI_LIBRARY")
+    override = os.environ.get("SCIMETAL_LIBRARY")
     here = pathlib.Path(__file__).resolve().parent
     candidates = [pathlib.Path(override)] if override else [
-        here / "libmetalsci.dylib",                                        # installed wheel
-        here.parents[1] / ".build" / "metal" / "libmetalsci.dylib",        # source tree
+        here / "libscimetal.dylib",                                        # installed wheel
+        here.parents[1] / ".build" / "metal" / "libscimetal.dylib",        # source tree
     ]
     for candidate in candidates:
         if candidate.exists():
             return candidate
-    raise ImportError("libmetalsci.dylib not found; build it (cmake --preset metal && cmake --build "
-                      "--preset metal) or set METAL_SCI_LIBRARY")
+    raise ImportError("libscimetal.dylib not found; build it (cmake --preset metal && cmake --build "
+                      "--preset metal) or set SCIMETAL_LIBRARY")
 
 
 _lock = threading.Lock()
@@ -120,30 +120,30 @@ def library() -> ctypes.CDLL:
             if _lib is None:
                 lib = ctypes.CDLL(str(_library_path()))
                 c_void_pp = ctypes.POINTER(ctypes.c_void_p)
-                lib.ms_context_create.argtypes = [ctypes.POINTER(ContextOptions), c_void_pp]
-                lib.ms_context_release.argtypes = [ctypes.c_void_p]
-                lib.ms_context_release.restype = None
-                lib.ms_context_error_copy.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint64]
-                lib.ms_context_trim.argtypes = [ctypes.c_void_p]
-                lib.ms_status_message.argtypes = [ctypes.c_int]
-                lib.ms_status_message.restype = ctypes.c_char_p
-                lib.ms_buffer_release.argtypes = [ctypes.c_void_p]
-                lib.ms_buffer_release.restype = None
-                lib.ms_buffer_data.argtypes = [ctypes.c_void_p, c_void_pp, ctypes.POINTER(ctypes.c_uint64)]
-                lib.ms_array_astype.argtypes = [ctypes.c_void_p, ctypes.POINTER(Array), ctypes.c_uint32,
+                lib.sm_context_create.argtypes = [ctypes.POINTER(ContextOptions), c_void_pp]
+                lib.sm_context_release.argtypes = [ctypes.c_void_p]
+                lib.sm_context_release.restype = None
+                lib.sm_context_error_copy.argtypes = [ctypes.c_void_p, ctypes.c_char_p, ctypes.c_uint64]
+                lib.sm_context_trim.argtypes = [ctypes.c_void_p]
+                lib.sm_status_message.argtypes = [ctypes.c_int]
+                lib.sm_status_message.restype = ctypes.c_char_p
+                lib.sm_buffer_release.argtypes = [ctypes.c_void_p]
+                lib.sm_buffer_release.restype = None
+                lib.sm_buffer_data.argtypes = [ctypes.c_void_p, c_void_pp, ctypes.POINTER(ctypes.c_uint64)]
+                lib.sm_array_astype.argtypes = [ctypes.c_void_p, ctypes.POINTER(Array), ctypes.c_uint32,
                                                 ctypes.POINTER(ArrayResult)]
-                lib.ms_array_capabilities.argtypes = []
-                lib.ms_array_capabilities.restype = ctypes.c_uint32
+                lib.sm_array_capabilities.argtypes = []
+                lib.sm_array_capabilities.restype = ctypes.c_uint32
                 _lib = lib
     return _lib
 
 
-MS_CAPABILITY_METAL = 1
+SM_CAPABILITY_METAL = 1
 
 
 def has_metal() -> bool:
     """Whether the native library was built with Metal storage and the GPU engines."""
-    return bool(library().ms_array_capabilities() & MS_CAPABILITY_METAL)
+    return bool(library().sm_array_capabilities() & SM_CAPABILITY_METAL)
 
 
 def decline_small(elements: int, break_even: int) -> None:
@@ -153,14 +153,14 @@ def decline_small(elements: int, break_even: int) -> None:
 
 
 def _memory_limit() -> int:
-    override = os.environ.get("METAL_SCI_MEMORY_LIMIT_GB")
+    override = os.environ.get("SCIMETAL_MEMORY_LIMIT_GB")
     if override:
         gb = float(override)
         if not math.isfinite(gb) or gb <= 0:
-            raise ValueError(f"METAL_SCI_MEMORY_LIMIT_GB must be a positive finite number, got {override!r}")
+            raise ValueError(f"SCIMETAL_MEMORY_LIMIT_GB must be a positive finite number, got {override!r}")
         limit_bytes = int(gb * (1 << 30))
         if limit_bytes <= 0 or limit_bytes >= (1 << 64):
-            raise ValueError(f"METAL_SCI_MEMORY_LIMIT_GB out of range: {override!r}")
+            raise ValueError(f"SCIMETAL_MEMORY_LIMIT_GB out of range: {override!r}")
         return limit_bytes
     physical = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
     return physical // 2
@@ -188,35 +188,35 @@ def context() -> int:
                 raise NotAccelerated("the native context is unavailable after fork")
             return handle
         # A build without Metal has CPU storage and the CPU engines only.
-        storage = MS_BUFFER_METAL if has_metal() else MS_BUFFER_CPU
+        storage = SM_BUFFER_METAL if has_metal() else SM_BUFFER_CPU
         options = ContextOptions(struct_size=ctypes.sizeof(ContextOptions),
-                                 abi_version=MS_RUNTIME_ABI_VERSION, storage_kind=storage,
+                                 abi_version=SM_RUNTIME_ABI_VERSION, storage_kind=storage,
                                  memory_limit_bytes=_memory_limit())
         handle = ctypes.c_void_p()
-        status = lib.ms_context_create(ctypes.byref(options), ctypes.byref(handle))
-        if status != MS_OK:
-            raise NativeError(lib.ms_status_message(status).decode())
+        status = lib.sm_context_create(ctypes.byref(options), ctypes.byref(handle))
+        if status != SM_OK:
+            raise NativeError(lib.sm_status_message(status).decode())
         _context_state = (handle.value, os.getpid())
         return handle.value
 
 
 def check(status: int) -> None:
     """Raise for a failed native call; unsupported requests fall through to SciPy."""
-    if status == MS_OK:
+    if status == SM_OK:
         return
     lib = library()
     message = ctypes.create_string_buffer(512)
     state = _context_state
     ctx = state[0] if state is not None and state[1] == os.getpid() else None
-    if ctx is None or lib.ms_context_error_copy(ctx, message, len(message)) != MS_OK:
-        text = lib.ms_status_message(status).decode()
+    if ctx is None or lib.sm_context_error_copy(ctx, message, len(message)) != SM_OK:
+        text = lib.sm_status_message(status).decode()
     else:
         text = message.value.decode(errors="replace")
-    if status in (MS_ENOTSUP, MS_ESTATE):
+    if status in (SM_ENOTSUP, SM_ESTATE):
         raise NotAccelerated(text)
-    if status == MS_EOOM:
+    if status == SM_EOOM:
         raise MemoryError(text)
-    if status == MS_EINVAL:
+    if status == SM_EINVAL:
         raise ValueError(text)
     raise NativeError(text)
 
@@ -240,12 +240,12 @@ def as_native(array: np.ndarray) -> tuple[Array, np.ndarray]:
     code = native_dtype(array.dtype)
     if code is None:
         raise NotAccelerated(f"no native path for dtype {array.dtype}")
-    if not 1 <= array.ndim <= MS_MAX_NDIM:
+    if not 1 <= array.ndim <= SM_MAX_NDIM:
         raise NotAccelerated(f"no native path for {array.ndim}-dimensional arrays")
     held = np.require(array, requirements=("C", "A"))
-    if held.dtype != array.dtype or not 1 <= held.ndim <= MS_MAX_NDIM:
+    if held.dtype != array.dtype or not 1 <= held.ndim <= SM_MAX_NDIM:
         raise NotAccelerated("array could not be normalized to native C-contiguous aligned storage")
-    descriptor = Array(struct_size=ctypes.sizeof(Array), abi_version=MS_ARRAY_ABI_VERSION,
+    descriptor = Array(struct_size=ctypes.sizeof(Array), abi_version=SM_ARRAY_ABI_VERSION,
                        data=held.ctypes.data, dtype=code, ndim=held.ndim)
     for axis, extent in enumerate(held.shape):
         descriptor.shape[axis] = extent
@@ -276,13 +276,13 @@ class _OwnedBuffer:
 def to_numpy(result: ArrayResult) -> np.ndarray:
     """A NumPy array viewing a native result without copying it."""
     lib = library()
-    release = lib.ms_buffer_release
+    release = lib.sm_buffer_release
     handle = result.buffer
     try:
         dtype = _NUMPY_DTYPES[result.dtype]
         shape = tuple(int(result.shape[axis]) for axis in range(result.ndim))
         pointer, size = ctypes.c_void_p(), ctypes.c_uint64()
-        check(lib.ms_buffer_data(handle, ctypes.byref(pointer), ctypes.byref(size)))
+        check(lib.sm_buffer_data(handle, ctypes.byref(pointer), ctypes.byref(size)))
         if size.value == 0:
             release(handle)
             handle = None
@@ -298,13 +298,13 @@ def to_numpy(result: ArrayResult) -> np.ndarray:
 
 def route_options() -> RouteOptions:
     """Routing for the current precision and device policy."""
-    return RouteOptions(struct_size=ctypes.sizeof(RouteOptions), abi_version=MS_ARRAY_ABI_VERSION,
+    return RouteOptions(struct_size=ctypes.sizeof(RouteOptions), abi_version=SM_ARRAY_ABI_VERSION,
                         execution=_EXECUTIONS[_config.get_device()],
                         precision=_PRECISIONS[_config.get_precision()])
 
 
 def new_route_info() -> RouteInfo:
-    return RouteInfo(struct_size=ctypes.sizeof(RouteInfo), abi_version=MS_ARRAY_ABI_VERSION)
+    return RouteInfo(struct_size=ctypes.sizeof(RouteInfo), abi_version=SM_ARRAY_ABI_VERSION)
 
 
 def record_route(function: str, info: RouteInfo, reason: str = "", input_dtype=None) -> None:
@@ -323,6 +323,6 @@ def astype(array: np.ndarray, dtype) -> np.ndarray:
         raise NotAccelerated(f"no native path for dtype {np.dtype(dtype)}")
     descriptor, held = as_native(np.asarray(array))
     result = ArrayResult()
-    check(library().ms_array_astype(context(), ctypes.byref(descriptor), code, ctypes.byref(result)))
+    check(library().sm_array_astype(context(), ctypes.byref(descriptor), code, ctypes.byref(result)))
     del held
     return to_numpy(result)

@@ -1,11 +1,11 @@
 #!/usr/bin/env python
-"""Benchmark of metal_sci.ndimage's separable filters against scipy.ndimage.
+"""Benchmark of scimetal.ndimage's separable filters against scipy.ndimage.
 
     .venv/bin/python bench/ndimage_filters.py              # about a minute
     .venv/bin/python bench/ndimage_filters.py --quick      # one SciPy run per workload
     .venv/bin/python bench/ndimage_filters.py --calibrate  # CPU engine vs GPU engine sweep
 
-The native library is found as in metal_sci._native (METAL_SCI_LIBRARY, or the
+The native library is found as in scimetal._native (SCIMETAL_LIBRARY, or the
 source tree's .build/metal).
 
 Every timing is the median wall time of warm calls, end to end as a user sees
@@ -35,8 +35,8 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "python"))
 import scipy  # noqa: E402
 import scipy.ndimage as sn  # noqa: E402
 
-import metal_sci  # noqa: E402
-import metal_sci.ndimage as mn  # noqa: E402
+import scimetal  # noqa: E402
+import scimetal.ndimage as mn  # noqa: E402
 
 
 def timed(function, repeats, warmup):
@@ -112,10 +112,10 @@ def benchmark(quick):
             row = {"workload": name, "dtype": np.dtype(dtype).name, "elements": int(a.size),
                    "scipy_ms": round(scipy_ms, 2), "scipy_min_ms": round(scipy_min, 2)}
             for policy in ("fast", "strict"):
-                with metal_sci.precision(policy):
+                with scimetal.precision(policy):
                     ms, fastest = timed(lambda: call(mn, a), 5 if quick else 9, 2)
                     result = call(mn, a)
-                    route = metal_sci.last_route()
+                    route = scimetal.last_route()
                 error = float(np.abs(result.astype(np.float64) - reference.astype(np.float64)).max())
                 row[policy] = {"ms": round(ms, 3), "min_ms": round(fastest, 3), "engine": route.engine,
                                "computed_in": route.compute_dtype, "speedup": round(scipy_ms / ms, 1),
@@ -155,14 +155,14 @@ def calibrate():
         print(f"\n{np.dtype(dtype).name}: {'case':36s} {'elements':>9s} {'work/2^20':>10s} {'cpu ms':>8s} {'gpu ms':>8s} {'cpu/gpu':>8s}  auto")
         for name, shape, call, per_element in cases:
             a = image(shape, dtype)
-            with metal_sci.precision("fast"):
-                with metal_sci.device("cpu"):
+            with scimetal.precision("fast"):
+                with scimetal.device("cpu"):
                     cpu, _ = timed(lambda: call(a), 9, 2)
-                with metal_sci.device("gpu"):
+                with scimetal.device("gpu"):
                     gpu, _ = timed(lambda: call(a), 9, 2)
-                    engine = metal_sci.last_route().engine
+                    engine = scimetal.last_route().engine
                 call(a)
-                auto = metal_sci.last_route().engine
+                auto = scimetal.last_route().engine
             if engine != "gpu":
                 raise SystemExit("the GPU engine is not available: nothing to calibrate")
             work = a.size * per_element
@@ -179,7 +179,7 @@ def main():
     options = parser.parse_args()
     started = time.perf_counter()
     result = {"benchmark": "ndimage_filters", "numpy": np.__version__, "scipy": scipy.__version__,
-              "metal_sci": metal_sci.__version__, "machine": platform.machine(), "macos": platform.mac_ver()[0]}
+              "scimetal": scimetal.__version__, "machine": platform.machine(), "macos": platform.mac_ver()[0]}
     if options.calibrate:
         result["calibration"] = calibrate()
     else:

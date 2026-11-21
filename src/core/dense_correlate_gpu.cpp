@@ -9,7 +9,7 @@
 #include <limits>
 #include <string>
 
-namespace ms::detail::dense_correlate {
+namespace sm::detail::dense_correlate {
 namespace {
 
 constexpr double float32_overflow_threshold = 0x1.ffffffp127;
@@ -89,87 +89,87 @@ const char* kernel_for(const StencilSpec& spec) {
     const bool in_c = array::is_complex(spec.in_dtype);
     const bool out_d = array::is_double(spec.out_dtype);
     if (!in_c) {
-        return out_d ? "ms_dense_correlate_f32_f64" : "ms_dense_correlate_f32_f32";
+        return out_d ? "sm_dense_correlate_f32_f64" : "sm_dense_correlate_f32_f32";
     }
-    return out_d ? "ms_dense_correlate_c64_c128" : "ms_dense_correlate_c64_c64";
+    return out_d ? "sm_dense_correlate_c64_c128" : "sm_dense_correlate_c64_c64";
 }
 
 } // namespace
 
 bool gpu_supports(const StencilSpec& spec, const TapTable& taps) noexcept {
-    if (spec.in_shape.ndim < 1 || spec.in_shape.ndim > MS_MAX_NDIM || spec.out_shape.ndim != spec.in_shape.ndim)
+    if (spec.in_shape.ndim < 1 || spec.in_shape.ndim > SM_MAX_NDIM || spec.out_shape.ndim != spec.in_shape.ndim)
         return false;
     if (taps.is_complex_weights && !array::is_complex(spec.in_dtype)) return false;
     if (array::is_complex(spec.in_dtype) != array::is_complex(spec.out_dtype)) return false;
     if ((spec.in_shape.elements == 0 && spec.out_shape.elements > 0) || spec.in_shape.elements > INT32_MAX ||
         spec.out_shape.elements > INT32_MAX)
         return false;
-    if (taps.taps.size() > MS_DENSE_GPU_MAX_TAPS) return false;
+    if (taps.taps.size() > SM_DENSE_GPU_MAX_TAPS) return false;
     for (uint32_t d = 0; d < spec.in_shape.ndim; ++d) {
-        if (spec.in_shape.dims[d] > MS_DENSE_GPU_MAX_EXTENT || spec.out_shape.dims[d] > MS_DENSE_GPU_MAX_EXTENT)
+        if (spec.in_shape.dims[d] > SM_DENSE_GPU_MAX_EXTENT || spec.out_shape.dims[d] > SM_DENSE_GPU_MAX_EXTENT)
             return false;
     }
     for (const Tap& tap : taps.taps) {
         if (tap.linear_offset < INT32_MIN || tap.linear_offset > INT32_MAX) return false;
         for (uint32_t d = 0; d < spec.in_shape.ndim; ++d) {
-            if (tap.coord[d] < -static_cast<int64_t>(MS_DENSE_GPU_MAX_EXTENT) ||
-                tap.coord[d] > static_cast<int64_t>(MS_DENSE_GPU_MAX_EXTENT))
+            if (tap.coord[d] < -static_cast<int64_t>(SM_DENSE_GPU_MAX_EXTENT) ||
+                tap.coord[d] > static_cast<int64_t>(SM_DENSE_GPU_MAX_EXTENT))
                 return false;
         }
     }
     uint64_t tap_elements = 0;
-    if (ms_checked_mul(spec.out_shape.elements, static_cast<uint64_t>(taps.taps.size()), &tap_elements) != MS_OK)
+    if (sm_checked_mul(spec.out_shape.elements, static_cast<uint64_t>(taps.taps.size()), &tap_elements) != SM_OK)
         return false;
     return tap_elements <= gpu_max_tap_elements;
 }
 
-BufferPtr encode_gpu(ms_context* ctx, gpu::Batch& batch, const StencilSpec& spec,
-                     const TapTable& taps, const ms_buffer* single_input, const ms_buffer* output_buf) {
+BufferPtr encode_gpu(sm_context* ctx, gpu::Batch& batch, const StencilSpec& spec,
+                     const TapTable& taps, const sm_buffer* single_input, const sm_buffer* output_buf) {
     if (spec.out_shape.elements == 0) return BufferPtr{};
     if (taps.taps.empty()) {
         batch.fill(output_buf, 0, spec.out_shape.elements * array::dtype_size(spec.out_dtype), 0);
         return BufferPtr{};
     }
 
-    BufferPtr tap_buf = array::allocate(ctx, taps.taps.size() * sizeof(MSDenseTap));
+    BufferPtr tap_buf = array::allocate(ctx, taps.taps.size() * sizeof(SMDenseTap));
     {
-        MSDenseTap* dst = reinterpret_cast<MSDenseTap*>(mutable_data(tap_buf.get()));
+        SMDenseTap* dst = reinterpret_cast<SMDenseTap*>(mutable_data(tap_buf.get()));
         for (size_t i = 0; i < taps.taps.size(); ++i) {
             const Tap& t = taps.taps[i];
-            MSDenseTap& dt = dst[i];
-            dt = MSDenseTap{};
-            for (uint32_t d = 0; d < spec.in_shape.ndim; ++d) dt.coord[d] = static_cast<ms_i32>(t.coord[d]);
-            dt.linear_offset = static_cast<ms_i32>(t.linear_offset);
+            SMDenseTap& dt = dst[i];
+            dt = SMDenseTap{};
+            for (uint32_t d = 0; d < spec.in_shape.ndim; ++d) dt.coord[d] = static_cast<sm_i32>(t.coord[d]);
+            dt.linear_offset = static_cast<sm_i32>(t.linear_offset);
             dt.weight_re = t.weight_re_f32;
             dt.weight_im = t.weight_im_f32;
         }
     }
 
     const uint32_t ndim = spec.out_shape.ndim;
-    MSDenseCorrelateParams params{};
+    SMDenseCorrelateParams params{};
     params.ndim = ndim;
-    params.num_taps = static_cast<ms_u32>(taps.taps.size());
-    params.out_elements = static_cast<ms_u32>(spec.out_shape.elements);
+    params.num_taps = static_cast<sm_u32>(taps.taps.size());
+    params.out_elements = static_cast<sm_u32>(spec.out_shape.elements);
     params.all_interior = taps.all_interior ? 1u : 0u;
     params.cval_re = static_cast<float>(spec.cval_real);
     params.cval_im = static_cast<float>(spec.cval_imag);
 
     uint32_t out_s = 1, in_s = 1;
     for (int32_t d = static_cast<int32_t>(ndim) - 1; d >= 0; --d) {
-        params.out_shape[d] = static_cast<ms_u32>(spec.out_shape.dims[d]);
-        params.in_shape[d] = static_cast<ms_u32>(spec.in_shape.dims[d]);
+        params.out_shape[d] = static_cast<sm_u32>(spec.out_shape.dims[d]);
+        params.in_shape[d] = static_cast<sm_u32>(spec.in_shape.dims[d]);
         params.out_stride[d] = out_s;
         params.in_stride[d] = in_s;
         params.mode[d] = spec.mode[d];
-        params.interior_lo[d] = static_cast<ms_i32>(taps.interior_lo[d]);
-        params.interior_hi[d] = static_cast<ms_i32>(taps.interior_hi[d]);
+        params.interior_lo[d] = static_cast<sm_i32>(taps.interior_lo[d]);
+        params.interior_hi[d] = static_cast<sm_i32>(taps.interior_hi[d]);
         out_s *= static_cast<uint32_t>(spec.out_shape.dims[d]);
         in_s *= static_cast<uint32_t>(spec.in_shape.dims[d]);
     }
 
     if (!array::is_complex(spec.in_dtype) && ndim == 2) {
-        const char* kernel = array::is_double(spec.out_dtype) ? "ms_dense_correlate2d_f32_f64"
-                                                              : "ms_dense_correlate2d_f32_f32";
+        const char* kernel = array::is_double(spec.out_dtype) ? "sm_dense_correlate2d_f32_f64"
+                                                              : "sm_dense_correlate2d_f32_f32";
         const uint32_t w = static_cast<uint32_t>(spec.out_shape.dims[1]);
         const uint32_t h = static_cast<uint32_t>(spec.out_shape.dims[0]);
         gpu::Grid grid;
@@ -186,26 +186,26 @@ BufferPtr encode_gpu(ms_context* ctx, gpu::Batch& batch, const StencilSpec& spec
     }
 
     const char* kernel = kernel_for(spec);
-    const uint64_t threadgroups = (spec.out_shape.elements + MS_GPU_THREADS - 1) / MS_GPU_THREADS;
+    const uint64_t threadgroups = (spec.out_shape.elements + SM_GPU_THREADS - 1) / SM_GPU_THREADS;
     batch.dispatch(kernel, params,
                    {gpu::bind(single_input, ctx), gpu::bind(output_buf, ctx), gpu::bind(tap_buf.get(), ctx)},
                    threadgroups);
     return tap_buf;
 }
 
-BufferPtr run_gpu(ms_context* ctx, const StencilSpec& spec, const TapTable& taps,
-                  const ms_array& input, bool allow_cpu_fallback, std::string& overflow_reason) {
+BufferPtr run_gpu(sm_context* ctx, const StencilSpec& spec, const TapTable& taps,
+                  const sm_array& input, bool allow_cpu_fallback, std::string& overflow_reason) {
     overflow_reason = check_parameters_range(spec, taps);
     if (!overflow_reason.empty()) {
         if (!allow_cpu_fallback) {
-            throw Error(MS_ENOTSUP, "values exceed single-precision range; forced GPU cannot fall back to CPU");
+            throw Error(SM_ENOTSUP, "values exceed single-precision range; forced GPU cannot fall back to CPU");
         }
         return BufferPtr{};
     }
 
     const bool output_is_double = array::is_double(spec.out_dtype);
     const bool needs_post_cast = array::is_int_or_bool(spec.out_dtype);
-    const bool need_report = (spec.in_dtype != MS_FLOAT32 && spec.in_dtype != MS_COMPLEX64);
+    const bool need_report = (spec.in_dtype != SM_FLOAT32 && spec.in_dtype != SM_COMPLEX64);
     const bool need_gain_check =
         need_report || output_is_double || needs_post_cast || spec.cpu_accum == AccumMode::Double;
     array::ConvertReport report;
@@ -214,7 +214,7 @@ BufferPtr run_gpu(ms_context* ctx, const StencilSpec& spec, const TapTable& taps
     if (need_report && report.inexact_int) {
         single_in.reset();
         if (!allow_cpu_fallback) {
-            throw Error(MS_ENOTSUP, "integer input exceeds exact float32 range (|x| >= 2^24); forced GPU cannot fall back to CPU");
+            throw Error(SM_ENOTSUP, "integer input exceeds exact float32 range (|x| >= 2^24); forced GPU cannot fall back to CPU");
         }
         overflow_reason = "integer input exceeds exact float32 range (|x| >= 2^24); re-routed to CPU";
         return BufferPtr{};
@@ -224,22 +224,22 @@ BufferPtr run_gpu(ms_context* ctx, const StencilSpec& spec, const TapTable& taps
         if (!overflow_reason.empty()) {
             single_in.reset();
             if (!allow_cpu_fallback) {
-                throw Error(MS_ENOTSUP, "values exceed single-precision range; forced GPU cannot fall back to CPU");
+                throw Error(SM_ENOTSUP, "values exceed single-precision range; forced GPU cannot fall back to CPU");
             }
             return BufferPtr{};
         }
     }
 
     StencilSpec gpu_spec = spec;
-    if (needs_post_cast) gpu_spec.out_dtype = MS_FLOAT32;
+    if (needs_post_cast) gpu_spec.out_dtype = SM_FLOAT32;
 
     uint64_t gpu_out_bytes = 0;
-    if (ms_checked_mul(gpu_spec.out_shape.elements, array::dtype_size(gpu_spec.out_dtype), &gpu_out_bytes) != MS_OK)
-        throw Error(MS_EOVERFLOW, "dense_correlate: output byte size overflows");
+    if (sm_checked_mul(gpu_spec.out_shape.elements, array::dtype_size(gpu_spec.out_dtype), &gpu_out_bytes) != SM_OK)
+        throw Error(SM_EOVERFLOW, "dense_correlate: output byte size overflows");
     uint64_t final_out_bytes = gpu_out_bytes;
     if (needs_post_cast &&
-        ms_checked_mul(spec.out_shape.elements, array::dtype_size(spec.out_dtype), &final_out_bytes) != MS_OK)
-        throw Error(MS_EOVERFLOW, "dense_correlate: output byte size overflows");
+        sm_checked_mul(spec.out_shape.elements, array::dtype_size(spec.out_dtype), &final_out_bytes) != SM_OK)
+        throw Error(SM_EOVERFLOW, "dense_correlate: output byte size overflows");
 
     GpuOperationScope operation(ctx, true);
     BufferPtr output = array::allocate(ctx, gpu_out_bytes);
@@ -257,4 +257,4 @@ BufferPtr run_gpu(ms_context* ctx, const StencilSpec& spec, const TapTable& taps
     return output;
 }
 
-} // namespace ms::detail::dense_correlate
+} // namespace sm::detail::dense_correlate

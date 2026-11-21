@@ -1,4 +1,4 @@
-"""Tests for metal_sci.signal convolution and correlation routes."""
+"""Tests for scimetal.signal convolution and correlation routes."""
 from __future__ import annotations
 
 import inspect
@@ -15,8 +15,8 @@ import scipy.signal as ss
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-import metal_sci
-import metal_sci.signal as msig
+import scimetal
+import scimetal.signal as msig
 
 FUNCTIONS = (
     "convolve",
@@ -29,18 +29,18 @@ FUNCTIONS = (
 )
 
 # Skip if native library lacks signal family.
-with metal_sci.precision("strict"), metal_sci.device("cpu"):
+with scimetal.precision("strict"), scimetal.device("cpu"):
     msig.convolve(np.ones(4), np.ones(2), method="direct")
-    if metal_sci.last_route().engine != "cpu":
-        pytest.skip(f"no native signal routes: {metal_sci.last_route().reason}", allow_module_level=True)
+    if scimetal.last_route().engine != "cpu":
+        pytest.skip(f"no native signal routes: {scimetal.last_route().reason}", allow_module_level=True)
 
 
 @pytest.fixture(scope="module")
 def gpu():
-    with metal_sci.device("gpu"), metal_sci.precision("fast"):
+    with scimetal.device("gpu"), scimetal.precision("fast"):
         msig.fftconvolve(np.ones(64, dtype=np.float32), np.ones(17, dtype=np.float32))
-        if metal_sci.last_route().engine != "gpu":
-            pytest.skip(f"no GPU engine: {metal_sci.last_route().reason}")
+        if scimetal.last_route().engine != "gpu":
+            pytest.skip(f"no GPU engine: {scimetal.last_route().reason}")
 
 
 def rand_arr(shape, dtype, seed=0):
@@ -81,7 +81,7 @@ def assert_close_fft(ours, ref, in1, in2):
 def test_wrappers_keep_scipys_signatures_and_registry():
     for name in FUNCTIONS:
         ours, theirs = getattr(msig, name), getattr(ss, name)
-        assert ours is not theirs and callable(ours.__metal_sci_native__)
+        assert ours is not theirs and callable(ours.__scimetal_native__)
         assert inspect.signature(ours) == inspect.signature(theirs)
         assert ours.__doc__ == theirs.__doc__ and ours.__name__ == name
         assert name in dir(msig)
@@ -102,17 +102,17 @@ def test_wrappers_keep_scipys_signatures_and_registry():
 def test_direct_cpu_modes_and_dtypes(func, mode, dtype1, dtype2):
     a = rand_arr((13, 17), dtype1, seed=1)
     b = rand_arr((5, 6), dtype2, seed=2)
-    with metal_sci.precision("strict"), metal_sci.device("cpu"):
+    with scimetal.precision("strict"), scimetal.device("cpu"):
         ours = getattr(msig, func)(a, b, mode=mode, method="direct")
-        route = metal_sci.last_route()
+        route = scimetal.last_route()
         assert route.engine == "cpu"
     ref = getattr(ss, func)(a, b, mode=mode, method="direct")
     assert_close_direct(ours, ref, a, b, "cpu")
     if mode == "valid":
         # Swapped valid mode.
-        with metal_sci.precision("strict"), metal_sci.device("cpu"):
+        with scimetal.precision("strict"), scimetal.device("cpu"):
             ours_sw = getattr(msig, func)(b, a, mode="valid", method="direct")
-            assert metal_sci.last_route().engine == "cpu"
+            assert scimetal.last_route().engine == "cpu"
         ref_sw = getattr(ss, func)(b, a, mode="valid", method="direct")
         assert_close_direct(ours_sw, ref_sw, b, a, "cpu")
 
@@ -124,22 +124,22 @@ def test_convolve2d_correlate2d_even_center_and_boundaries(gpu):
         for mode in ("full", "same", "valid"):
             fill = -1.25 if boundary in ("fill", "pad") else 123.0
             for func in ("convolve2d", "correlate2d"):
-                with metal_sci.precision("strict"), metal_sci.device("cpu"):
+                with scimetal.precision("strict"), scimetal.device("cpu"):
                     ours = getattr(msig, func)(a, b, mode=mode, boundary=boundary, fillvalue=fill)
-                    assert metal_sci.last_route().engine == "cpu"
+                    assert scimetal.last_route().engine == "cpu"
                 ref = getattr(ss, func)(a, b, mode=mode, boundary=boundary, fillvalue=fill)
                 np.testing.assert_allclose(ours, ref, rtol=1e-12, atol=1e-12)
 
-                with metal_sci.precision("fast"), metal_sci.device("gpu"):
+                with scimetal.precision("fast"), scimetal.device("gpu"):
                     ours_g = getattr(msig, func)(a, b, mode=mode, boundary=boundary, fillvalue=fill)
-                    assert metal_sci.last_route().engine == "gpu"
+                    assert scimetal.last_route().engine == "gpu"
                 assert_close_direct(ours_g, ref, a, b, "gpu", cval=fill if boundary in ("fill", "pad") else 0.0)
 
 
 def test_correlate2d_complex_swapped_valid_parity():
     small = rand_arr((3, 4), np.complex128, seed=5)
     big = rand_arr((7, 8), np.complex128, seed=6)
-    with metal_sci.precision("strict"):
+    with scimetal.precision("strict"):
         ours = msig.correlate2d(small, big, mode="valid")
         ref = ss.correlate2d(small, big, mode="valid")
         np.testing.assert_array_equal(ours, ref)
@@ -148,7 +148,7 @@ def test_correlate2d_complex_swapped_valid_parity():
 def test_prune_zeros_false_preserves_nan():
     a = np.array([1.0, np.nan, 2.0, 3.0], dtype=np.float64)
     b = np.array([1.0, 0.0], dtype=np.float64)
-    with metal_sci.precision("strict"):
+    with scimetal.precision("strict"):
         ours = msig.convolve(a, b, mode="same", method="direct")
         ref = ss.convolve(a, b, mode="same", method="direct")
     np.testing.assert_array_equal(np.isnan(ours), np.isnan(ref))
@@ -162,9 +162,9 @@ def test_freq_convolves_gpu(gpu, func, dtype, mode):
     s2 = (11, 5) if func == "oaconvolve" else (12, 15)
     a = rand_arr(s1, dtype, seed=10)
     b = rand_arr(s2, dtype, seed=11)
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         ours = getattr(msig, func)(a, b, mode=mode)
-        route = metal_sci.last_route()
+        route = scimetal.last_route()
         assert route.engine == "gpu"
     ref = getattr(ss, func)(a, b, mode=mode)
     assert_close_fft(ours, ref, a, b)
@@ -173,18 +173,18 @@ def test_freq_convolves_gpu(gpu, func, dtype, mode):
 def test_freq_convolves_broadcast_and_off_last_axes(gpu):
     a = rand_arr((3, 1, 64, 17), np.float64, seed=20)
     b = rand_arr((1, 4, 19, 17), np.float64, seed=21)
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         ours = msig.fftconvolve(a, b, mode="same", axes=(2,))
-        assert metal_sci.last_route().engine == "gpu"
+        assert scimetal.last_route().engine == "gpu"
     ref = ss.fftconvolve(a, b, mode="same", axes=(2,))
     assert_close_fft(ours, ref, a, b)
 
     # Multi-axis OA with non-contiguous axes and broadcasting.
     a2 = rand_arr((2, 120, 1, 90), np.complex128, seed=22)
     b2 = rand_arr((2, 11, 5, 9), np.complex128, seed=23)
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         ours2 = msig.oaconvolve(a2, b2, mode="full", axes=(-1, 1))
-        assert metal_sci.last_route().engine == "gpu"
+        assert scimetal.last_route().engine == "gpu"
     ref2 = ss.oaconvolve(a2, b2, mode="full", axes=(-1, 1))
     assert_close_fft(ours2, ref2, a2, b2)
 
@@ -193,19 +193,19 @@ def test_convolve_method_fft_nonfinite_warning(gpu):
     a = rand_arr(1000, np.float32, seed=30)
     a[100] = np.nan
     b = rand_arr(128, np.float32, seed=31)
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         with pytest.warns(RuntimeWarning, match="NAN or inf"):
             out = msig.convolve(a, b, mode="same", method="fft")
-            assert metal_sci.last_route().engine == "gpu"
+            assert scimetal.last_route().engine == "gpu"
             assert np.isnan(out.flat[0])
 
     # Float64 NaN declines to SciPy and also warns.
     a64 = a.astype(np.float64)
     b64 = b.astype(np.float64)
-    with metal_sci.precision("fast"), metal_sci.device("auto"):
+    with scimetal.precision("fast"), scimetal.device("auto"):
         with pytest.warns(RuntimeWarning, match="NAN or inf"):
             out64 = msig.convolve(a64, b64, mode="same", method="fft")
-            assert metal_sci.last_route().engine == "scipy"
+            assert scimetal.last_route().engine == "scipy"
             assert np.isnan(out64.flat[0])
 
 
@@ -214,9 +214,9 @@ def test_a5_overflow_guard_rails_and_explain(gpu):
     a = np.ones((2048, 2048), dtype=np.float64)
     a[5, 7] = 1e39
     b = np.ones((7, 7), dtype=np.float64)
-    with metal_sci.precision("fast"), metal_sci.device("auto"):
+    with scimetal.precision("fast"), scimetal.device("auto"):
         out = msig.convolve(a, b, mode="same", method="direct")
-        route = metal_sci.last_route()
+        route = scimetal.last_route()
         assert route.engine == "cpu" and route.compute_dtype == "float64"
         assert "overflow" in route.reason or "single-precision" in route.reason
         assert np.all(np.isfinite(out))
@@ -225,40 +225,40 @@ def test_a5_overflow_guard_rails_and_explain(gpu):
     # FFT path magnitude overflow and product overflow: declines to SciPy cleanly.
     x1 = np.ones(1 << 17, dtype=np.float64) * 1e20
     x2 = np.ones(1025, dtype=np.float64) * 1e20
-    with metal_sci.precision("fast"), metal_sci.device("auto"):
+    with scimetal.precision("fast"), scimetal.device("auto"):
         out_prod = msig.fftconvolve(x1, x2, mode="valid")
-        route = metal_sci.last_route()
+        route = scimetal.last_route()
         assert route.engine == "scipy" and np.all(np.isfinite(out_prod))
         assert out_prod[0] == pytest.approx(1025.0 * 1e40, rel=1e-6)
 
     x_huge = np.ones(1 << 16, dtype=np.float64) * 1e30
     x_one = np.ones(128, dtype=np.float64)
-    with metal_sci.precision("fast"), metal_sci.device("auto"):
+    with scimetal.precision("fast"), scimetal.device("auto"):
         out_h = msig.oaconvolve(x_huge, x_one, mode="same")
-        assert metal_sci.last_route().engine == "scipy"
+        assert scimetal.last_route().engine == "scipy"
         assert np.all(np.isfinite(out_h))
 
 
 def test_precision_warning_emitted_once_for_signal_gpu(gpu):
     code = (
-        "import warnings, numpy as np, metal_sci, metal_sci.signal as msig\n"
-        "metal_sci.set_small_inputs('native')\n"
-        "metal_sci.set_precision('fast')\n"
-        "metal_sci.set_device('gpu')\n"
+        "import warnings, numpy as np, scimetal, scimetal.signal as msig\n"
+        "scimetal.set_small_inputs('native')\n"
+        "scimetal.set_precision('fast')\n"
+        "scimetal.set_device('gpu')\n"
         "a = np.ones(256, dtype=np.float64)\n"
         "b = np.ones(32, dtype=np.float64)\n"
         "with warnings.catch_warnings(record=True) as w:\n"
         "    for _ in range(2):\n"
         "        msig.fftconvolve(a, b)\n"
         "    msig.fftconvolve(a, b)\n"
-        "    pw = [x for x in w if issubclass(x.category, metal_sci.PrecisionWarning)]\n"
+        "    pw = [x for x in w if issubclass(x.category, scimetal.PrecisionWarning)]\n"
         "    assert len(pw) == 1, len(pw)\n"
         "    msg = str(pw[0].message)\n"
         "    assert 'set_precision' in msg and 'strict' in msg\n"
     )
     root = pathlib.Path(__file__).resolve().parents[2]
     env = dict(os.environ)
-    if not os.environ.get("METAL_SCI_TEST_INSTALLED"):
+    if not os.environ.get("SCIMETAL_TEST_INSTALLED"):
         python_dir = str(root / "python")
         existing_pp = env.get("PYTHONPATH")
         env["PYTHONPATH"] = os.pathsep.join([python_dir, existing_pp]) if existing_pp else python_dir
@@ -280,23 +280,23 @@ def test_threaded_fft_fallback_context(monkeypatch):
     a = np.ones(1 << 17, dtype=np.float64)
     b = np.ones(64, dtype=np.float64)
 
-    monkeypatch.delenv("METAL_SCI_FFT_THREADED_FALLBACK", raising=False)
-    with metal_sci.precision("strict"):
+    monkeypatch.delenv("SCIMETAL_FFT_THREADED_FALLBACK", raising=False)
+    with scimetal.precision("strict"):
         out1 = msig.fftconvolve(a, b, mode="valid")
-        assert metal_sci.last_route().engine == "scipy"
-    assert seen_workers == [metal_sci._native.performance_cores()]
+        assert scimetal.last_route().engine == "scipy"
+    assert seen_workers == [scimetal._native.performance_cores()]
     assert out1.shape == (len(a) - len(b) + 1,)
 
     seen_workers.clear()
-    monkeypatch.setenv("METAL_SCI_FFT_THREADED_FALLBACK", "0")
-    with metal_sci.precision("strict"):
+    monkeypatch.setenv("SCIMETAL_FFT_THREADED_FALLBACK", "0")
+    with scimetal.precision("strict"):
         msig.fftconvolve(a, b, mode="valid")
-        assert metal_sci.last_route().engine == "scipy"
+        assert scimetal.last_route().engine == "scipy"
     assert seen_workers == []
 
 
 def assert_declined_like_scipy(func, *args, **kwargs):
-    before = list(metal_sci._dispatch.counters[f"signal.{func}"])
+    before = list(scimetal._dispatch.counters[f"signal.{func}"])
     try:
         expected = getattr(ss, func)(*args, **kwargs)
         err = None
@@ -309,8 +309,8 @@ def assert_declined_like_scipy(func, *args, **kwargs):
     else:
         with pytest.raises(type(err)):
             getattr(msig, func)(*args, **kwargs)
-    assert metal_sci.last_route().engine == "scipy"
-    after = metal_sci._dispatch.counters[f"signal.{func}"]
+    assert scimetal.last_route().engine == "scipy"
+    after = scimetal._dispatch.counters[f"signal.{func}"]
     assert after == [before[0], before[1] + 1]
 
 
@@ -353,7 +353,7 @@ def test_choose_conv_method(gpu):
     small2 = rand_arr((4, 4), np.float64, seed=51)
     big1 = rand_arr((1024, 1024), np.float64, seed=52)
     big2 = rand_arr((256, 256), np.float64, seed=53)
-    with metal_sci.precision("fast"):
+    with scimetal.precision("fast"):
         assert msig.choose_conv_method(small1, small2) == "direct"
         assert msig.choose_conv_method(big1, big2) == "fft"
         m, times = msig.choose_conv_method(small1, small2, measure=True)
@@ -383,17 +383,17 @@ def test_property_strict_and_gpu(gpu, drawn, seed):
     a = rand_arr(s1, dtype, seed=seed)
     b = rand_arr(s2, dtype, seed=seed + 1)
 
-    with metal_sci.precision("strict"), metal_sci.device("cpu"):
+    with scimetal.precision("strict"), scimetal.device("cpu"):
         for func in ("convolve", "correlate"):
             ours = getattr(msig, func)(a, b, mode=mode, method="direct")
-            assert metal_sci.last_route().engine == "cpu"
+            assert scimetal.last_route().engine == "cpu"
             ref = getattr(ss, func)(a, b, mode=mode, method="direct")
             assert_close_direct(ours, ref, a, b, "cpu")
 
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         for func in ("fftconvolve", "oaconvolve"):
             ours = getattr(msig, func)(a, b, mode=mode)
-            assert metal_sci.last_route().engine == "gpu"
+            assert scimetal.last_route().engine == "gpu"
             ref = getattr(ss, func)(a, b, mode=mode)
             assert_close_fft(ours, ref, a, b)
 
@@ -406,15 +406,15 @@ def test_thread_safety(gpu):
 
     def worker(dev):
         try:
-            with metal_sci.precision("fast"), metal_sci.device(dev):
+            with scimetal.precision("fast"), scimetal.device(dev):
                 for _ in range(10):
                     if dev == "gpu":
                         out = msig.fftconvolve(a, b, mode="same")
-                        assert metal_sci.last_route().engine == "gpu"
+                        assert scimetal.last_route().engine == "gpu"
                         assert_close_fft(out, ref, a, b)
                     else:
                         out = msig.convolve2d(a, b, mode="same")
-                        assert metal_sci.last_route().engine == "cpu"
+                        assert scimetal.last_route().engine == "cpu"
                         np.testing.assert_allclose(out, ref, rtol=1e-11, atol=1e-11)
         except BaseException as exc:
             failures.append(exc)
@@ -431,9 +431,9 @@ def test_mixed_precision_fillvalue_overflow_guard_rails(gpu):
     # Bug 1: single-precision input + double-precision kernel + large fillvalue.
     z_f32 = np.zeros((2048, 2048), dtype=np.float32)
     k_f64 = np.ones((7, 7), dtype=np.float64) * 1e5
-    with metal_sci.precision("fast"), metal_sci.device("auto"):
+    with scimetal.precision("fast"), scimetal.device("auto"):
         out = msig.convolve2d(z_f32, k_f64, mode="same", boundary="fill", fillvalue=1e38)
-        route = metal_sci.last_route()
+        route = scimetal.last_route()
         assert route.engine == "cpu" and route.compute_dtype == "float64"
         assert route.reason
         assert np.all(np.isfinite(out)) and out.dtype == np.float64
@@ -441,9 +441,9 @@ def test_mixed_precision_fillvalue_overflow_guard_rails(gpu):
         assert out[0, 10] == pytest.approx(2.1e44, rel=1e-12)
 
     z_small = np.zeros((32, 32), dtype=np.float32)
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         out_g = msig.convolve2d(z_small, k_f64, mode="same", boundary="fill", fillvalue=1e38)
-        assert metal_sci.last_route().engine == "scipy"
+        assert scimetal.last_route().engine == "scipy"
         assert np.all(np.isfinite(out_g))
         np.testing.assert_allclose(out_g, ss.convolve2d(z_small, k_f64, mode="same", boundary="fill", fillvalue=1e38))
 
@@ -451,28 +451,28 @@ def test_mixed_precision_fillvalue_overflow_guard_rails(gpu):
     z_c64 = np.zeros((2500, 2500), dtype=np.complex64)
     k_c128 = np.ones((5, 5), dtype=np.complex128) * 1e5
     for fv in (1e38, 1e38j):
-        with metal_sci.precision("fast"), metal_sci.device("auto"):
+        with scimetal.precision("fast"), scimetal.device("auto"):
             out_c = msig.convolve2d(z_c64, k_c128, mode="same", boundary="fill", fillvalue=fv)
-            route = metal_sci.last_route()
+            route = scimetal.last_route()
             assert route.engine == "cpu" and route.compute_dtype == "complex128"
             assert route.reason and np.all(np.isfinite(out_c))
 
-        with metal_sci.precision("fast"), metal_sci.device("gpu"):
+        with scimetal.precision("fast"), scimetal.device("gpu"):
             out_cg = msig.convolve2d(z_c64[:32, :32], k_c128, mode="same", boundary="fill", fillvalue=fv)
-            assert metal_sci.last_route().engine == "scipy" and np.all(np.isfinite(out_cg))
+            assert scimetal.last_route().engine == "scipy" and np.all(np.isfinite(out_cg))
 
     # Non-zero f32 input + 1e20 f64 kernel + 1e20 fillvalue under forced gpu declines cleanly.
     o_f32 = np.ones((32, 32), dtype=np.float32)
     k_1e20 = np.ones((5, 5), dtype=np.float64) * 1e20
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         out_o = msig.convolve2d(o_f32, k_1e20, mode="same", boundary="fill", fillvalue=1e20)
-        assert metal_sci.last_route().engine == "scipy" and np.all(np.isfinite(out_o))
+        assert scimetal.last_route().engine == "scipy" and np.all(np.isfinite(out_o))
 
     # Intentional Inf/NaN fillvalue still runs on GPU and propagates as expected.
     k_small = np.ones((3, 3), dtype=np.float64)
-    with metal_sci.precision("fast"), metal_sci.device("gpu"), np.errstate(invalid="ignore"):
+    with scimetal.precision("fast"), scimetal.device("gpu"), np.errstate(invalid="ignore"):
         out_inf = msig.convolve2d(o_f32, k_small, mode="same", boundary="fill", fillvalue=np.inf)
-        assert metal_sci.last_route().engine == "gpu"
+        assert scimetal.last_route().engine == "gpu"
         assert np.isinf(out_inf[0, 0]) and np.isfinite(out_inf[2, 2])
 
 
@@ -480,53 +480,53 @@ def test_real_in_complex_out_zero_kernel_fillvalue_overflow(gpu):
     # Bug 2: real_in_complex_out with zero kernel and fillvalue=1e39/1e39j must not produce NaN.
     k_zero = np.zeros((3, 3), dtype=np.complex128)
     r64_small = np.ones((8, 8), dtype=np.float64)
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         out = msig.convolve2d(r64_small, k_zero, mode="same", boundary="fill", fillvalue=1e39)
-        assert metal_sci.last_route().engine == "scipy"
+        assert scimetal.last_route().engine == "scipy"
         np.testing.assert_array_equal(out, np.zeros((8, 8), dtype=np.complex128))
 
     r64_big = np.ones((2048, 2048), dtype=np.float64)
-    with metal_sci.precision("fast"), metal_sci.device("auto"):
+    with scimetal.precision("fast"), scimetal.device("auto"):
         out2 = msig.convolve2d(r64_big, k_zero, mode="same", boundary="fill", fillvalue=1e39)
-        assert metal_sci.last_route().engine == "cpu"
+        assert scimetal.last_route().engine == "cpu"
         assert not np.isnan(out2).any() and np.all(out2 == 0)
 
     r32_small = np.ones((16, 16), dtype=np.float32)
     for fv in (1e39, 1e39j):
-        with metal_sci.precision("fast"), metal_sci.device("gpu"):
+        with scimetal.precision("fast"), scimetal.device("gpu"):
             out3 = msig.convolve2d(r32_small, k_zero, mode="same", boundary="fill", fillvalue=fv)
-            assert metal_sci.last_route().engine == "scipy"
+            assert scimetal.last_route().engine == "scipy"
             np.testing.assert_array_equal(out3, np.zeros((16, 16), dtype=np.complex128))
 
     r32_big = np.ones((2048, 2048), dtype=np.float32)
-    with metal_sci.precision("fast"), metal_sci.device("auto"):
+    with scimetal.precision("fast"), scimetal.device("auto"):
         out4 = msig.convolve2d(r32_big, k_zero, mode="same", boundary="fill", fillvalue=1e39j)
-        assert metal_sci.last_route().engine == "cpu"
+        assert scimetal.last_route().engine == "cpu"
         assert not np.isnan(out4).any() and np.all(out4 == 0)
 
     # Large enough work (>= 128 MiB) to enter GPU decision and A5-reroute to CPU with reason.
     k_zero7 = np.zeros((7, 7), dtype=np.complex128)
-    with metal_sci.precision("fast"), metal_sci.device("auto"):
+    with scimetal.precision("fast"), scimetal.device("auto"):
         out4b = msig.convolve2d(r64_big, k_zero7, mode="same", boundary="fill", fillvalue=1e39)
-        r4b = metal_sci.last_route()
+        r4b = scimetal.last_route()
         assert r4b.engine == "cpu" and r4b.reason and not np.isnan(out4b).any() and np.all(out4b == 0)
 
     # rev_conj_out path (swapped real valid correlate2d) with zero kernel and fillvalue=1e39.
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         out5 = msig.correlate2d(np.ones((4, 4), np.float64), np.zeros((8, 8), np.float64),
                                 mode="valid", boundary="fill", fillvalue=1e39)
-        assert metal_sci.last_route().engine == "scipy"
+        assert scimetal.last_route().engine == "scipy"
         np.testing.assert_array_equal(out5, np.zeros((5, 5), dtype=np.float64))
 
 
 def test_convolve_valid_method_fft_uses_full_est(gpu, monkeypatch):
     # Bug 3: convolve(..., mode='valid', method='fft') uses full_est for break-even check.
-    monkeypatch.setattr(metal_sci._config, "_small_to_scipy", True)
+    monkeypatch.setattr(scimetal._config, "_small_to_scipy", True)
     a = rand_arr(50000, np.float32, seed=70)
     b = rand_arr(50000, np.float32, seed=71)
-    with metal_sci.precision("fast"), metal_sci.device("auto"):
+    with scimetal.precision("fast"), scimetal.device("auto"):
         out = msig.convolve(a, b, mode="valid", method="fft")
-        assert metal_sci.last_route().engine == "gpu"
+        assert scimetal.last_route().engine == "gpu"
         ref = ss.convolve(a, b, mode="valid", method="fft")
         assert_close_fft(out, ref, a, b)
 
@@ -541,7 +541,7 @@ def test_1d_direct_nonfinite_kernel_omits_oob_matches_scipy(dtype, mode):
     b_nan = np.array([0.0, 0.0, 0.0, 0.0, np.nan], dtype=dtype)
 
     for policy, dev in (("strict", "cpu"), ("fast", "cpu"), ("fast", "auto"), ("fast", "gpu")):
-        with metal_sci.precision(policy), metal_sci.device(dev):
+        with scimetal.precision(policy), scimetal.device(dev):
             for fn_name in ("convolve", "correlate"):
                 got_inf = getattr(msig, fn_name)(a, b_inf, mode=mode, method="direct")
                 ref_inf = getattr(ss, fn_name)(a, b_inf, mode=mode, method="direct")
@@ -558,7 +558,7 @@ def test_1d_direct_nonfinite_kernel_omits_oob_matches_scipy(dtype, mode):
     a_sm = np.ones((3,), dtype=dtype)
     for fn_name in ("convolve", "correlate"):
         for m in ("full", "same"):
-            with metal_sci.precision("strict"), metal_sci.device("cpu"):
+            with scimetal.precision("strict"), scimetal.device("cpu"):
                 got_sm = getattr(msig, fn_name)(a_sm, b_inf, mode=m, method="direct")
                 ref_sm = getattr(ss, fn_name)(a_sm, b_inf, mode=m, method="direct")
                 np.testing.assert_array_equal(np.isnan(got_sm), np.isnan(ref_sm))
@@ -569,7 +569,7 @@ def test_1d_direct_nonfinite_kernel_omits_oob_matches_scipy(dtype, mode):
     # In-bounds 0.0 * NaN = NaN is preserved when NaN is in in1, in valid mode, and in convolve2d.
     a_in1_nan = np.array([1.0, np.nan, 0.0, 0.0, 0.0, 0.0], dtype=dtype)
     b0 = np.zeros((4,), dtype=dtype)
-    with metal_sci.precision("strict"), metal_sci.device("cpu"):
+    with scimetal.precision("strict"), scimetal.device("cpu"):
         for fn_name in ("convolve", "correlate"):
             for m in ("full", "same", "valid"):
                 got_i1 = getattr(msig, fn_name)(a_in1_nan, b0, mode=m, method="direct")
@@ -590,16 +590,16 @@ def test_1d_direct_nonfinite_kernel_large_gpu_reroute(gpu):
     b_inf = np.ones((1000,), dtype=np.float32)
     b_inf[-1] = np.inf
     ref = ss.convolve(a_big, b_inf, mode="full", method="direct")
-    with metal_sci.precision("fast"), metal_sci.device("auto"):
+    with scimetal.precision("fast"), scimetal.device("auto"):
         got = msig.convolve(a_big, b_inf, mode="full", method="direct")
-        route = metal_sci.last_route()
+        route = scimetal.last_route()
         assert route.engine == "cpu" and route.reason
         np.testing.assert_array_equal(np.isnan(got), np.isnan(ref))
         np.testing.assert_array_equal(np.isinf(got), np.isinf(ref))
         np.testing.assert_allclose(got[:999], ref[:999])
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         got_g = msig.convolve(a_big, b_inf, mode="full", method="direct")
-        assert metal_sci.last_route().engine == "scipy"
+        assert scimetal.last_route().engine == "scipy"
         np.testing.assert_array_equal(np.isnan(got_g), np.isnan(ref))
         np.testing.assert_array_equal(np.isinf(got_g), np.isinf(ref))
         np.testing.assert_allclose(got_g[:999], ref[:999])
@@ -624,7 +624,7 @@ def _run_mixed_real_complex_nan_matrix(policy, dev, big_n, side2d):
     nf_complex = [complex(0.0, np.nan), complex(np.inf, 0.0), complex(1.0, np.inf), complex(np.inf, np.inf)]
     ck_kernels = [0 + 1j, 1 + 0j, 1 + 1j]
 
-    with metal_sci.precision(policy), metal_sci.device(dev):
+    with scimetal.precision(policy), scimetal.device(dev):
         for dt_r, dt_c in dtype_pairs:
             for nf in nf_complex:
                 a = np.ones((5,), dtype=dt_r)
@@ -635,14 +635,14 @@ def _run_mixed_real_complex_nan_matrix(policy, dev, big_n, side2d):
                         # Swapped real + complex (len(a) < len(b) triggers swap for full & valid).
                         g_sw = getattr(msig, fn_name)(a, b, mode=mode, method="direct")
                         if dev != "auto":
-                            assert metal_sci.last_route().engine == dev
+                            assert scimetal.last_route().engine == dev
                         r_sw = getattr(ss, fn_name)(a, b, mode=mode, method="direct")
                         _assert_complex_nan_inf_parity(g_sw, r_sw)
 
                         # Unswapped complex + real.
                         g_un = getattr(msig, fn_name)(b, a, mode=mode, method="direct")
                         if dev != "auto":
-                            assert metal_sci.last_route().engine == dev
+                            assert scimetal.last_route().engine == dev
                         r_un = getattr(ss, fn_name)(b, a, mode=mode, method="direct")
                         _assert_complex_nan_inf_parity(g_un, r_un)
 
@@ -655,7 +655,7 @@ def _run_mixed_real_complex_nan_matrix(policy, dev, big_n, side2d):
                     for fn_name in ("convolve", "correlate"):
                         g_rc = getattr(msig, fn_name)(a_r, b_c, mode=mode, method="direct")
                         if dev != "auto":
-                            assert metal_sci.last_route().engine == dev
+                            assert scimetal.last_route().engine == dev
                         r_rc = getattr(ss, fn_name)(a_r, b_c, mode=mode, method="direct")
                         _assert_complex_nan_inf_parity(g_rc, r_rc)
 
@@ -668,7 +668,7 @@ def _run_mixed_real_complex_nan_matrix(policy, dev, big_n, side2d):
                 for fn_name in ("convolve", "correlate"):
                     g2 = getattr(msig, fn_name)(a2c, b2r, mode=mode, method="direct")
                     if dev != "auto":
-                        assert metal_sci.last_route().engine == dev
+                        assert scimetal.last_route().engine == dev
                     r2 = getattr(ss, fn_name)(a2c, b2r, mode=mode, method="direct")
                     _assert_complex_nan_inf_parity(g2, r2)
                 # Note: SciPy's C _firfilter.cc uses GCC __complex__ (__mulsc3) which recovers
@@ -677,7 +677,7 @@ def _run_mixed_real_complex_nan_matrix(policy, dev, big_n, side2d):
                     for fn2d in ("convolve2d", "correlate2d"):
                         g2d = getattr(msig, fn2d)(a2c, b2r, mode=mode, boundary="fill", fillvalue=0.0)
                         if dev != "auto":
-                            assert metal_sci.last_route().engine == dev
+                            assert scimetal.last_route().engine == dev
                         r2d = getattr(ss, fn2d)(a2c, b2r, mode=mode, boundary="fill", fillvalue=0.0)
                         _assert_complex_nan_inf_parity(g2d, r2d)
 
@@ -690,7 +690,7 @@ def _run_mixed_real_complex_nan_matrix(policy, dev, big_n, side2d):
                 for fn2d in ("convolve2d", "correlate2d"):
                     g2d = getattr(msig, fn2d)(a2r, b2c, mode=mode, boundary="fill", fillvalue=0.0)
                     if dev != "auto":
-                        assert metal_sci.last_route().engine == dev
+                        assert scimetal.last_route().engine == dev
                     r2d = getattr(ss, fn2d)(a2r, b2c, mode=mode, boundary="fill", fillvalue=0.0)
                     _assert_complex_nan_inf_parity(g2d, r2d)
 
@@ -733,11 +733,11 @@ def test_convolve2d_correlate2d_full_no_swap_nan_inf_parity(gpu, dtype1, dtype2)
                             a[s1[0] // 2, s1[1] // 2] = nf_val
                         else:
                             b[s2[0] // 2, s2[1] // 2] = nf_val
-                        with metal_sci.precision(policy), metal_sci.device(dev):
+                        with scimetal.precision(policy), scimetal.device(dev):
                             for fn_name in ("convolve2d", "correlate2d"):
                                 got = getattr(msig, fn_name)(a, b, mode="full", boundary="fill", fillvalue=fill)
                                 if dev != "auto":
-                                    assert metal_sci.last_route().engine == dev
+                                    assert scimetal.last_route().engine == dev
                                 ref = getattr(ss, fn_name)(a, b, mode="full", boundary="fill", fillvalue=fill)
                                 _assert_complex_nan_inf_parity(got, ref) if got.dtype.kind == "c" else (
                                     np.testing.assert_array_equal(np.isnan(got), np.isnan(ref)),
@@ -749,10 +749,10 @@ def test_convolve2d_correlate2d_full_no_swap_nan_inf_parity(gpu, dtype1, dtype2)
     ac = np.ones((3, 3), dtype=np.complex64)
     ac[1, 1] = np.nan
     bc = np.ones((70, 70), dtype=np.complex64)
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         for fn_name in ("convolve2d", "correlate2d"):
             got = getattr(msig, fn_name)(ac, bc, mode="full", boundary="fill", fillvalue=1.5 + 2.5j)
-            assert metal_sci.last_route().engine == "gpu"
+            assert scimetal.last_route().engine == "gpu"
             ref = getattr(ss, fn_name)(ac, bc, mode="full", boundary="fill", fillvalue=1.5 + 2.5j)
             _assert_complex_nan_inf_parity(got, ref)
 
@@ -760,10 +760,10 @@ def test_convolve2d_correlate2d_full_no_swap_nan_inf_parity(gpu, dtype1, dtype2)
     a_nd = np.ones((3, 3), dtype=np.float32)
     a_nd[1, 1] = np.nan
     b_nd = np.ones((70, 70), dtype=np.float32)
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         for fn_name in ("convolve", "correlate"):
             got = getattr(msig, fn_name)(a_nd, b_nd, mode="full", method="direct")
-            assert metal_sci.last_route().engine == "gpu"
+            assert scimetal.last_route().engine == "gpu"
             ref = getattr(ss, fn_name)(a_nd, b_nd, mode="full", method="direct")
             np.testing.assert_array_equal(np.isnan(got), np.isnan(ref))
 
@@ -777,10 +777,10 @@ def test_convolve_method_fft_nonfinite_past_block0_and_oa_parity(gpu, dtype, nf_
     k = np.ones(100, dtype=dtype)
 
     for fn_name in ("convolve", "correlate"):
-        with metal_sci.precision("fast"), metal_sci.device("gpu"):
+        with scimetal.precision("fast"), scimetal.device("gpu"):
             with pytest.warns(RuntimeWarning, match="NAN or inf"):
                 got = getattr(msig, fn_name)(x, k, mode="full", method="fft")
-            assert metal_sci.last_route().engine == "gpu"
+            assert scimetal.last_route().engine == "gpu"
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", RuntimeWarning)
             ref = getattr(ss, fn_name)(x, k, mode="full", method="fft")
@@ -789,12 +789,12 @@ def test_convolve_method_fft_nonfinite_past_block0_and_oa_parity(gpu, dtype, nf_
         assert not np.isfinite(got).any()
 
     # oaconvolve keeps OA block isolation (block boundaries depend on backend next_fast_len) without RuntimeWarning.
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         with warnings.catch_warnings(record=True) as rec:
             warnings.simplefilter("always")
             got_oa = msig.oaconvolve(x, k, mode="full")
         assert not any(issubclass(w.category, RuntimeWarning) for w in rec)
-        assert metal_sci.last_route().engine == "gpu"
+        assert scimetal.last_route().engine == "gpu"
     ref_oa = ss.oaconvolve(x, k, mode="full")
     assert np.isfinite(got_oa[0]) and np.isfinite(ref_oa[0])
     assert np.isnan(got_oa[30000]) and np.isnan(ref_oa[30000])
@@ -825,11 +825,11 @@ def test_convolve_correlate_method_auto_nonfinite_warning_and_full_propagation(g
 
     for dev in ("gpu", "auto"):
         for fn_name in ("convolve", "correlate"):
-            with metal_sci.precision("fast"), metal_sci.device(dev):
+            with scimetal.precision("fast"), scimetal.device(dev):
                 assert msig.choose_conv_method(x, k, mode="full") == "fft"
                 with pytest.warns(RuntimeWarning, match="NAN or inf"):
                     got = getattr(msig, fn_name)(x, k, mode="full", method="auto")
-                assert metal_sci.last_route().engine == "gpu"
+                assert scimetal.last_route().engine == "gpu"
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", RuntimeWarning)
                 ref = getattr(ss, fn_name)(x, k, mode="full", method="auto")
@@ -841,14 +841,14 @@ def test_convolve_correlate_method_auto_nonfinite_warning_and_full_propagation(g
 def test_convolve_correlate_method_auto_direct_and_finite_no_warning(gpu):
     """method='auto' routed to direct (with NaN) or to FFT (with finite inputs) must not warn."""
     # Direct route with NaN (1-D 2000 x 5 and 2-D float32 256x256 x 16x16)
-    prev_small = "scipy" if metal_sci._config.small_to_scipy() else "native"
-    metal_sci.set_small_inputs("native")
+    prev_small = "scipy" if scimetal._config.small_to_scipy() else "native"
+    scimetal.set_small_inputs("native")
     try:
         for x_shape, k_shape in [((2000,), (5,)), ((256, 256), (16, 16))]:
             x = np.ones(x_shape, dtype=np.float32)
             x.flat[x.size // 2] = np.nan
             k = np.ones(k_shape, dtype=np.float32)
-            with metal_sci.precision("fast"), metal_sci.device("gpu"):
+            with scimetal.precision("fast"), scimetal.device("gpu"):
                 assert msig.choose_conv_method(x, k, mode="full") == "direct"
                 for fn_name in ("convolve", "correlate"):
                     for method in ("auto", "direct"):
@@ -859,17 +859,17 @@ def test_convolve_correlate_method_auto_direct_and_finite_no_warning(gpu):
                         ref = getattr(ss, fn_name)(x, k, mode="full", method="direct")
                         np.testing.assert_array_equal(np.isnan(got), np.isnan(ref))
     finally:
-        metal_sci.set_small_inputs(prev_small)
+        scimetal.set_small_inputs(prev_small)
 
     # Finite FFT route via method='auto' must not warn (including OA shapes)
     xf = np.ones(40000, dtype=np.float32)
     kf = np.ones(1000, dtype=np.float32)
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         with warnings.catch_warnings(record=True) as rec:
             warnings.simplefilter("always")
             got_f = msig.convolve(xf, kf, mode="full", method="auto")
         assert not any(issubclass(w.category, RuntimeWarning) for w in rec)
-        assert metal_sci.last_route().engine == "gpu"
+        assert scimetal.last_route().engine == "gpu"
     ref_f = ss.convolve(xf, kf, mode="full", method="auto")
     scale = max(1.0, float(np.abs(ref_f).max()))
     np.testing.assert_allclose(got_f, ref_f, rtol=1e-5, atol=2e-5 * scale)
@@ -877,7 +877,7 @@ def test_convolve_correlate_method_auto_direct_and_finite_no_warning(gpu):
     # fftconvolve & oaconvolve continue emitting 0 RuntimeWarnings on non-finite inputs
     xnf = np.ones(40000, dtype=np.float32)
     xnf[30000] = np.nan
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         for fn_name in ("fftconvolve", "oaconvolve"):
             with warnings.catch_warnings(record=True) as rec:
                 warnings.simplefilter("always")
@@ -900,22 +900,22 @@ def test_convolve_correlate_direct_publish_inverse_fft_overflow_warning(gpu, sha
     for dev in ("gpu", "auto"):
         for fn_name in ("convolve", "correlate"):
             for method in ("auto", "fft"):
-                with metal_sci.precision("fast"), metal_sci.device(dev):
+                with scimetal.precision("fast"), scimetal.device(dev):
                     with warnings.catch_warnings(record=True) as rec:
                         warnings.simplefilter("always")
                         got = getattr(msig, fn_name)(x, k, mode="full", method=method)
-                    assert metal_sci.last_route().engine == "gpu"
+                    assert scimetal.last_route().engine == "gpu"
                 assert np.any(~np.isfinite(got))
                 assert any(issubclass(w.category, RuntimeWarning) and "NAN or inf" in str(w.message) for w in rec), (
                     dev, fn_name, method, got[0], rec
                 )
 
     # fftconvolve on the exact same overflowing direct_publish inputs must match SciPy's non-warning behavior.
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         with warnings.catch_warnings(record=True) as rec:
             warnings.simplefilter("always")
             got_fc = msig.fftconvolve(x, k, mode="full")
-        assert metal_sci.last_route().engine == "gpu"
+        assert scimetal.last_route().engine == "gpu"
         assert not any(issubclass(w.category, RuntimeWarning) for w in rec)
     assert np.any(~np.isfinite(got_fc))
 
@@ -924,11 +924,11 @@ def test_convolve_correlate_direct_publish_inverse_fft_overflow_warning(gpu, sha
     kf = np.zeros(shape2, dtype=dtype)
     xf[101] = 1.0
     kf[100] = 1.0
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         with warnings.catch_warnings(record=True) as rec:
             warnings.simplefilter("always")
             got_fin = msig.convolve(xf, kf, mode="full", method="auto")
-        assert metal_sci.last_route().engine == "gpu"
+        assert scimetal.last_route().engine == "gpu"
         assert not any(issubclass(w.category, RuntimeWarning) for w in rec)
     assert np.isfinite(got_fin).all()
 
@@ -940,19 +940,19 @@ def test_review_regressions(gpu):
     fv64 = np.array(1.5, dtype=np.float64)
     with pytest.raises(ValueError):
         ss.convolve2d(a32, b32, fillvalue=fv64)
-    prev_small = metal_sci._config.small_to_scipy()
-    metal_sci.set_small_inputs("native")
+    prev_small = scimetal._config.small_to_scipy()
+    scimetal.set_small_inputs("native")
     try:
-        with metal_sci.device("cpu"):
+        with scimetal.device("cpu"):
             with pytest.raises(ValueError):
                 msig.convolve2d(a32, b32, fillvalue=fv64)
-            assert metal_sci.last_route().engine == "scipy"
+            assert scimetal.last_route().engine == "scipy"
 
         # 2. RuntimeWarning from FFT convolve on NaN points at caller frame (this file).
         xnf = np.ones(40000, dtype=np.float32)
         xnf[100] = np.nan
         knf = np.ones(100, dtype=np.float32)
-        with metal_sci.precision("fast"), metal_sci.device("gpu"):
+        with scimetal.precision("fast"), scimetal.device("gpu"):
             with warnings.catch_warnings(record=True) as rec:
                 warnings.simplefilter("always")
                 msig.convolve(xnf, knf, mode="full", method="fft")
@@ -963,24 +963,24 @@ def test_review_regressions(gpu):
         rng = np.random.default_rng(77)
         u1 = rng.standard_normal((1, 200)).astype(np.float32)
         u2 = rng.standard_normal((5, 200)).astype(np.float32)
-        with metal_sci.precision("fast"), metal_sci.device("gpu"):
+        with scimetal.precision("fast"), scimetal.device("gpu"):
             for mode in ("full", "same", "valid"):
                 got = msig.correlate(u1, u2, mode=mode, method="fft")
                 ref = ss.correlate(u1, u2, mode=mode, method="fft")
                 np.testing.assert_allclose(got, ref, rtol=1e-4, atol=1e-4)
 
         # 4. float64 spectral overflow (1e15*1e15 len 65536) and underflow (1e-25*1e-25) fall back cleanly.
-        with metal_sci.precision("fast"), metal_sci.device("gpu"):
+        with scimetal.precision("fast"), scimetal.device("gpu"):
             big1 = np.full(65536, 1e15, dtype=np.float64)
             big2 = np.full(65536, 1e15, dtype=np.float64)
             got_big = msig.fftconvolve(big1, big2)
-            assert metal_sci.last_route().engine == "scipy"
+            assert scimetal.last_route().engine == "scipy"
             assert np.isfinite(got_big).all() and got_big[65535] > 6e34
 
             tiny1 = np.full(256, 1e-25, dtype=np.float64)
             tiny2 = np.full(64, 1e-25, dtype=np.float64)
             got_tiny = msig.fftconvolve(tiny1, tiny2)
-            assert metal_sci.last_route().engine == "scipy"
+            assert scimetal.last_route().engine == "scipy"
             np.testing.assert_allclose(got_tiny, ss.fftconvolve(tiny1, tiny2))
     finally:
-        metal_sci.set_small_inputs("scipy" if prev_small else "native")
+        scimetal.set_small_inputs("scipy" if prev_small else "native")

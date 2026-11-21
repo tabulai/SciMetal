@@ -1,15 +1,15 @@
 """uarray backend: ``scipy.fft`` itself uses the native routes.
 
-    import metal_sci.fft
-    metal_sci.fft.register()
-    scipy.fft.fft(x)            # native where metal-sci accepts the call, SciPy otherwise
+    import scimetal.fft
+    scimetal.fft.register()
+    scipy.fft.fft(x)            # native where SciMetal accepts the call, SciPy otherwise
 
 SciPy is not modified: the backend is installed through its public
 ``scipy.fft.register_backend``. Registered backends are tried before SciPy's
 own, and a call this backend answers with ``NotImplemented`` continues to it.
 
-For a limited scope, ``metal_sci.fft.backend`` works with SciPy's context
-manager: ``with scipy.fft.set_backend(metal_sci.fft.backend): ...``.
+For a limited scope, ``scimetal.fft.backend`` works with SciPy's context
+manager: ``with scipy.fft.set_backend(scimetal.fft.backend): ...``.
 """
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ class _Backend:
 
     def __init__(self):
         self.enabled = True
-        self._routes = {name: getattr(_basic, name).__metal_sci_native__ for name in _basic.__all__}
+        self._routes = {name: getattr(_basic, name).__scimetal_native__ for name in _basic.__all__}
         self._signatures = {name: inspect.signature(route.core) for name, route in self._routes.items()}
 
     def __ua_function__(self, method, args, kwargs):
@@ -86,7 +86,7 @@ _reg_lock = threading.Lock()
 def register() -> None:
     """Make ``scipy.fft``'s own functions use the native routes.
 
-    Calls metal-sci does not accept (sizes without a plan, inputs below the
+    Calls SciMetal does not accept (sizes without a plan, inputs below the
     GPU crossover, double precision under the ``strict`` policy, ...) run on
     SciPy's backend exactly as before.
     """
@@ -111,6 +111,6 @@ def unregister() -> None:
 
 
 def registered() -> bool:
-    """Whether ``scipy.fft`` currently routes through metal-sci."""
+    """Whether ``scipy.fft`` currently routes through SciMetal."""
     with _reg_lock:
         return _installed.enabled

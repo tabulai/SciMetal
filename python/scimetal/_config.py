@@ -30,16 +30,16 @@ def _from_env(name, allowed, default):
 #          float64 with roughly 6-7 significant digits.
 # refined: float32 work plus a float64 correction where one exists (solves).
 # strict:  exact float64 on the CPU engine.
-_default_precision = _from_env("METAL_SCI_PRECISION", PRECISIONS, "fast")
+_default_precision = _from_env("SCIMETAL_PRECISION", PRECISIONS, "fast")
 # auto: the router picks; cpu / gpu force an engine (gpu never falls back).
-_default_device = _from_env("METAL_SCI_DEVICE", DEVICES, "auto")
+_default_device = _from_env("SCIMETAL_DEVICE", DEVICES, "auto")
 # Whether inputs too small to win natively are handed to SciPy (the default).
 # A native call costs some 10-20 microseconds of hand-off whatever its size, so
 # below a per-function size SciPy is faster; tests of the native code turn
 # this off to reach it with small arrays.
-_small_to_scipy = _from_env("METAL_SCI_SMALL_INPUTS", ("scipy", "native"), "scipy") == "scipy"
-_precision_override = contextvars.ContextVar("metal_sci_precision", default=None)
-_device_override = contextvars.ContextVar("metal_sci_device", default=None)
+_small_to_scipy = _from_env("SCIMETAL_SMALL_INPUTS", ("scipy", "native"), "scipy") == "scipy"
+_precision_override = contextvars.ContextVar("scimetal_precision", default=None)
+_device_override = contextvars.ContextVar("scimetal_device", default=None)
 
 
 def get_precision() -> str:

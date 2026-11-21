@@ -7,7 +7,7 @@
       "displayName": "Metal (RelWithDebInfo)",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/.build/metal",
-      "cacheVariables": {"CMAKE_BUILD_TYPE": "RelWithDebInfo", "MS_ENABLE_METAL": "ON"}
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "RelWithDebInfo", "SM_ENABLE_METAL": "ON"}
     },
     {
       "name": "metal-asan-ubsan",
@@ -16,7 +16,7 @@
       "binaryDir": "${sourceDir}/.build/metal-asan-ubsan",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "MS_ENABLE_METAL": "ON",
+        "SM_ENABLE_METAL": "ON",
         "CMAKE_C_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined",
         "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer -fno-sanitize-recover=undefined",
         "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined",
@@ -30,7 +30,7 @@
       "binaryDir": "${sourceDir}/.build/metal-tsan",
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "RelWithDebInfo",
-        "MS_ENABLE_METAL": "ON",
+        "SM_ENABLE_METAL": "ON",
         "CMAKE_C_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
         "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
         "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread",
@@ -42,7 +42,7 @@
       "displayName": "CPU storage only (no Metal); proves the core builds and runs without Metal",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/.build/cpu-only",
-      "cacheVariables": {"CMAKE_BUILD_TYPE": "RelWithDebInfo", "MS_ENABLE_METAL": "OFF"}
+      "cacheVariables": {"CMAKE_BUILD_TYPE": "RelWithDebInfo", "SM_ENABLE_METAL": "OFF"}
     }
   ],
   "buildPresets": [

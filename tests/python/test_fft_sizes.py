@@ -3,7 +3,7 @@
 The kernels are specialised per length, and MLX's thread-layout heuristics
 have special cases for individual sizes, so nothing short of trying a length
 shows that its plan is right. The default run tries a spread of lengths from
-every class; ``METAL_SCI_FFT_EXHAUSTIVE=1`` tries all of them (every length
+every class; ``SCIMETAL_FFT_EXHAUSTIVE=1`` tries all of them (every length
 from 2 to 4096, every longer length up to 2^17 that factors into the radices,
 and every such length along an inner axis), which builds some 20 000
 pipelines and takes about half an hour the first time.
@@ -14,12 +14,12 @@ import numpy as np
 import pytest
 import scipy.fft
 
-import metal_sci
-import metal_sci.fft as mfft
-from metal_sci import _native
+import scimetal
+import scimetal.fft as mfft
+from scimetal import _native
 
 TOLERANCE = 5e-6
-EXHAUSTIVE = os.environ.get("METAL_SCI_FFT_EXHAUSTIVE", "0") == "1"
+EXHAUSTIVE = os.environ.get("SCIMETAL_FFT_EXHAUSTIVE", "0") == "1"
 
 
 def smooth(n):
@@ -43,7 +43,7 @@ def spread(candidates, count):
 def gpu():
     if not _native.has_metal():
         pytest.skip("requires Metal GPU build")
-    with metal_sci.device("gpu"), metal_sci.precision("fast"):
+    with scimetal.device("gpu"), scimetal.precision("fast"):
         yield
 
 
@@ -67,7 +67,7 @@ def check_lengths(lengths, rows):
     for n in lengths:
         for name, ours, reference in transforms(n, rows, seed=n):
             result = ours()
-            route = metal_sci.last_route()
+            route = scimetal.last_route()
             if has_plan(n):
                 if route.engine != "gpu":
                     failures.append((name, n, route.reason))
@@ -109,8 +109,8 @@ def test_inner_axis_lengths():
             x = (rng.standard_normal((2, n, tail)) + 1j * rng.standard_normal((2, n, tail))).astype(np.complex64)
             for name, function in (("fft", mfft.fft), ("ifft", mfft.ifft)):
                 result = function(x, axis=1)
-                if metal_sci.last_route().engine != "gpu":
-                    failures.append((name, n, tail, metal_sci.last_route().reason))
+                if scimetal.last_route().engine != "gpu":
+                    failures.append((name, n, tail, scimetal.last_route().reason))
                     continue
                 value = error(result, getattr(scipy.fft, name)(x.astype(np.complex128), axis=1))
                 worst = max(worst, value)

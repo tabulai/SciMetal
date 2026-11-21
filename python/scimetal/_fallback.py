@@ -1,10 +1,10 @@
-"""Makes every ``metal_sci`` namespace a drop-in for the SciPy one it mirrors.
+"""Makes every ``scimetal`` namespace a drop-in for the SciPy one it mirrors.
 
 - ``install(globals(), 'scipy.ndimage')`` in a namespace module gives it a
   module ``__getattr__`` / ``__dir__`` that fall through to SciPy for every
   name the module does not define itself.
-- A meta-path finder resolves imports such as ``import metal_sci.signal.windows``
-  or ``import metal_sci.stats`` that have no file here to the SciPy module of the
+- A meta-path finder resolves imports such as ``import scimetal.signal.windows``
+  or ``import scimetal.stats`` that have no file here to the SciPy module of the
   same relative name.
 """
 from __future__ import annotations
@@ -16,7 +16,7 @@ import importlib.util
 import pathlib
 import sys
 
-_PREFIX = "metal_sci."
+_PREFIX = "scimetal."
 _PACKAGE_DIR = pathlib.Path(__file__).resolve().parent
 
 
@@ -88,10 +88,10 @@ def _has_own_module(relative: str) -> bool:
 
 
 class _ScipyAliasFinder(importlib.abc.MetaPathFinder):
-    """First on sys.meta_path, but only claims names metal_sci has no file for.
+    """First on sys.meta_path, but only claims names scimetal has no file for.
 
     It has to run before the path finder: an aliased parent such as
-    ``metal_sci.stats`` *is* ``scipy.stats``, so the path finder would otherwise
+    ``scimetal.stats`` *is* ``scipy.stats``, so the path finder would otherwise
     find submodules (including private underscore ones) on SciPy's path and
     execute a second copy of them.
     """

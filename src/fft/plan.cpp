@@ -41,13 +41,13 @@
 #include <set>
 #include <tuple>
 
-namespace ms::detail::fft {
+namespace sm::detail::fft {
 namespace {
 // --- MLX's limits (fft.cpp) -------------------------------------------------
 constexpr int32_t max_stockham_size = 4096;  // one transform must fit a threadgroup's memory
 constexpr int32_t max_rader_size = 2048;
 constexpr int32_t max_bluestein_size = 2048; // the padded transform is the next power of two >= 2n - 1
-constexpr int32_t min_group_elements = MS_FFT_MIN_GROUP_ELEMENTS;
+constexpr int32_t min_group_elements = SM_FFT_MIN_GROUP_ELEMENTS;
 // Radices in MLX's order of preference; function constants 4..12 and 13..21
 // count the steps of each.
 constexpr std::array<int32_t, 9> radices = {13, 11, 8, 7, 6, 5, 4, 3, 2};
@@ -557,7 +557,7 @@ bool strided_step(int32_t n, uint64_t stride, uint64_t outer, uint64_t tail, int
     }
     step.width = width;
     step.group_elements = group_elements(width, n);
-    step.kernel = "ms_fft_strided_mem_" + std::to_string(step.group_elements);
+    step.kernel = "sm_fft_strided_mem_" + std::to_string(step.group_elements);
     step.n = n;
     step.stride = static_cast<int32_t>(stride);
     step.outer = static_cast<int32_t>(outer);
@@ -587,8 +587,8 @@ Planned plan_chain(const Request& request, const std::vector<int32_t>& factors, 
         Step step;
         if (!strided_step(factors[i], stride, outer, request.tail, strided_width, limits, step, reason))
             return unsupported(reason);
-        if (inverse && i == 0) step.flags |= MS_FFT_CONJ_LOAD;
-        if (inverse && i + 1 == factors.size()) step.flags |= MS_FFT_CONJ_STORE;
+        if (inverse && i == 0) step.flags |= SM_FFT_CONJ_LOAD;
+        if (inverse && i + 1 == factors.size()) step.flags |= SM_FFT_CONJ_STORE;
         step.source = static_cast<uint8_t>(i % 2);
         step.target = static_cast<uint8_t>(1 - i % 2);
         plan->steps.push_back(std::move(step));
@@ -985,4 +985,4 @@ bool instantiate(const Plan& plan, uint64_t count, std::vector<Dispatch>& out, s
     }
     return true;
 }
-} // namespace ms::detail::fft
+} // namespace sm::detail::fft

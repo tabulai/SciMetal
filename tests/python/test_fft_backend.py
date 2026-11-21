@@ -1,14 +1,14 @@
-"""metal_sci.fft as a scipy.fft backend: plain scipy.fft calls run natively."""
+"""scimetal.fft as a scipy.fft backend: plain scipy.fft calls run natively."""
 import numpy as np
 import pytest
 import scipy.fft
 import scipy.signal
 from scipy._lib.uarray import BackendNotImplementedError
 
-import metal_sci
-import metal_sci.fft as mfft
-from metal_sci import _native
-from metal_sci._dispatch import counters
+import scimetal
+import scimetal.fft as mfft
+from scimetal import _native
+from scimetal._dispatch import counters
 
 TOLERANCE = 5e-6
 NAMES = ["fft", "ifft", "rfft", "irfft", "fft2", "ifft2", "fftn", "ifftn", "rfft2", "irfft2", "rfftn", "irfftn"]
@@ -21,7 +21,7 @@ def registered():
     assert not mfft.registered()
     mfft.register()
     try:
-        with metal_sci.device("gpu"), metal_sci.precision("fast"):
+        with scimetal.device("gpu"), scimetal.precision("fast"):
             yield
     finally:
         mfft.unregister()
@@ -51,7 +51,7 @@ def test_registered_backend_runs_scipy_fft_natively(registered):
         mfft.register()
         before = tallies()
         result = getattr(scipy.fft, name)(argument)
-        route = metal_sci.last_route()
+        route = scimetal.last_route()
         assert route.function == f"fft.{name}" and route.engine == "gpu", str(route)
         after = tallies()
         assert after[name] == (before[name][0] + 1, before[name][1])
@@ -73,7 +73,7 @@ def test_arguments_reach_the_native_route(registered):
         exact = getattr(scipy.fft, name)(*args, **kwargs)
         mfft.register()
         result = getattr(scipy.fft, name)(*args, **kwargs)
-        assert metal_sci.last_route().engine == "gpu", (name, kwargs, str(metal_sci.last_route()))
+        assert scimetal.last_route().engine == "gpu", (name, kwargs, str(scimetal.last_route()))
         assert result.dtype == exact.dtype and result.shape == exact.shape and error(result, exact) < 2 * TOLERANCE
 
 
@@ -90,38 +90,38 @@ def test_declined_calls_continue_to_scipy(registered):
         mfft.register()
         before = tallies()
         result = getattr(scipy.fft, name)(*args, **kwargs)
-        route = metal_sci.last_route()
+        route = scimetal.last_route()
         assert route.function == f"fft.{name}" and route.engine == "scipy", str(route)
         assert tallies()[name] == (before[name][0], before[name][1] + 1)
         if "workers=" in route.reason:
             np.testing.assert_allclose(result, exact, rtol=0, atol=1e-13 * np.abs(exact).max())
         else:
             assert result.tobytes() == exact.tobytes()
-    # Policies decline through the backend exactly as through metal_sci.fft.
-    with metal_sci.device("auto"):
+    # Policies decline through the backend exactly as through scimetal.fft.
+    with scimetal.device("auto"):
         scipy.fft.fft(x[:2, :64].copy())
-        assert metal_sci.last_route().engine == "scipy" and "crossover" in metal_sci.last_route().reason
+        assert scimetal.last_route().engine == "scipy" and "crossover" in scimetal.last_route().reason
     batch = np.tile(x, (4, 1))   # 192 000 points: enough for SciPy's threads to pay
-    with metal_sci.precision("strict"):
+    with scimetal.precision("strict"):
         mfft.unregister()
         exact_batch = scipy.fft.fft(batch)
         mfft.register()
         result = scipy.fft.fft(batch)
-        route = metal_sci.last_route()
+        route = scimetal.last_route()
         assert route.engine == "scipy" and "strict" in route.reason and "workers=" not in route.reason
         assert result.tobytes() == exact_batch.tobytes()
-    with metal_sci.device("cpu"):
+    with scimetal.device("cpu"):
         result = scipy.fft.fft(batch)
-        route = metal_sci.last_route()
+        route = scimetal.last_route()
         assert route.engine == "scipy" and "cpu" in route.reason
         cores = _native.performance_cores()
         if cores > 1:
             assert f"workers={cores}" in route.reason
             assert result.tobytes() == scipy.fft.fft(batch, workers=cores).tobytes()
         scipy.fft.fft(batch, workers=2)
-        assert "workers=" not in metal_sci.last_route().reason
+        assert "workers=" not in scimetal.last_route().reason
         scipy.fft.fft(x)             # too little data to thread: as the caller made it
-        assert "workers=" not in metal_sci.last_route().reason
+        assert "workers=" not in scimetal.last_route().reason
 
 
 def test_errors_and_other_functions_are_scipys(registered):
@@ -149,7 +149,7 @@ def test_unregister_restores_scipys_backend():
     if not _native.has_metal():
         pytest.skip("requires Metal GPU build")
     x, r = arrays(4)
-    with metal_sci.device("gpu"):
+    with scimetal.device("gpu"):
         exact = {name: getattr(scipy.fft, name)(r if name.startswith("r") else x) for name in NAMES}
         mfft.register()
         mfft.register()   # idempotent
@@ -163,7 +163,7 @@ def test_unregister_restores_scipys_backend():
         assert tallies() == before
         mfft.unregister()  # harmless twice
         mfft.register()
-        assert error(scipy.fft.fft(x), exact["fft"]) < TOLERANCE and metal_sci.last_route().engine == "gpu"
+        assert error(scipy.fft.fft(x), exact["fft"]) < TOLERANCE and scimetal.last_route().engine == "gpu"
         mfft.unregister()
         assert scipy.fft.fft(x).tobytes() == exact["fft"].tobytes()
 
@@ -175,14 +175,14 @@ def test_backend_object_with_scipys_context_manager():
     exact = scipy.fft.fft(x)
     exact_inner = scipy.fft.fft(x[:17], axis=0)
     assert not mfft.registered()
-    with metal_sci.device("gpu"):
+    with scimetal.device("gpu"):
         with scipy.fft.set_backend(mfft.backend):
             result = scipy.fft.fft(x)
-            assert metal_sci.last_route().engine == "gpu"
+            assert scimetal.last_route().engine == "gpu"
             assert result.tobytes() != exact.tobytes() and error(result, exact) < TOLERANCE
             # A declined call falls back to SciPy unless the caller asked for this backend only.
             assert scipy.fft.fft(x[:17], axis=0).tobytes() == exact_inner.tobytes()
-            assert metal_sci.last_route().engine == "scipy"
+            assert scimetal.last_route().engine == "scipy"
             with scipy.fft.skip_backend(mfft.backend):
                 assert scipy.fft.fft(x).tobytes() == exact.tobytes()
         with scipy.fft.set_backend(mfft.backend, only=True):

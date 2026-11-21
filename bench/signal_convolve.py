@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Benchmark: metal_sci.signal convolution and correlation against scipy.signal.
+"""Benchmark: scimetal.signal convolution and correlation against scipy.signal.
 
     .venv/bin/python bench/signal_convolve.py [--quick] [--calibrate]
 
@@ -24,8 +24,8 @@ import scipy.signal as ss
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "python"))
 
-import metal_sci  # noqa: E402
-import metal_sci.signal as msig  # noqa: E402
+import scimetal  # noqa: E402
+import scimetal.signal as msig  # noqa: E402
 
 WORKERS = 16
 
@@ -100,11 +100,11 @@ def benchmark(quick: bool):
             else:
                 scipy_w16_ms = None
 
-            with metal_sci.precision("fast"):
+            with scimetal.precision("fast"):
                 t0 = time.perf_counter()
                 first_res = ours(a, b, **kw)
                 first_ms = (time.perf_counter() - t0) * 1e3
-                route = metal_sci.last_route()
+                route = scimetal.last_route()
                 del first_res
                 fast_ms, fast_min = timed(lambda: ours(a, b, **kw), repeats, warmup)
 
@@ -130,9 +130,9 @@ def benchmark(quick: bool):
             }
 
             if func in ("convolve2d", "convolve"):
-                with metal_sci.precision("strict"):
+                with scimetal.precision("strict"):
                     strict_ms, _ = timed(lambda: ours(a, b, **kw), scipy_repeats if func == "convolve2d" else repeats, warmup)
-                    s_route = metal_sci.last_route()
+                    s_route = scimetal.last_route()
                 row["strict_ms"] = round(strict_ms, 2)
                 row["strict_engine"] = s_route.engine
                 row["strict_speedup_vs_w1"] = round(scipy_1_ms / strict_ms, 2)
@@ -155,13 +155,13 @@ def calibrate():
         for n in (512, 1024, 1448, 2048, 2896, 4096):
             img = make_data((n, n), np.float64, seed=n)
             work = img.size * ker.size
-            with metal_sci.precision("fast"):
-                with metal_sci.device("cpu"):
+            with scimetal.precision("fast"):
+                with scimetal.device("cpu"):
                     cpu_ms, _ = timed(lambda: msig.convolve2d(img, ker, mode="same"), 5, 1)
-                with metal_sci.device("gpu"):
+                with scimetal.device("gpu"):
                     gpu_ms, _ = timed(lambda: msig.convolve2d(img, ker, mode="same"), 5, 1)
                 msig.convolve2d(img, ker, mode="same")
-                auto_eng = metal_sci.last_route().engine
+                auto_eng = scimetal.last_route().engine
             print(f"  {k}x{k} on {n}x{n} (work={work/2**20:6.1f}M): cpu={cpu_ms:6.2f}ms gpu={gpu_ms:6.2f}ms ratio={cpu_ms/gpu_ms:5.2f}x auto={auto_eng}")
             direct_rows.append({"k": k, "n": n, "work": work, "cpu_ms": round(cpu_ms, 3), "gpu_ms": round(gpu_ms, 3), "auto": auto_eng})
 
@@ -171,11 +171,11 @@ def calibrate():
         a = make_data((n,), np.float64, seed=1)
         b = make_data((n // 2,), np.float64, seed=2)
         sp_ms, _ = timed(lambda: ss.fftconvolve(a, b), 5, 1)
-        with metal_sci.precision("fast"), metal_sci.device("gpu"):
+        with scimetal.precision("fast"), scimetal.device("gpu"):
             gpu_ms, _ = timed(lambda: msig.fftconvolve(a, b), 5, 1)
-        with metal_sci.precision("fast"), metal_sci.device("auto"):
+        with scimetal.precision("fast"), scimetal.device("auto"):
             msig.fftconvolve(a, b)
-            auto_eng = metal_sci.last_route().engine
+            auto_eng = scimetal.last_route().engine
         print(f"  1D n={n:7d} (padded~{2*n:7d}): scipy={sp_ms:6.3f}ms gpu={gpu_ms:6.3f}ms ratio={sp_ms/gpu_ms:5.2f}x auto={auto_eng}")
         fft_rows.append({"n": n, "scipy_ms": round(sp_ms, 3), "gpu_ms": round(gpu_ms, 3), "auto": auto_eng})
 
@@ -190,7 +190,7 @@ def main():
     started = time.perf_counter()
     out = {
         "benchmark": "signal_convolve",
-        "metal_sci": metal_sci.__version__,
+        "scimetal": scimetal.__version__,
         "machine": machine_info(),
     }
     if args.calibrate:

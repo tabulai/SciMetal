@@ -5,21 +5,21 @@
 // the filtered axis, `inner` elements between consecutive positions (the
 // product of the later extents) and `outer` such blocks. Tap j of output
 // position p reads extension position p - before + j.
-#include "ms_ndimage.h"
+#include "sm_ndimage.h"
 #include "core/array.hpp"
 
 #include <cstdint>
 #include <string>
 #include <vector>
 
-namespace ms::detail::ndimage {
+namespace sm::detail::ndimage {
 // How SciPy's NI_Correlate1D classifies odd-length weights (to DBL_EPSILON):
 // it then sums centre tap first, pairs from the outermost inwards.
 enum class Symmetry : int32_t { none = 0, even = 1, odd = -1 };
 
 struct Pass {
-    uint32_t kind = 0;   // ms_ndimage_pass_kind
-    uint32_t mode = 0;   // ms_ndimage_mode
+    uint32_t kind = 0;   // sm_ndimage_pass_kind
+    uint32_t mode = 0;   // sm_ndimage_mode
     double cval = 0.0;
     uint64_t size = 0;   // taps
     const double* weights = nullptr;  // caller's weights (correlate passes)
@@ -31,8 +31,8 @@ struct Pass {
 
 struct Plan {
     array::Shape shape;
-    uint32_t dtype = 0;      // MS_FLOAT32 or MS_FLOAT64 (input)
-    uint32_t out_dtype = 0;  // 0 (same as dtype), MS_FLOAT32 or MS_FLOAT64
+    uint32_t dtype = 0;      // SM_FLOAT32 or SM_FLOAT64 (input)
+    uint32_t out_dtype = 0;  // 0 (same as dtype), SM_FLOAT32 or SM_FLOAT64
     std::vector<Pass> passes;
 };
 
@@ -40,7 +40,7 @@ struct CompositePlan {
     array::Shape shape;
     uint32_t in_dtype = 0;
     uint32_t out_dtype = 0;
-    uint32_t combine_op = 0; // MS_NDIMAGE_COMBINE_SUM or MS_NDIMAGE_COMBINE_SQRT_SUM_SQ
+    uint32_t combine_op = 0; // SM_NDIMAGE_COMBINE_SUM or SM_NDIMAGE_COMBINE_SQRT_SUM_SQ
     std::vector<std::vector<Pass>> chains;
 };
 
@@ -49,19 +49,19 @@ struct CompositePlan {
 // including windows longer than the line.
 inline int64_t extend(int64_t position, int64_t length, uint32_t mode) noexcept {
     switch (mode) {
-    case MS_NDIMAGE_NEAREST:
+    case SM_NDIMAGE_NEAREST:
         return position < 0 ? 0 : length - 1;
-    case MS_NDIMAGE_WRAP: {
+    case SM_NDIMAGE_WRAP: {
         const int64_t m = position % length;
         return m < 0 ? m + length : m;
     }
-    case MS_NDIMAGE_REFLECT: {
+    case SM_NDIMAGE_REFLECT: {
         const int64_t period = 2 * length;
         int64_t m = position % period;
         if (m < 0) m += period;
         return m < length ? m : period - 1 - m;
     }
-    case MS_NDIMAGE_MIRROR: {
+    case SM_NDIMAGE_MIRROR: {
         if (length == 1) return 0;
         const int64_t period = 2 * length - 2;
         int64_t m = position % period;
@@ -74,19 +74,19 @@ inline int64_t extend(int64_t position, int64_t length, uint32_t mode) noexcept 
 }
 
 // CPU engine: every pass in double precision on the performance cores.
-BufferPtr run_cpu(ms_context*, const Plan&, const void* input);
-BufferPtr run_cpu_composite(ms_context*, const CompositePlan&, const void* input);
+BufferPtr run_cpu(sm_context*, const Plan&, const void* input);
+BufferPtr run_cpu_composite(sm_context*, const CompositePlan&, const void* input);
 
 // GPU engine: single precision, one command buffer. gpu_supports says whether
 // the plan fits the kernels' 32-bit indexing and the single-buffer time budget.
 // If narrowing or filter-gain amplification overflows float32: when
-// `allow_cpu_fallback` is true (MS_EXECUTION_AUTO), returns null and writes the
+// `allow_cpu_fallback` is true (SM_EXECUTION_AUTO), returns null and writes the
 // reason to `overflow_reason` before any GPU operation begins; when false
-// (MS_EXECUTION_GPU), throws MS_ENOTSUP.
+// (SM_EXECUTION_GPU), throws SM_ENOTSUP.
 bool gpu_supports(const Plan&) noexcept;
 bool gpu_supports_composite(const CompositePlan&) noexcept;
-BufferPtr run_gpu(ms_context*, const Plan&, const ms_array& input, bool allow_cpu_fallback,
+BufferPtr run_gpu(sm_context*, const Plan&, const sm_array& input, bool allow_cpu_fallback,
                   std::string& overflow_reason, bool dense_safe = false);
-BufferPtr run_gpu_composite(ms_context*, const CompositePlan&, const ms_array& input, bool allow_cpu_fallback,
+BufferPtr run_gpu_composite(sm_context*, const CompositePlan&, const sm_array& input, bool allow_cpu_fallback,
                             std::string& overflow_reason);
-} // namespace ms::detail::ndimage
+} // namespace sm::detail::ndimage

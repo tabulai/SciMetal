@@ -18,7 +18,7 @@
 #include <string>
 #include <vector>
 
-namespace ms::detail::fft {
+namespace sm::detail::fft {
 enum class Transform : uint8_t { c2c = 0, r2c = 1, c2r = 2 };
 
 // What the device allows one threadgroup. Shader validation doubles static
@@ -59,7 +59,7 @@ enum class Kernel : uint8_t {
     rader,      // MLX rader_fft
     bluestein,  // MLX bluestein_fft
     four_step,  // MLX four_step_fft, first or last pass of a power-of-two plan
-    strided,    // ms_fft_strided (fft_kernels.h)
+    strided,    // sm_fft_strided (fft_kernels.h)
 };
 
 // One kernel dispatch. Buffers bind at 0 (source) and 1 (target), then the
@@ -178,4 +178,4 @@ std::vector<int32_t> prime_factors(int32_t n);
 // True when n factors into the supported radices.
 bool smooth(uint64_t n);
 }
-} // namespace ms::detail::fft
+} // namespace sm::detail::fft

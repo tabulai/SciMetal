@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""Benchmark: metal_sci.fft against scipy.fft.
+"""Benchmark: scimetal.fft against scipy.fft.
 
-    METAL_SCI_LIBRARY=.build/fft/libmetalsci.dylib .venv/bin/python bench/fft.py [--quick] [--crossover]
+    SCIMETAL_LIBRARY=.build/fft/libscimetal.dylib .venv/bin/python bench/fft.py [--quick] [--crossover]
 
-Times the public Python API (``metal_sci.fft.fft`` and ``rfft`` under the
+Times the public Python API (``scimetal.fft.fft`` and ``rfft`` under the
 default policies: fast precision, automatic device) against ``scipy.fft`` with
 one worker (its default) and with 16, for complex128 and complex64 inputs
 (float64 and float32 for rfft). Each timing is the median of warm runs taken
@@ -34,9 +34,9 @@ import scipy.fft
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "python"))
 
-import metal_sci  # noqa: E402
-import metal_sci.fft as mfft  # noqa: E402
-from metal_sci.fft import _native_fft  # noqa: E402
+import scimetal  # noqa: E402
+import scimetal.fft as mfft  # noqa: E402
+from scimetal.fft import _native_fft  # noqa: E402
 
 WORKERS = 16
 
@@ -94,29 +94,29 @@ def run_case(label, function, shape, dtype, budget):
     plan = _native_fft.plan(x.dtype, x.shape, _native_fft.options(kind, 0, [x.ndim - 1]))
 
     first, result = clock(lambda: ours(x))
-    route = metal_sci.last_route()
+    route = scimetal.last_route()
     reference = theirs(x.astype(np.complex128 if x.dtype.kind == "c" else np.float64, copy=False))
     relative_error = float(np.linalg.norm(result - reference) / np.linalg.norm(reference))
     del result, reference
     for _ in range(2):
         ours(x)
-    samples = measure({"metal_sci": lambda: ours(x),
+    samples = measure({"scimetal": lambda: ours(x),
                        "scipy_workers_1": lambda: theirs(x),
                        f"scipy_workers_{WORKERS}": lambda: theirs(x, workers=WORKERS)}, budget)
     record = {
         "case": label, "function": function, "shape": list(shape), "dtype": x.dtype.name,
         "engine": route.engine, "plan": plan.description.decode() if plan.status == 0 else None,
         "route_reason": route.reason or None,
-        "metal_sci_ms": median_ms(samples["metal_sci"]),
-        "metal_sci_min_ms": round(1e3 * min(samples["metal_sci"]), 4),
-        "metal_sci_first_call_ms": round(1e3 * first, 3),
+        "scimetal_ms": median_ms(samples["scimetal"]),
+        "scimetal_min_ms": round(1e3 * min(samples["scimetal"]), 4),
+        "scimetal_first_call_ms": round(1e3 * first, 3),
         "scipy_workers_1_ms": median_ms(samples["scipy_workers_1"]),
         f"scipy_workers_{WORKERS}_ms": median_ms(samples[f"scipy_workers_{WORKERS}"]),
-        "rounds": len(samples["metal_sci"]),
+        "rounds": len(samples["scimetal"]),
         "relative_error_vs_scipy_complex128": relative_error,
     }
-    record["speedup_vs_workers_1"] = round(record["scipy_workers_1_ms"] / record["metal_sci_ms"], 2)
-    record[f"speedup_vs_workers_{WORKERS}"] = round(record[f"scipy_workers_{WORKERS}_ms"] / record["metal_sci_ms"], 2)
+    record["speedup_vs_workers_1"] = round(record["scipy_workers_1_ms"] / record["scimetal_ms"], 2)
+    record[f"speedup_vs_workers_{WORKERS}"] = round(record[f"scipy_workers_{WORKERS}_ms"] / record["scimetal_ms"], 2)
     return record
 
 
@@ -142,13 +142,13 @@ def benchmark(quick):
                 dtype = np.float64 if dtype == np.complex128 else np.float32
             record = run_case(label, function, shape, dtype, budget)
             results.append(record)
-            print("%-22s %-10s %-5s  metal-sci %9.3f ms (first call %8.2f)  scipy w1 %9.3f  w%d %9.3f  x%-7.1f x%-6.1f err %.1e  %s"
-                  % (label, record["dtype"], record["engine"], record["metal_sci_ms"], record["metal_sci_first_call_ms"],
+            print("%-22s %-10s %-5s  SciMetal %9.3f ms (first call %8.2f)  scipy w1 %9.3f  w%d %9.3f  x%-7.1f x%-6.1f err %.1e  %s"
+                  % (label, record["dtype"], record["engine"], record["scimetal_ms"], record["scimetal_first_call_ms"],
                      record["scipy_workers_1_ms"], WORKERS, record[f"scipy_workers_{WORKERS}_ms"],
                      record["speedup_vs_workers_1"], record[f"speedup_vs_workers_{WORKERS}"],
                      record["relative_error_vs_scipy_complex128"], record["plan"] or record["route_reason"]), flush=True)
-    return {"benchmark": "fft", "machine": machine(), "policy": {"precision": metal_sci.get_precision(),
-            "device": metal_sci.get_device()}, "timing": "median of warm runs, interleaved rounds", "cases": results}
+    return {"benchmark": "fft", "machine": machine(), "policy": {"precision": scimetal.get_precision(),
+            "device": scimetal.get_device()}, "timing": "median of warm runs, interleaved rounds", "cases": results}
 
 
 def crossover():
@@ -163,7 +163,7 @@ def crossover():
             x = make(shape, dtype)
             function = "fft2" if len(shape) == 2 and shape[0] == shape[1] else "fft"
             ours, theirs = getattr(mfft, function), getattr(scipy.fft, function)
-            with metal_sci.device("gpu"):
+            with scimetal.device("gpu"):
                 ours(x)
                 samples = measure({"gpu": lambda: ours(x), "scipy": lambda: theirs(x)}, 0.15, min_rounds=7)
             lengths = shape if function == "fft2" else shape[-1:]

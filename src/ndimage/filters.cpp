@@ -8,7 +8,7 @@
 #include <cmath>
 #include <vector>
 
-namespace ms::detail::ndimage {
+namespace sm::detail::ndimage {
 namespace {
 // AUTO crossover, calibrated on applegpu_g13d (M1 Ultra, 16 performance
 // cores) with bench/ndimage_filters.py --calibrate.
@@ -70,27 +70,27 @@ Symmetry classify(const double* weights, uint64_t size) {
     return Symmetry::odd;
 }
 
-Pass parse_pass(const array::Shape& shape, const ms_ndimage_pass& given) {
-    if (given.struct_size != sizeof(ms_ndimage_pass) || given.abi_version != MS_NDIMAGE_ABI_VERSION)
-        throw Error(MS_EINVAL, "filter pass size or ABI version mismatch");
+Pass parse_pass(const array::Shape& shape, const sm_ndimage_pass& given) {
+    if (given.struct_size != sizeof(sm_ndimage_pass) || given.abi_version != SM_NDIMAGE_ABI_VERSION)
+        throw Error(SM_EINVAL, "filter pass size or ABI version mismatch");
     if (given.reserved0 || given.reserved[0] || given.reserved[1])
-        throw Error(MS_EINVAL, "filter pass reserved fields must be zero");
-    if (given.kind != MS_NDIMAGE_CORRELATE && given.kind != MS_NDIMAGE_UNIFORM)
-        throw Error(MS_EINVAL, "unknown filter pass kind");
-    if (given.axis >= shape.ndim) throw Error(MS_EINVAL, "filter axis is out of range");
-    if (given.mode > MS_NDIMAGE_CONSTANT) throw Error(MS_EINVAL, "unknown boundary mode");
-    if (given.size < 1 || given.size > MS_NDIMAGE_MAX_WINDOW)
-        throw Error(MS_EINVAL, "filter size must be 1 to 2^30");
+        throw Error(SM_EINVAL, "filter pass reserved fields must be zero");
+    if (given.kind != SM_NDIMAGE_CORRELATE && given.kind != SM_NDIMAGE_UNIFORM)
+        throw Error(SM_EINVAL, "unknown filter pass kind");
+    if (given.axis >= shape.ndim) throw Error(SM_EINVAL, "filter axis is out of range");
+    if (given.mode > SM_NDIMAGE_CONSTANT) throw Error(SM_EINVAL, "unknown boundary mode");
+    if (given.size < 1 || given.size > SM_NDIMAGE_MAX_WINDOW)
+        throw Error(SM_EINVAL, "filter size must be 1 to 2^30");
     const int64_t size = static_cast<int64_t>(given.size);
     if (given.origin < -(size / 2) || given.origin > (size - 1) / 2)
-        throw Error(MS_EINVAL, "filter origin must satisfy -(size / 2) <= origin <= (size - 1) / 2");
-    if (given.kind == MS_NDIMAGE_CORRELATE) {
-        if (!given.weights) throw Error(MS_EINVAL, "null filter weights");
+        throw Error(SM_EINVAL, "filter origin must satisfy -(size / 2) <= origin <= (size - 1) / 2");
+    if (given.kind == SM_NDIMAGE_CORRELATE) {
+        if (!given.weights) throw Error(SM_EINVAL, "null filter weights");
         if (reinterpret_cast<uintptr_t>(given.weights) % alignof(double) != 0)
-            throw Error(MS_EINVAL, "filter weights are not aligned for double");
+            throw Error(SM_EINVAL, "filter weights are not aligned for double");
     }
-    if (given.kind == MS_NDIMAGE_UNIFORM && given.weights)
-        throw Error(MS_EINVAL, "a uniform filter pass takes no weights");
+    if (given.kind == SM_NDIMAGE_UNIFORM && given.weights)
+        throw Error(SM_EINVAL, "a uniform filter pass takes no weights");
 
     Pass pass;
     pass.kind = given.kind;
@@ -99,7 +99,7 @@ Pass parse_pass(const array::Shape& shape, const ms_ndimage_pass& given) {
     pass.size = given.size;
     pass.weights = given.weights;
     // A uniform window is symmetric when it has a centre; the GPU engine sums it as weights 1/size.
-    pass.symmetry = given.kind == MS_NDIMAGE_UNIFORM ? (given.size & 1 ? Symmetry::even : Symmetry::none)
+    pass.symmetry = given.kind == SM_NDIMAGE_UNIFORM ? (given.size & 1 ? Symmetry::even : Symmetry::none)
                                                      : classify(given.weights, given.size);
     pass.length = shape.dims[given.axis];
     pass.outer = pass.inner = 1;
@@ -114,28 +114,28 @@ uint32_t resolve_out_dtype(uint32_t in_dtype, uint32_t requested_out_dtype) {
     if (requested_out_dtype == 0) return in_dtype;
     (void)array::dtype_size(requested_out_dtype);
     if (!array::is_real(requested_out_dtype))
-        throw Error(MS_ENOTSUP, "ndimage filters require a real output dtype");
+        throw Error(SM_ENOTSUP, "ndimage filters require a real output dtype");
     return requested_out_dtype;
 }
 
 void check_output_bytes(const array::Shape& shape, uint32_t out_dtype) {
     uint64_t out_bytes = 0;
-    if (ms_checked_mul(shape.elements, array::dtype_size(out_dtype), &out_bytes) != MS_OK)
-        throw Error(MS_EOVERFLOW, "output array byte size overflows");
+    if (sm_checked_mul(shape.elements, array::dtype_size(out_dtype), &out_bytes) != SM_OK)
+        throw Error(SM_EOVERFLOW, "output array byte size overflows");
 }
 
-Plan make_plan(const ms_array* input, const ms_ndimage_pass* passes, uint32_t count, uint32_t out_dtype = 0) {
+Plan make_plan(const sm_array* input, const sm_ndimage_pass* passes, uint32_t count, uint32_t out_dtype = 0) {
     Plan plan;
     plan.shape = array::checked_shape(input);
     if (!array::is_real(input->dtype))
-        throw Error(MS_ENOTSUP, "ndimage filters take real arrays (float, integer, or bool)");
+        throw Error(SM_ENOTSUP, "ndimage filters take real arrays (float, integer, or bool)");
     plan.dtype = input->dtype;
     plan.out_dtype = resolve_out_dtype(input->dtype, out_dtype);
     check_output_bytes(plan.shape, plan.out_dtype);
     if (plan.shape.elements && reinterpret_cast<uintptr_t>(input->data) % array::dtype_size(input->dtype))
-        throw Error(MS_EINVAL, "array data is not aligned to its element size");
-    if (!passes) throw Error(MS_EINVAL, "null filter passes");
-    if (count < 1 || count > MS_NDIMAGE_MAX_PASSES) throw Error(MS_EINVAL, "filter pass count must be 1 to 32");
+        throw Error(SM_EINVAL, "array data is not aligned to its element size");
+    if (!passes) throw Error(SM_EINVAL, "null filter passes");
+    if (count < 1 || count > SM_NDIMAGE_MAX_PASSES) throw Error(SM_EINVAL, "filter pass count must be 1 to 32");
     plan.passes.reserve(count);
     for (uint32_t i = 0; i < count; ++i) {
         plan.passes.push_back(parse_pass(plan.shape, passes[i]));
@@ -143,36 +143,36 @@ Plan make_plan(const ms_array* input, const ms_ndimage_pass* passes, uint32_t co
     return plan;
 }
 
-CompositePlan make_composite_plan(const ms_array* input, const ms_ndimage_chain* chains, uint32_t chain_count,
+CompositePlan make_composite_plan(const sm_array* input, const sm_ndimage_chain* chains, uint32_t chain_count,
                                     uint32_t combine_op, uint32_t out_dtype) {
     CompositePlan plan;
     plan.shape = array::checked_shape(input);
     if (!array::is_real(input->dtype))
-        throw Error(MS_ENOTSUP, "ndimage filters take real arrays (float, integer, or bool)");
+        throw Error(SM_ENOTSUP, "ndimage filters take real arrays (float, integer, or bool)");
     if (plan.shape.elements && reinterpret_cast<uintptr_t>(input->data) % array::dtype_size(input->dtype))
-        throw Error(MS_EINVAL, "array data is not aligned to its element size");
+        throw Error(SM_EINVAL, "array data is not aligned to its element size");
     plan.in_dtype = input->dtype;
     plan.out_dtype = resolve_out_dtype(input->dtype, out_dtype);
     check_output_bytes(plan.shape, plan.out_dtype);
-    if (combine_op != MS_NDIMAGE_COMBINE_SUM && combine_op != MS_NDIMAGE_COMBINE_SQRT_SUM_SQ)
-        throw Error(MS_EINVAL, "unknown composite combine op");
+    if (combine_op != SM_NDIMAGE_COMBINE_SUM && combine_op != SM_NDIMAGE_COMBINE_SQRT_SUM_SQ)
+        throw Error(SM_EINVAL, "unknown composite combine op");
     plan.combine_op = combine_op;
-    if (!chains) throw Error(MS_EINVAL, "null filter chains");
-    if (chain_count < 1 || chain_count > MS_MAX_NDIM)
-        throw Error(MS_EINVAL, "composite filter chain count must be 1 to MS_MAX_NDIM");
+    if (!chains) throw Error(SM_EINVAL, "null filter chains");
+    if (chain_count < 1 || chain_count > SM_MAX_NDIM)
+        throw Error(SM_EINVAL, "composite filter chain count must be 1 to SM_MAX_NDIM");
     plan.chains.resize(chain_count);
     for (uint32_t k = 0; k < chain_count; ++k) {
-        const ms_ndimage_chain& c = chains[k];
-        if (c.struct_size != sizeof(ms_ndimage_chain) || c.abi_version != MS_NDIMAGE_ABI_VERSION)
-            throw Error(MS_EINVAL, "filter chain size or ABI version mismatch");
+        const sm_ndimage_chain& c = chains[k];
+        if (c.struct_size != sizeof(sm_ndimage_chain) || c.abi_version != SM_NDIMAGE_ABI_VERSION)
+            throw Error(SM_EINVAL, "filter chain size or ABI version mismatch");
         if (c.reserved0 || c.reserved[0] || c.reserved[1])
-            throw Error(MS_EINVAL, "filter chain reserved fields must be zero");
-        if (c.pass_count > MS_NDIMAGE_MAX_PASSES)
-            throw Error(MS_EINVAL, "filter chain pass count must be 0 to 32");
+            throw Error(SM_EINVAL, "filter chain reserved fields must be zero");
+        if (c.pass_count > SM_NDIMAGE_MAX_PASSES)
+            throw Error(SM_EINVAL, "filter chain pass count must be 0 to 32");
         if (c.pass_count == 0 && c.passes != nullptr)
-            throw Error(MS_EINVAL, "empty filter chain must have null passes");
+            throw Error(SM_EINVAL, "empty filter chain must have null passes");
         if (c.pass_count > 0 && !c.passes)
-            throw Error(MS_EINVAL, "non-empty filter chain has null passes");
+            throw Error(SM_EINVAL, "non-empty filter chain has null passes");
         plan.chains[k].reserve(c.pass_count);
         for (uint32_t i = 0; i < c.pass_count; ++i) {
             plan.chains[k].push_back(parse_pass(plan.shape, c.passes[i]));
@@ -183,18 +183,18 @@ CompositePlan make_composite_plan(const ms_array* input, const ms_ndimage_chain*
 
 // The CPU engine's cost of one pass per element, in tap operations.
 uint64_t cpu_operations(const Pass& pass) {
-    const uint64_t arithmetic = pass.kind == MS_NDIMAGE_UNIFORM ? uniform_operations
+    const uint64_t arithmetic = pass.kind == SM_NDIMAGE_UNIFORM ? uniform_operations
                               : pass.symmetry == Symmetry::none ? pass.size : pass.size / 2 + 1;
     return arithmetic + (pass.inner == 1 ? 0 : strided_pass_operations);
 }
 
 uint64_t saturating_mul(uint64_t a, uint64_t b) {
     uint64_t product = 0;
-    return ms_checked_mul(a, b, &product) == MS_OK ? product : UINT64_MAX;
+    return sm_checked_mul(a, b, &product) == SM_OK ? product : UINT64_MAX;
 }
 uint64_t saturating_add(uint64_t a, uint64_t b) {
     uint64_t sum = 0;
-    return ms_checked_add(a, b, &sum) == MS_OK ? sum : UINT64_MAX;
+    return sm_checked_add(a, b, &sum) == SM_OK ? sum : UINT64_MAX;
 }
 
 uint64_t gpu_tap_elements(const Plan& plan) {
@@ -225,7 +225,7 @@ uint64_t composite_routing_work(const CompositePlan& plan) {
     for (const auto& chain : plan.chains) {
         for (const Pass& pass : chain) operations = saturating_add(operations, cpu_operations(pass));
     }
-    if (plan.chains.size() > 1 || plan.combine_op == MS_NDIMAGE_COMBINE_SQRT_SUM_SQ) {
+    if (plan.chains.size() > 1 || plan.combine_op == SM_NDIMAGE_COMBINE_SQRT_SUM_SQ) {
         operations = saturating_add(operations, 1);
     }
     const uint64_t work = saturating_mul(plan.shape.elements, operations);
@@ -241,17 +241,17 @@ struct SeparableDecomposition {
     std::vector<double> cvals;
 };
 
-SeparableDecomposition try_decompose_rank1(const array::Shape& shape, const ms_ndimage_dense_options& opts) {
+SeparableDecomposition try_decompose_rank1(const array::Shape& shape, const sm_ndimage_dense_options& opts) {
     SeparableDecomposition result;
     const uint32_t ndim = shape.ndim;
     if (ndim < 2) return result;
-    if (opts.mode == MS_NDIMAGE_CONSTANT && !std::isfinite(opts.cval)) return result;
+    if (opts.mode == SM_NDIMAGE_CONSTANT && !std::isfinite(opts.cval)) return result;
 
     uint32_t non_trivial = 0;
     uint64_t total_w = 1;
     for (uint32_t d = 0; d < ndim; ++d) {
         if (opts.wshape[d] > 1) ++non_trivial;
-        if (ms_checked_mul(total_w, opts.wshape[d], &total_w) != MS_OK || total_w > (uint64_t{1} << 20)) {
+        if (sm_checked_mul(total_w, opts.wshape[d], &total_w) != SM_OK || total_w > (uint64_t{1} << 20)) {
             return result;
         }
     }
@@ -274,13 +274,13 @@ SeparableDecomposition try_decompose_rank1(const array::Shape& shape, const ms_n
     }
     if (abs_max <= DBL_EPSILON) return result;
 
-    uint64_t strides[MS_MAX_NDIM] = {};
+    uint64_t strides[SM_MAX_NDIM] = {};
     strides[ndim - 1] = 1;
     for (int32_t d = static_cast<int32_t>(ndim) - 2; d >= 0; --d) {
         strides[d] = strides[d + 1] * opts.wshape[d + 1];
     }
 
-    uint32_t pivot_coord[MS_MAX_NDIM] = {};
+    uint32_t pivot_coord[SM_MAX_NDIM] = {};
     {
         uint64_t rem = pivot_idx;
         for (uint32_t d = 0; d < ndim; ++d) {
@@ -303,7 +303,7 @@ SeparableDecomposition try_decompose_rank1(const array::Shape& shape, const ms_n
     }
 
     // Verify rank-1 outer product individually per entry.
-    uint32_t coord[MS_MAX_NDIM] = {};
+    uint32_t coord[SM_MAX_NDIM] = {};
     for (uint64_t i = 0; i < total_w; ++i) {
         double prod = 1.0;
         for (uint32_t d = 0; d < ndim; ++d) prod *= vecs[d][coord[d]];
@@ -339,7 +339,7 @@ SeparableDecomposition try_decompose_rank1(const array::Shape& shape, const ms_n
 
     // Adjust constant cval per pass: cval_k = cval * prod_{m < k} sum(v_m).
     result.cvals.resize(result.axes.size(), opts.cval);
-    if (opts.mode == MS_NDIMAGE_CONSTANT) {
+    if (opts.mode == SM_NDIMAGE_CONSTANT) {
         double prefix_sum = 1.0;
         for (size_t k = 0; k < result.axes.size(); ++k) {
             result.cvals[k] = opts.cval * prefix_sum;
@@ -358,7 +358,7 @@ bool gpu_supports(const Plan& plan) noexcept {
     if (plan.shape.elements > INT32_MAX) return false;
     uint64_t weights = 0;
     for (const Pass& pass : plan.passes) {
-        if (pass.length > MS_NDIMAGE_GPU_MAX_EXTENT || pass.size > MS_NDIMAGE_GPU_MAX_EXTENT) return false;
+        if (pass.length > SM_NDIMAGE_GPU_MAX_EXTENT || pass.size > SM_NDIMAGE_GPU_MAX_EXTENT) return false;
         weights += pass.size;
     }
     return weights <= gpu_max_weights && gpu_tap_elements(plan) <= gpu_max_tap_elements;
@@ -368,70 +368,70 @@ bool gpu_supports_composite(const CompositePlan& plan) noexcept {
     if (plan.shape.elements > INT32_MAX) return false;
     // Boolean composite combine uses logical OR and canonical {0,1} semantics
     // (and 0-pass identity uses != 0), which float32 GPU kernels do not preserve.
-    if (plan.out_dtype == MS_BOOL) return false;
+    if (plan.out_dtype == SM_BOOL) return false;
     uint64_t weights = 0;
     for (const auto& chain : plan.chains) {
         for (const Pass& pass : chain) {
-            if (pass.length > MS_NDIMAGE_GPU_MAX_EXTENT || pass.size > MS_NDIMAGE_GPU_MAX_EXTENT) return false;
+            if (pass.length > SM_NDIMAGE_GPU_MAX_EXTENT || pass.size > SM_NDIMAGE_GPU_MAX_EXTENT) return false;
             weights += pass.size;
         }
     }
     return weights <= gpu_max_weights && composite_tap_elements(plan) <= gpu_max_tap_elements;
 }
-} // namespace ms::detail::ndimage
+} // namespace sm::detail::ndimage
 
-using ms::detail::Error;
+using sm::detail::Error;
 
-ms_status ms_ndimage_separable_filter_to(ms_context* context, const ms_array* input, const ms_ndimage_pass* passes,
+sm_status sm_ndimage_separable_filter_to(sm_context* context, const sm_array* input, const sm_ndimage_pass* passes,
                                          uint32_t count, uint32_t out_dtype,
-                                         const ms_route_options* options,
-                                         ms_array_result* out, ms_route_info* info) {
-    namespace array = ms::detail::array;
-    namespace ndimage = ms::detail::ndimage;
-    namespace router = ms::detail::router;
-    return ms::detail::api(context, [&] {
-        if (!out) throw Error(MS_EINVAL, "null output");
+                                         const sm_route_options* options,
+                                         sm_array_result* out, sm_route_info* info) {
+    namespace array = sm::detail::array;
+    namespace ndimage = sm::detail::ndimage;
+    namespace router = sm::detail::router;
+    return sm::detail::api(context, [&] {
+        if (!out) throw Error(SM_EINVAL, "null output");
         array::check_route_info(info);
         array::check_options(options);
         const ndimage::Plan plan = ndimage::make_plan(input, passes, count, out_dtype);
 
-        ms_route_options route = *options;
+        sm_route_options route = *options;
         if (!ndimage::gpu_supports(plan)) {
-            if (route.execution == MS_EXECUTION_GPU)
-                throw Error(MS_ENOTSUP, "the array or a filter window is too large for the GPU engine");
-            route.execution = MS_EXECUTION_CPU;
+            if (route.execution == SM_EXECUTION_GPU)
+                throw Error(SM_ENOTSUP, "the array or a filter window is too large for the GPU engine");
+            route.execution = SM_EXECUTION_CPU;
         }
         // Strict means SciPy's result. SciPy accumulates float32 arrays in
         // double too, which only the CPU engine reproduces, so here strict
         // keeps every dtype on the CPU unless the caller forces the GPU (the
         // router alone would let float32 arrays cross over).
-        if (route.precision == MS_PRECISION_STRICT && route.execution == MS_EXECUTION_AUTO)
-            route.execution = MS_EXECUTION_CPU;
-        if (route.precision == MS_PRECISION_STRICT && route.execution == MS_EXECUTION_GPU &&
-            plan.out_dtype != MS_FLOAT32)
-            throw Error(MS_ENOTSUP, "strict precision keeps non-float32 outputs on the CPU");
+        if (route.precision == SM_PRECISION_STRICT && route.execution == SM_EXECUTION_AUTO)
+            route.execution = SM_EXECUTION_CPU;
+        if (route.precision == SM_PRECISION_STRICT && route.execution == SM_EXECUTION_GPU &&
+            plan.out_dtype != SM_FLOAT32)
+            throw Error(SM_ENOTSUP, "strict precision keeps non-float32 outputs on the CPU");
         const router::Decision decision =
             router::decide(context, ndimage::family, route, plan.dtype, ndimage::routing_work(plan));
 
-        ms::detail::BufferPtr result;
+        sm::detail::BufferPtr result;
         // The CPU engine accumulates in double whatever the array's dtype.
-        uint32_t engine = plan.shape.elements ? decision.engine : uint32_t{MS_EXECUTION_CPU};
-        uint32_t compute_dtype = MS_FLOAT64;
+        uint32_t engine = plan.shape.elements ? decision.engine : uint32_t{SM_EXECUTION_CPU};
+        uint32_t compute_dtype = SM_FLOAT64;
         std::string reason;
         if (!plan.shape.elements) {
             result = array::allocate(context, 0);
-        } else if (decision.engine == MS_EXECUTION_GPU) {
-#if defined(MS_ENABLE_METAL)
-            const bool allow_fallback = options->execution == MS_EXECUTION_AUTO;
+        } else if (decision.engine == SM_EXECUTION_GPU) {
+#if defined(SM_ENABLE_METAL)
+            const bool allow_fallback = options->execution == SM_EXECUTION_AUTO;
             result = ndimage::run_gpu(context, plan, *input, allow_fallback, reason);
             if (result) {
-                compute_dtype = MS_FLOAT32;
+                compute_dtype = SM_FLOAT32;
             } else {
-                engine = MS_EXECUTION_CPU;
+                engine = SM_EXECUTION_CPU;
                 result = ndimage::run_cpu(context, plan, input->data);
             }
 #else
-            throw Error(MS_ENOTSUP, "GPU execution needs a Metal build");
+            throw Error(SM_ENOTSUP, "GPU execution needs a Metal build");
 #endif
         } else {
             result = ndimage::run_cpu(context, plan, input->data);
@@ -441,52 +441,52 @@ ms_status ms_ndimage_separable_filter_to(ms_context* context, const ms_array* in
     });
 }
 
-ms_status ms_ndimage_separable_filter(ms_context* context, const ms_array* input, const ms_ndimage_pass* passes,
-                                      uint32_t count, const ms_route_options* options,
-                                      ms_array_result* out, ms_route_info* info) {
-    return ms_ndimage_separable_filter_to(context, input, passes, count, 0, options, out, info);
+sm_status sm_ndimage_separable_filter(sm_context* context, const sm_array* input, const sm_ndimage_pass* passes,
+                                      uint32_t count, const sm_route_options* options,
+                                      sm_array_result* out, sm_route_info* info) {
+    return sm_ndimage_separable_filter_to(context, input, passes, count, 0, options, out, info);
 }
 
-ms_status ms_ndimage_dense_filter(ms_context* context, const ms_array* input,
-                                  const ms_ndimage_dense_options* dense_options,
-                                  const ms_route_options* options,
-                                  ms_array_result* out, ms_route_info* info) {
-    namespace array = ms::detail::array;
-    namespace dense = ms::detail::dense_correlate;
-    namespace ndimage = ms::detail::ndimage;
-    namespace router = ms::detail::router;
-    return ms::detail::api(context, [&] {
-        if (!out) throw Error(MS_EINVAL, "null output");
+sm_status sm_ndimage_dense_filter(sm_context* context, const sm_array* input,
+                                  const sm_ndimage_dense_options* dense_options,
+                                  const sm_route_options* options,
+                                  sm_array_result* out, sm_route_info* info) {
+    namespace array = sm::detail::array;
+    namespace dense = sm::detail::dense_correlate;
+    namespace ndimage = sm::detail::ndimage;
+    namespace router = sm::detail::router;
+    return sm::detail::api(context, [&] {
+        if (!out) throw Error(SM_EINVAL, "null output");
         array::check_route_info(info);
         array::check_options(options);
-        if (!dense_options) throw Error(MS_EINVAL, "null dense filter options");
-        if (dense_options->struct_size != sizeof(ms_ndimage_dense_options) ||
-            dense_options->abi_version != MS_NDIMAGE_ABI_VERSION)
-            throw Error(MS_EINVAL, "dense filter options size or ABI version mismatch");
+        if (!dense_options) throw Error(SM_EINVAL, "null dense filter options");
+        if (dense_options->struct_size != sizeof(sm_ndimage_dense_options) ||
+            dense_options->abi_version != SM_NDIMAGE_ABI_VERSION)
+            throw Error(SM_EINVAL, "dense filter options size or ABI version mismatch");
         if (dense_options->reserved[0] || dense_options->reserved[1])
-            throw Error(MS_EINVAL, "dense filter options reserved fields must be zero");
-        if (dense_options->mode > MS_NDIMAGE_CONSTANT) throw Error(MS_EINVAL, "unknown boundary mode");
+            throw Error(SM_EINVAL, "dense filter options reserved fields must be zero");
+        if (dense_options->mode > SM_NDIMAGE_CONSTANT) throw Error(SM_EINVAL, "unknown boundary mode");
 
         const array::Shape shape = array::checked_shape(input);
         if (!array::is_real(input->dtype))
-            throw Error(MS_ENOTSUP, "ndimage filters take real arrays (float, integer, or bool)");
+            throw Error(SM_ENOTSUP, "ndimage filters take real arrays (float, integer, or bool)");
         if (shape.elements && reinterpret_cast<uintptr_t>(input->data) % array::dtype_size(input->dtype))
-            throw Error(MS_EINVAL, "array data is not aligned to its element size");
+            throw Error(SM_EINVAL, "array data is not aligned to its element size");
         const uint32_t out_dtype = ndimage::resolve_out_dtype(input->dtype, dense_options->out_dtype);
         ndimage::check_output_bytes(shape, out_dtype);
-        if (!dense_options->weights) throw Error(MS_EINVAL, "null filter weights");
+        if (!dense_options->weights) throw Error(SM_EINVAL, "null filter weights");
         if (reinterpret_cast<uintptr_t>(dense_options->weights) % alignof(double) != 0)
-            throw Error(MS_EINVAL, "filter weights are not aligned for double");
+            throw Error(SM_EINVAL, "filter weights are not aligned for double");
 
         uint64_t total_w = 1;
         for (uint32_t d = 0; d < shape.ndim; ++d) {
-            if (dense_options->wshape[d] < 1 || dense_options->wshape[d] > MS_NDIMAGE_MAX_WINDOW)
-                throw Error(MS_EINVAL, "filter weight extent must be 1 to 2^30");
+            if (dense_options->wshape[d] < 1 || dense_options->wshape[d] > SM_NDIMAGE_MAX_WINDOW)
+                throw Error(SM_EINVAL, "filter weight extent must be 1 to 2^30");
             const int64_t size = static_cast<int64_t>(dense_options->wshape[d]);
             if (dense_options->origins[d] < -(size / 2) || dense_options->origins[d] > (size - 1) / 2)
-                throw Error(MS_EINVAL, "filter origin must satisfy -(size / 2) <= origin <= (size - 1) / 2");
-            if (ms_checked_mul(total_w, dense_options->wshape[d], &total_w) != MS_OK)
-                throw Error(MS_EOVERFLOW, "filter weight count overflows");
+                throw Error(SM_EINVAL, "filter origin must satisfy -(size / 2) <= origin <= (size - 1) / 2");
+            if (sm_checked_mul(total_w, dense_options->wshape[d], &total_w) != SM_OK)
+                throw Error(SM_EOVERFLOW, "filter weight count overflows");
         }
 
         dense::StencilSpec spec;
@@ -498,7 +498,7 @@ ms_status ms_ndimage_dense_filter(ms_context* context, const ms_array* input,
         spec.cval_real = dense_options->cval;
         spec.cpu_accum = dense::AccumMode::Double;
         spec.prune_zeros = true;
-        spec.weights_dtype = MS_FLOAT64;
+        spec.weights_dtype = SM_FLOAT64;
         spec.weights = dense_options->weights;
         for (uint32_t d = 0; d < shape.ndim; ++d) {
             spec.wshape[d] = dense_options->wshape[d];
@@ -507,8 +507,8 @@ ms_status ms_ndimage_dense_filter(ms_context* context, const ms_array* input,
 
         // In FAST / REFINED (never STRICT), try rank-1 separable decomposition when routing to GPU.
         const bool try_separable = shape.elements > 0 &&
-                                   options->precision != MS_PRECISION_STRICT &&
-                                   options->execution != MS_EXECUTION_CPU &&
+                                   options->precision != SM_PRECISION_STRICT &&
+                                   options->execution != SM_EXECUTION_CPU &&
                                    shape.ndim >= 2;
         if (try_separable) {
             const ndimage::SeparableDecomposition decomp = ndimage::try_decompose_rank1(shape, *dense_options);
@@ -517,12 +517,12 @@ ms_status ms_ndimage_dense_filter(ms_context* context, const ms_array* input,
                 sep_plan.shape = shape;
                 sep_plan.dtype = input->dtype;
                 sep_plan.out_dtype = out_dtype;
-                std::vector<ms_ndimage_pass> raw_passes(decomp.axes.size());
+                std::vector<sm_ndimage_pass> raw_passes(decomp.axes.size());
                 for (size_t k = 0; k < decomp.axes.size(); ++k) {
-                    ms_ndimage_pass& p = raw_passes[k];
+                    sm_ndimage_pass& p = raw_passes[k];
                     p.struct_size = sizeof(p);
-                    p.abi_version = MS_NDIMAGE_ABI_VERSION;
-                    p.kind = MS_NDIMAGE_CORRELATE;
+                    p.abi_version = SM_NDIMAGE_ABI_VERSION;
+                    p.kind = SM_NDIMAGE_CORRELATE;
                     p.axis = decomp.axes[k];
                     p.mode = dense_options->mode;
                     p.origin = decomp.origins[k];
@@ -537,26 +537,26 @@ ms_status ms_ndimage_dense_filter(ms_context* context, const ms_array* input,
                         if (std::fabs(dense_options->weights[i]) > DBL_EPSILON) ++dense_taps;
                     }
                     uint64_t dense_work = 0;
-                    if (ms_checked_mul(shape.elements, std::max<uint64_t>(1, dense_taps), &dense_work) != MS_OK)
+                    if (sm_checked_mul(shape.elements, std::max<uint64_t>(1, dense_taps), &dense_work) != SM_OK)
                         dense_work = UINT64_MAX;
                     const router::Decision decision =
                         router::decide(context, ndimage::dense_family, *options, input->dtype, dense_work);
-                    if (decision.engine == MS_EXECUTION_GPU) {
-#if defined(MS_ENABLE_METAL)
+                    if (decision.engine == SM_EXECUTION_GPU) {
+#if defined(SM_ENABLE_METAL)
                         std::string reason;
                         // Allow the optional rank-1 separable attempt to decline
                         // cleanly into the dense GPU/CPU path if its split factors
                         // or symmetric pair sums overflow float32.
-                        ms::detail::BufferPtr result =
+                        sm::detail::BufferPtr result =
                             ndimage::run_gpu(context, sep_plan, *input, /*allow_cpu_fallback=*/true, reason,
                                              /*dense_safe=*/true);
                         if (result) {
                             array::publish(out, std::move(result), out_dtype, shape);
-                            array::report(info, MS_EXECUTION_GPU, MS_FLOAT32, reason.c_str());
+                            array::report(info, SM_EXECUTION_GPU, SM_FLOAT32, reason.c_str());
                             return;
                         }
 #else
-                        throw Error(MS_ENOTSUP, "GPU execution needs a Metal build");
+                        throw Error(SM_ENOTSUP, "GPU execution needs a Metal build");
 #endif
                     }
                 }
@@ -564,42 +564,42 @@ ms_status ms_ndimage_dense_filter(ms_context* context, const ms_array* input,
         }
 
         const dense::TapTable taps = dense::build_taps(spec);
-        ms_route_options route = *options;
+        sm_route_options route = *options;
         if (!dense::gpu_supports(spec, taps)) {
-            if (route.execution == MS_EXECUTION_GPU)
-                throw Error(MS_ENOTSUP, "the array or filter kernel is too large for the GPU engine");
-            route.execution = MS_EXECUTION_CPU;
+            if (route.execution == SM_EXECUTION_GPU)
+                throw Error(SM_ENOTSUP, "the array or filter kernel is too large for the GPU engine");
+            route.execution = SM_EXECUTION_CPU;
         }
-        if (route.precision == MS_PRECISION_STRICT && route.execution == MS_EXECUTION_AUTO)
-            route.execution = MS_EXECUTION_CPU;
-        if (route.precision == MS_PRECISION_STRICT && route.execution == MS_EXECUTION_GPU &&
-            out_dtype != MS_FLOAT32)
-            throw Error(MS_ENOTSUP, "strict precision keeps non-float32 outputs on the CPU");
+        if (route.precision == SM_PRECISION_STRICT && route.execution == SM_EXECUTION_AUTO)
+            route.execution = SM_EXECUTION_CPU;
+        if (route.precision == SM_PRECISION_STRICT && route.execution == SM_EXECUTION_GPU &&
+            out_dtype != SM_FLOAT32)
+            throw Error(SM_ENOTSUP, "strict precision keeps non-float32 outputs on the CPU");
 
         uint64_t work = 0;
-        if (ms_checked_mul(shape.elements, std::max<uint64_t>(1, taps.taps.size()), &work) != MS_OK)
+        if (sm_checked_mul(shape.elements, std::max<uint64_t>(1, taps.taps.size()), &work) != SM_OK)
             work = UINT64_MAX;
         const router::Decision decision =
             router::decide(context, ndimage::dense_family, route, input->dtype, work);
 
-        ms::detail::BufferPtr result;
-        uint32_t engine = shape.elements ? decision.engine : uint32_t{MS_EXECUTION_CPU};
-        uint32_t compute_dtype = MS_FLOAT64;
+        sm::detail::BufferPtr result;
+        uint32_t engine = shape.elements ? decision.engine : uint32_t{SM_EXECUTION_CPU};
+        uint32_t compute_dtype = SM_FLOAT64;
         std::string reason;
         if (!shape.elements) {
             result = array::allocate(context, 0);
-        } else if (decision.engine == MS_EXECUTION_GPU) {
-#if defined(MS_ENABLE_METAL)
-            const bool allow_fallback = options->execution == MS_EXECUTION_AUTO;
+        } else if (decision.engine == SM_EXECUTION_GPU) {
+#if defined(SM_ENABLE_METAL)
+            const bool allow_fallback = options->execution == SM_EXECUTION_AUTO;
             result = dense::run_gpu(context, spec, taps, *input, allow_fallback, reason);
             if (result) {
-                compute_dtype = MS_FLOAT32;
+                compute_dtype = SM_FLOAT32;
             } else {
-                engine = MS_EXECUTION_CPU;
+                engine = SM_EXECUTION_CPU;
                 result = dense::run_cpu(context, spec, taps, input->data);
             }
 #else
-            throw Error(MS_ENOTSUP, "GPU execution needs a Metal build");
+            throw Error(SM_ENOTSUP, "GPU execution needs a Metal build");
 #endif
         } else {
             result = dense::run_cpu(context, spec, taps, input->data);
@@ -609,53 +609,53 @@ ms_status ms_ndimage_dense_filter(ms_context* context, const ms_array* input,
     });
 }
 
-ms_status ms_ndimage_composite_filter(ms_context* context, const ms_array* input,
-                                      const ms_ndimage_chain* chains, uint32_t chain_count,
+sm_status sm_ndimage_composite_filter(sm_context* context, const sm_array* input,
+                                      const sm_ndimage_chain* chains, uint32_t chain_count,
                                       uint32_t combine_op, uint32_t out_dtype,
-                                      const ms_route_options* options,
-                                      ms_array_result* out, ms_route_info* info) {
-    namespace array = ms::detail::array;
-    namespace ndimage = ms::detail::ndimage;
-    namespace router = ms::detail::router;
-    return ms::detail::api(context, [&] {
-        if (!out) throw Error(MS_EINVAL, "null output");
+                                      const sm_route_options* options,
+                                      sm_array_result* out, sm_route_info* info) {
+    namespace array = sm::detail::array;
+    namespace ndimage = sm::detail::ndimage;
+    namespace router = sm::detail::router;
+    return sm::detail::api(context, [&] {
+        if (!out) throw Error(SM_EINVAL, "null output");
         array::check_route_info(info);
         array::check_options(options);
         const ndimage::CompositePlan plan =
             ndimage::make_composite_plan(input, chains, chain_count, combine_op, out_dtype);
 
-        ms_route_options route = *options;
+        sm_route_options route = *options;
         if (!ndimage::gpu_supports_composite(plan)) {
-            if (route.execution == MS_EXECUTION_GPU)
-                throw Error(MS_ENOTSUP, "the array or a filter window is too large for the GPU engine");
-            route.execution = MS_EXECUTION_CPU;
+            if (route.execution == SM_EXECUTION_GPU)
+                throw Error(SM_ENOTSUP, "the array or a filter window is too large for the GPU engine");
+            route.execution = SM_EXECUTION_CPU;
         }
-        if (route.precision == MS_PRECISION_STRICT && route.execution == MS_EXECUTION_AUTO)
-            route.execution = MS_EXECUTION_CPU;
-        if (route.precision == MS_PRECISION_STRICT && route.execution == MS_EXECUTION_GPU &&
-            plan.out_dtype != MS_FLOAT32)
-            throw Error(MS_ENOTSUP, "strict precision keeps non-float32 outputs on the CPU");
+        if (route.precision == SM_PRECISION_STRICT && route.execution == SM_EXECUTION_AUTO)
+            route.execution = SM_EXECUTION_CPU;
+        if (route.precision == SM_PRECISION_STRICT && route.execution == SM_EXECUTION_GPU &&
+            plan.out_dtype != SM_FLOAT32)
+            throw Error(SM_ENOTSUP, "strict precision keeps non-float32 outputs on the CPU");
         const router::Decision decision =
             router::decide(context, ndimage::family, route, plan.in_dtype, ndimage::composite_routing_work(plan));
 
-        ms::detail::BufferPtr result;
-        uint32_t engine = plan.shape.elements ? decision.engine : uint32_t{MS_EXECUTION_CPU};
-        uint32_t compute_dtype = MS_FLOAT64;
+        sm::detail::BufferPtr result;
+        uint32_t engine = plan.shape.elements ? decision.engine : uint32_t{SM_EXECUTION_CPU};
+        uint32_t compute_dtype = SM_FLOAT64;
         std::string reason;
         if (!plan.shape.elements) {
             result = array::allocate(context, 0);
-        } else if (decision.engine == MS_EXECUTION_GPU) {
-#if defined(MS_ENABLE_METAL)
-            const bool allow_fallback = options->execution == MS_EXECUTION_AUTO;
+        } else if (decision.engine == SM_EXECUTION_GPU) {
+#if defined(SM_ENABLE_METAL)
+            const bool allow_fallback = options->execution == SM_EXECUTION_AUTO;
             result = ndimage::run_gpu_composite(context, plan, *input, allow_fallback, reason);
             if (result) {
-                compute_dtype = MS_FLOAT32;
+                compute_dtype = SM_FLOAT32;
             } else {
-                engine = MS_EXECUTION_CPU;
+                engine = SM_EXECUTION_CPU;
                 result = ndimage::run_cpu_composite(context, plan, input->data);
             }
 #else
-            throw Error(MS_ENOTSUP, "GPU execution needs a Metal build");
+            throw Error(SM_ENOTSUP, "GPU execution needs a Metal build");
 #endif
         } else {
             result = ndimage::run_cpu_composite(context, plan, input->data);

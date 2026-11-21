@@ -1,6 +1,6 @@
 {
   "benchmark": "signal_convolve",
-  "metal_sci": "0.1.0.dev0",
+  "scimetal": "0.1.0.dev0",
   "machine": {
     "cpu": "Apple M1 Ultra",
     "performance_cores": "16",

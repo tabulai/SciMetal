@@ -5,8 +5,8 @@ import os
 import numpy as np
 import pytest
 
-import metal_sci
-from metal_sci import _native
+import scimetal
+from scimetal import _native
 
 
 @pytest.mark.parametrize("source, target", [(np.float64, np.float32), (np.float32, np.float64),
@@ -58,9 +58,9 @@ def test_non_contiguous_and_empty_inputs():
 
 
 def test_unsupported_inputs_decline_or_raise_cleanly():
-    with pytest.raises(metal_sci.NotAccelerated):
+    with pytest.raises(scimetal.NotAccelerated):
         _native.astype(np.zeros(10, dtype=np.float16), np.float32)  # float16 input
-    with pytest.raises(metal_sci.NotAccelerated):
+    with pytest.raises(scimetal.NotAccelerated):
         _native.astype(np.zeros((1,) * 9), np.float32)             # rank 9
     with pytest.raises(ValueError, match="complex"):
         _native.astype(np.zeros(4), np.complex64)                   # real -> complex
@@ -123,7 +123,7 @@ def test_forked_child_falls_through_instead_of_touching_metal():
         try:
             _native.astype(np.zeros(8), np.float32)
             os.write(write, b"ran")
-        except metal_sci.NotAccelerated:
+        except scimetal.NotAccelerated:
             os.write(write, b"declined")
         except BaseException as error:  # pragma: no cover
             os.write(write, repr(error).encode())
@@ -145,12 +145,12 @@ def test_as_native_rejects_non_ndarray_and_handles_unaligned_and_longdouble():
         dtype = np.dtype(np.float64)
         shape = (4,)
 
-    with pytest.raises(metal_sci.NotAccelerated):
+    with pytest.raises(scimetal.NotAccelerated):
         _native.as_native(FakeArray())
 
     assert _native.native_dtype(np.longdouble) is None
     assert _native.native_dtype(np.clongdouble) is None
-    with pytest.raises(metal_sci.NotAccelerated):
+    with pytest.raises(scimetal.NotAccelerated):
         _native.astype(np.ones(4, dtype=np.longdouble), np.float32)
 
     # Unaligned float64 view must be repacked cleanly and match NumPy bit-for-bit.
@@ -188,37 +188,37 @@ def test_precision_warning_as_error_does_not_leak_native_buffers():
         ]
 
     lib = _native.library()
-    lib.ms_context_memory_info.argtypes = [ctypes.c_void_p, ctypes.POINTER(MemoryInfo)]
-    lib.ms_context_memory_info.restype = ctypes.c_int32
+    lib.sm_context_memory_info.argtypes = [ctypes.c_void_p, ctypes.POINTER(MemoryInfo)]
+    lib.sm_context_memory_info.restype = ctypes.c_int32
 
     def owned_count():
         gc.collect()
-        info = MemoryInfo(struct_size=ctypes.sizeof(MemoryInfo), abi_version=_native.MS_RUNTIME_ABI_VERSION)
-        assert lib.ms_context_memory_info(_native.context(), ctypes.byref(info)) == _native.MS_OK
+        info = MemoryInfo(struct_size=ctypes.sizeof(MemoryInfo), abi_version=_native.SM_RUNTIME_ABI_VERSION)
+        assert lib.sm_context_memory_info(_native.context(), ctypes.byref(info)) == _native.SM_OK
         return info.owned_bytes, info.allocation_count
 
-    import metal_sci.fft as mfft
-    import metal_sci.ndimage as mn
-    import metal_sci.signal as msig
+    import scimetal.fft as mfft
+    import scimetal.ndimage as mn
+    import scimetal.signal as msig
 
     # Warm up context and confirm clean baseline.
     _native.astype(np.ones(4, dtype=np.float64), np.float32)
     before = owned_count()
 
-    prev_small = metal_sci._config.small_to_scipy()
-    metal_sci.set_small_inputs("native")
+    prev_small = scimetal._config.small_to_scipy()
+    scimetal.set_small_inputs("native")
     try:
-        with metal_sci.precision("fast"), metal_sci.device("gpu"):
+        with scimetal.precision("fast"), scimetal.device("gpu"):
             with warnings.catch_warnings():
-                warnings.simplefilter("error", metal_sci.PrecisionWarning)
-                with pytest.raises(metal_sci.PrecisionWarning):
+                warnings.simplefilter("error", scimetal.PrecisionWarning)
+                with pytest.raises(scimetal.PrecisionWarning):
                     mn.gaussian_filter(np.ones((16, 16), dtype=np.float64), 1.0)
-                with pytest.raises(metal_sci.PrecisionWarning):
+                with pytest.raises(scimetal.PrecisionWarning):
                     mfft.fft(np.ones(64, dtype=np.complex128))
-                with pytest.raises(metal_sci.PrecisionWarning):
+                with pytest.raises(scimetal.PrecisionWarning):
                     msig.fftconvolve(np.ones(64, dtype=np.float64), np.ones(16, dtype=np.float64))
     finally:
-        metal_sci.set_small_inputs("scipy" if prev_small else "native")
+        scimetal.set_small_inputs("scipy" if prev_small else "native")
 
     assert owned_count() == before
 
@@ -230,30 +230,30 @@ def test_interpreter_shutdown_with_live_native_buffer_and_invalid_env():
 
     root = pathlib.Path(__file__).resolve().parents[2]
     env = dict(os.environ)
-    if not os.environ.get("METAL_SCI_TEST_INSTALLED"):
+    if not os.environ.get("SCIMETAL_TEST_INSTALLED"):
         pp = str(root / "python")
         env["PYTHONPATH"] = os.pathsep.join([pp, env["PYTHONPATH"]]) if env.get("PYTHONPATH") else pp
 
     # Keep a live native buffer until interpreter teardown; stderr must stay clean.
     proc = subprocess.run(
         [sys.executable, "-c",
-         "import numpy as np; from metal_sci import _native; live = _native.astype(np.ones(128), np.float32)"],
+         "import numpy as np; from scimetal import _native; live = _native.astype(np.ones(128), np.float32)"],
         cwd=str(root), env=env, capture_output=True, text=True,
     )
     assert proc.returncode == 0 and proc.stderr == "", proc.stdout + proc.stderr
 
-    # Invalid METAL_SCI_SMALL_INPUTS raises ValueError at import.
-    bad_small = dict(env, METAL_SCI_SMALL_INPUTS="bogus")
+    # Invalid SCIMETAL_SMALL_INPUTS raises ValueError at import.
+    bad_small = dict(env, SCIMETAL_SMALL_INPUTS="bogus")
     p_small = subprocess.run(
-        [sys.executable, "-c", "import metal_sci"],
+        [sys.executable, "-c", "import scimetal"],
         cwd=str(root), env=bad_small, capture_output=True, text=True,
     )
     assert p_small.returncode != 0 and "ValueError" in p_small.stderr
 
-    # Invalid METAL_SCI_MEMORY_LIMIT_GB raises ValueError on context creation.
-    bad_mem = dict(env, METAL_SCI_MEMORY_LIMIT_GB="-5")
+    # Invalid SCIMETAL_MEMORY_LIMIT_GB raises ValueError on context creation.
+    bad_mem = dict(env, SCIMETAL_MEMORY_LIMIT_GB="-5")
     p_mem = subprocess.run(
-        [sys.executable, "-c", "import numpy as np; from metal_sci import _native; _native.astype(np.ones(4), np.float32)"],
+        [sys.executable, "-c", "import numpy as np; from scimetal import _native; _native.astype(np.ones(4), np.float32)"],
         cwd=str(root), env=bad_mem, capture_output=True, text=True,
     )
     assert p_mem.returncode != 0 and "ValueError" in p_mem.stderr

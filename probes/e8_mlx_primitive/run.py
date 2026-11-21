@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""E8 probe driver: one metal-sci kernel, two encoders (standalone / MLX).
+"""E8 probe driver: one SciMetal kernel, two encoders (standalone / MLX).
 
 Usage (builds first, then measures, prints one final ``RESULT {json}`` line):
 

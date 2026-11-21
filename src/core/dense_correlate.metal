@@ -4,7 +4,7 @@
 #include "dense_correlate_kernels.h"
 using namespace metal;
 
-static inline ulong ms_dense_widen(uint b) {
+static inline ulong sm_dense_widen(uint b) {
     const uint sign = b & 0x80000000u;
     const uint e = (b >> 23) & 0xFFu;
     uint m = b & 0x007FFFFFu;
@@ -22,19 +22,19 @@ static inline ulong ms_dense_widen(uint b) {
     return (ulong(hi) << 32) | ulong(m << 29);
 }
 
-static inline void ms_dense_store(device float* dst, uint index, float value) { dst[index] = value; }
-static inline void ms_dense_store(device ulong* dst, uint index, float value) {
-    dst[index] = ms_dense_widen(as_type<uint>(value));
+static inline void sm_dense_store(device float* dst, uint index, float value) { dst[index] = value; }
+static inline void sm_dense_store(device ulong* dst, uint index, float value) {
+    dst[index] = sm_dense_widen(as_type<uint>(value));
 }
-static inline void ms_dense_store(device float2* dst, uint index, float2 value) { dst[index] = value; }
-static inline void ms_dense_store(device ulong2* dst, uint index, float2 value) {
-    dst[index] = ulong2(ms_dense_widen(as_type<uint>(value.x)),
-                        ms_dense_widen(as_type<uint>(value.y)));
+static inline void sm_dense_store(device float2* dst, uint index, float2 value) { dst[index] = value; }
+static inline void sm_dense_store(device ulong2* dst, uint index, float2 value) {
+    dst[index] = ulong2(sm_dense_widen(as_type<uint>(value.x)),
+                        sm_dense_widen(as_type<uint>(value.y)));
 }
 
 // Boundary extension avoiding integer % when pos is in [-L, 2L) (or [-(L-1), 2L-2] for mirror).
 // Returns -1 for CONSTANT mode.
-static inline int ms_dense_extend(int pos, int length, uint mode) {
+static inline int sm_dense_extend(int pos, int length, uint mode) {
     if (pos >= 0 && pos < length) return pos;
     if (mode == 0u) { // nearest
         return pos < 0 ? 0 : length - 1;
@@ -64,14 +64,14 @@ static inline int ms_dense_extend(int pos, int length, uint mode) {
 }
 
 template <typename DstT>
-static inline void ms_dense_correlate_real(constant MSDenseCorrelateParams& p,
+static inline void sm_dense_correlate_real(constant SMDenseCorrelateParams& p,
                                            device const float* src,
                                            device DstT* dst,
-                                           device const MSDenseTap* taps,
+                                           device const SMDenseTap* taps,
                                            uint gid) {
     if (gid >= p.out_elements) return;
     if (p.num_taps == 0u) {
-        ms_dense_store(dst, gid, 0.0f);
+        sm_dense_store(dst, gid, 0.0f);
         return;
     }
     int p_coord[8];
@@ -107,7 +107,7 @@ static inline void ms_dense_correlate_real(constant MSDenseCorrelateParams& p,
             int in_idx = 0;
             bool in_bounds = true;
             for (uint d = 0u; d < p.ndim; ++d) {
-                const int q = ms_dense_extend(p_coord[d] + taps[t].coord[d], int(p.in_shape[d]), p.mode[d]);
+                const int q = sm_dense_extend(p_coord[d] + taps[t].coord[d], int(p.in_shape[d]), p.mode[d]);
                 if (q < 0) {
                     in_bounds = false;
                     break;
@@ -119,18 +119,18 @@ static inline void ms_dense_correlate_real(constant MSDenseCorrelateParams& p,
             acc = (t == 0u) ? (v * w) : fma(v, w, acc);
         }
     }
-    ms_dense_store(dst, gid, acc);
+    sm_dense_store(dst, gid, acc);
 }
 
 template <typename DstT>
-static inline void ms_dense_correlate_complex(constant MSDenseCorrelateParams& p,
+static inline void sm_dense_correlate_complex(constant SMDenseCorrelateParams& p,
                                               device const float2* src,
                                               device DstT* dst,
-                                              device const MSDenseTap* taps,
+                                              device const SMDenseTap* taps,
                                               uint gid) {
     if (gid >= p.out_elements) return;
     if (p.num_taps == 0u) {
-        ms_dense_store(dst, gid, float2(0.0f, 0.0f));
+        sm_dense_store(dst, gid, float2(0.0f, 0.0f));
         return;
     }
     int p_coord[8];
@@ -170,7 +170,7 @@ static inline void ms_dense_correlate_complex(constant MSDenseCorrelateParams& p
             int in_idx = 0;
             bool in_bounds = true;
             for (uint d = 0u; d < p.ndim; ++d) {
-                const int q = ms_dense_extend(p_coord[d] + taps[t].coord[d], int(p.in_shape[d]), p.mode[d]);
+                const int q = sm_dense_extend(p_coord[d] + taps[t].coord[d], int(p.in_shape[d]), p.mode[d]);
                 if (q < 0) {
                     in_bounds = false;
                     break;
@@ -184,35 +184,35 @@ static inline void ms_dense_correlate_complex(constant MSDenseCorrelateParams& p
             acc = (t == 0u) ? prod : (acc + prod);
         }
     }
-    ms_dense_store(dst, gid, acc);
+    sm_dense_store(dst, gid, acc);
 }
 
-kernel void ms_dense_correlate_f32_f32(constant MSDenseCorrelateParams& p [[buffer(0)]],
+kernel void sm_dense_correlate_f32_f32(constant SMDenseCorrelateParams& p [[buffer(0)]],
                                        device const float* src [[buffer(1)]],
                                        device float* dst [[buffer(2)]],
-                                       device const MSDenseTap* taps [[buffer(3)]],
+                                       device const SMDenseTap* taps [[buffer(3)]],
                                        uint gid [[thread_position_in_grid]]) {
-    ms_dense_correlate_real<float>(p, src, dst, taps, gid);
+    sm_dense_correlate_real<float>(p, src, dst, taps, gid);
 }
 
-kernel void ms_dense_correlate_f32_f64(constant MSDenseCorrelateParams& p [[buffer(0)]],
+kernel void sm_dense_correlate_f32_f64(constant SMDenseCorrelateParams& p [[buffer(0)]],
                                        device const float* src [[buffer(1)]],
                                        device ulong* dst [[buffer(2)]],
-                                       device const MSDenseTap* taps [[buffer(3)]],
+                                       device const SMDenseTap* taps [[buffer(3)]],
                                        uint gid [[thread_position_in_grid]]) {
-    ms_dense_correlate_real<ulong>(p, src, dst, taps, gid);
+    sm_dense_correlate_real<ulong>(p, src, dst, taps, gid);
 }
 
 template <typename DstT>
-static inline void ms_dense_correlate2d_real(constant MSDenseCorrelateParams& p,
+static inline void sm_dense_correlate2d_real(constant SMDenseCorrelateParams& p,
                                              device const float* src,
                                              device DstT* dst,
-                                             device const MSDenseTap* taps,
+                                             device const SMDenseTap* taps,
                                              uint2 pos) {
     if (pos.x >= p.out_shape[1] || pos.y >= p.out_shape[0]) return;
     const uint gid = pos.y * p.out_shape[1] + pos.x;
     if (p.num_taps == 0u) {
-        ms_dense_store(dst, gid, 0.0f);
+        sm_dense_store(dst, gid, 0.0f);
         return;
     }
     const int py = int(pos.y);
@@ -233,44 +233,44 @@ static inline void ms_dense_correlate2d_real(constant MSDenseCorrelateParams& p,
         const int sy = int(p.in_stride[0]);
         const int sx = int(p.in_stride[1]);
         for (uint t = 0u; t < p.num_taps; ++t) {
-            const int qy = ms_dense_extend(py + taps[t].coord[0], h, p.mode[0]);
-            const int qx = ms_dense_extend(px + taps[t].coord[1], w, p.mode[1]);
+            const int qy = sm_dense_extend(py + taps[t].coord[0], h, p.mode[0]);
+            const int qx = sm_dense_extend(px + taps[t].coord[1], w, p.mode[1]);
             const float v = (qy >= 0 && qx >= 0) ? src[qy * sy + qx * sx] : p.cval_re;
             const float wt = taps[t].weight_re;
             acc = (t == 0u) ? (v * wt) : fma(v, wt, acc);
         }
     }
-    ms_dense_store(dst, gid, acc);
+    sm_dense_store(dst, gid, acc);
 }
 
-kernel void ms_dense_correlate2d_f32_f32(constant MSDenseCorrelateParams& p [[buffer(0)]],
+kernel void sm_dense_correlate2d_f32_f32(constant SMDenseCorrelateParams& p [[buffer(0)]],
                                          device const float* src [[buffer(1)]],
                                          device float* dst [[buffer(2)]],
-                                         device const MSDenseTap* taps [[buffer(3)]],
+                                         device const SMDenseTap* taps [[buffer(3)]],
                                          uint2 pos [[thread_position_in_grid]]) {
-    ms_dense_correlate2d_real<float>(p, src, dst, taps, pos);
+    sm_dense_correlate2d_real<float>(p, src, dst, taps, pos);
 }
 
-kernel void ms_dense_correlate2d_f32_f64(constant MSDenseCorrelateParams& p [[buffer(0)]],
+kernel void sm_dense_correlate2d_f32_f64(constant SMDenseCorrelateParams& p [[buffer(0)]],
                                          device const float* src [[buffer(1)]],
                                          device ulong* dst [[buffer(2)]],
-                                         device const MSDenseTap* taps [[buffer(3)]],
+                                         device const SMDenseTap* taps [[buffer(3)]],
                                          uint2 pos [[thread_position_in_grid]]) {
-    ms_dense_correlate2d_real<ulong>(p, src, dst, taps, pos);
+    sm_dense_correlate2d_real<ulong>(p, src, dst, taps, pos);
 }
 
-kernel void ms_dense_correlate_c64_c64(constant MSDenseCorrelateParams& p [[buffer(0)]],
+kernel void sm_dense_correlate_c64_c64(constant SMDenseCorrelateParams& p [[buffer(0)]],
                                        device const float2* src [[buffer(1)]],
                                        device float2* dst [[buffer(2)]],
-                                       device const MSDenseTap* taps [[buffer(3)]],
+                                       device const SMDenseTap* taps [[buffer(3)]],
                                        uint gid [[thread_position_in_grid]]) {
-    ms_dense_correlate_complex<float2>(p, src, dst, taps, gid);
+    sm_dense_correlate_complex<float2>(p, src, dst, taps, gid);
 }
 
-kernel void ms_dense_correlate_c64_c128(constant MSDenseCorrelateParams& p [[buffer(0)]],
+kernel void sm_dense_correlate_c64_c128(constant SMDenseCorrelateParams& p [[buffer(0)]],
                                         device const float2* src [[buffer(1)]],
                                         device ulong2* dst [[buffer(2)]],
-                                        device const MSDenseTap* taps [[buffer(3)]],
+                                        device const SMDenseTap* taps [[buffer(3)]],
                                         uint gid [[thread_position_in_grid]]) {
-    ms_dense_correlate_complex<ulong2>(p, src, dst, taps, gid);
+    sm_dense_correlate_complex<ulong2>(p, src, dst, taps, gid);
 }

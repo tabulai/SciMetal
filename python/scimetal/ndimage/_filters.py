@@ -1,7 +1,7 @@
 """Native routes for scipy.ndimage's separable, dense, and composite filters.
 
-Every function here turns its arguments into native filter calls (``ms_ndimage_separable_filter``,
-``ms_ndimage_dense_filter``, or ``ms_ndimage_composite_filter``) matching SciPy's exact
+Every function here turns its arguments into native filter calls (``sm_ndimage_separable_filter``,
+``sm_ndimage_dense_filter``, or ``sm_ndimage_composite_filter``) matching SciPy's exact
 weights, axis order, origins, and boundary modes. A call these routes do not cover raises
 ``NotAccelerated`` before anything is computed, and the ``accelerated`` wrapper
 hands it to SciPy with the caller's arguments untouched. That includes every
@@ -34,7 +34,7 @@ __all__ = ["convolve", "convolve1d", "correlate", "correlate1d", "gaussian_filte
            "gaussian_gradient_magnitude", "gaussian_laplace", "generic_gradient_magnitude",
            "generic_laplace", "laplace", "prewitt", "sobel", "uniform_filter", "uniform_filter1d"]
 
-_trace_var: contextvars.ContextVar[object | None] = contextvars.ContextVar("metal_sci_ndimage_trace", default=None)
+_trace_var: contextvars.ContextVar[object | None] = contextvars.ContextVar("scimetal_ndimage_trace", default=None)
 
 
 class _TraceAbort(BaseException):
@@ -118,7 +118,7 @@ def _input(input, *, allow_trace: bool = False):
         _decline("input is not a plain NumPy array")
     if input.dtype.char not in _REAL_CHARS or not input.dtype.isnative:
         _decline(f"no native filter for dtype {input.dtype}")
-    if not 1 <= input.ndim <= _native.MS_MAX_NDIM or input.size == 0:
+    if not 1 <= input.ndim <= _native.SM_MAX_NDIM or input.size == 0:
         _decline("0-d, empty and more than 8-dimensional arrays go to SciPy")
     if not input.flags.aligned:
         _decline("input data is not aligned")
@@ -263,7 +263,7 @@ def _correlate_pass(ndim: int, weights, axis, mode, cval, origin) -> tuple:
     size = weights.shape[0]
     if origin < -(size // 2) or origin > (size - 1) // 2:
         _decline("invalid origin")
-    if size > _nd.MS_NDIMAGE_MAX_WINDOW:
+    if size > _nd.SM_NDIMAGE_MAX_WINDOW:
         _decline("more weights than the native filter takes")
     return (_nd.CORRELATE, axis, _mode(mode), origin, size, weights, _cval(cval))
 
@@ -276,7 +276,7 @@ def _uniform_pass(ndim: int, size, axis, mode, cval, origin) -> tuple:
         _decline("incorrect filter size")
     if size // 2 + origin < 0 or size // 2 + origin >= size:
         _decline("invalid origin")
-    if size > _nd.MS_NDIMAGE_MAX_WINDOW:
+    if size > _nd.SM_NDIMAGE_MAX_WINDOW:
         _decline("a longer window than the native filter takes")
     return (_nd.UNIFORM, axis, _mode(mode), origin, size, None, _cval(cval))
 
@@ -497,7 +497,7 @@ def _correlate_or_convolve(function: str, input, weights, output, mode, cval, or
     for o, lenw in zip(origins, wshape):
         if o < -(lenw // 2) or o > (lenw - 1) // 2:
             _decline("invalid origin")
-        if lenw > _nd.MS_NDIMAGE_MAX_WINDOW:
+        if lenw > _nd.SM_NDIMAGE_MAX_WINDOW:
             _decline("more weights than the native filter takes")
     mode_code = _mode(mode)
     cval_f = _cval(cval)

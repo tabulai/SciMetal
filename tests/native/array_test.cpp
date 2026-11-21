@@ -1,5 +1,5 @@
 #include "core/array.hpp"
-#include "ms_array.h"
+#include "sm_array.h"
 
 #include <algorithm>
 #include <cfloat>
@@ -20,7 +20,7 @@
         }                                                                                                             \
     } while (0)
 
-using namespace ms::detail;
+using namespace sm::detail;
 
 namespace {
 void test_convert_report_edge_cases() {
@@ -31,7 +31,7 @@ void test_convert_report_edge_cases() {
         report.has_nonfinite = true;
         report.max_finite = 42.0;
         report.max_magnitude = 42.0;
-        array::convert(nullptr, MS_FLOAT64, nullptr, MS_FLOAT32, 0, &report);
+        array::convert(nullptr, SM_FLOAT64, nullptr, SM_FLOAT32, 0, &report);
         CHECK(!report.overflowed && !report.has_nonfinite);
         CHECK(report.max_finite == 0.0 && report.max_magnitude == 0.0);
     }
@@ -49,7 +49,7 @@ void test_convert_report_edge_cases() {
         std::vector<float> dst(count, 0.0f);
         src[count - 1] = (count & 1) ? below_tie : -below_tie;
         array::ConvertReport report;
-        array::convert(src.data(), MS_FLOAT64, dst.data(), MS_FLOAT32, count, &report);
+        array::convert(src.data(), SM_FLOAT64, dst.data(), SM_FLOAT32, count, &report);
         CHECK(!report.overflowed);
         CHECK(!report.has_nonfinite);
         CHECK(report.max_finite == below_tie);
@@ -64,7 +64,7 @@ void test_convert_report_edge_cases() {
         std::vector<float> dst(count, 0.0f);
         src[pos] = (pos & 1) ? -tie : tie;
         array::ConvertReport report;
-        array::convert(src.data(), MS_FLOAT64, dst.data(), MS_FLOAT32, count, &report);
+        array::convert(src.data(), SM_FLOAT64, dst.data(), SM_FLOAT32, count, &report);
         CHECK(report.overflowed);
         CHECK(!report.has_nonfinite);
         CHECK(report.max_finite == tie);
@@ -79,7 +79,7 @@ void test_convert_report_edge_cases() {
         src[31] = -1e39;
         std::vector<float> dst(33, 0.0f);
         array::ConvertReport report;
-        array::convert(src.data(), MS_FLOAT64, dst.data(), MS_FLOAT32, src.size(), &report);
+        array::convert(src.data(), SM_FLOAT64, dst.data(), SM_FLOAT32, src.size(), &report);
         CHECK(report.overflowed);
         CHECK(!report.has_nonfinite);
         CHECK(report.max_finite == 1e39);
@@ -97,7 +97,7 @@ void test_convert_report_edge_cases() {
         src[299999] = -2.5;
         std::vector<float> dst(src.size(), 0.0f);
         array::ConvertReport report;
-        array::convert(src.data(), MS_FLOAT64, dst.data(), MS_FLOAT32, src.size(), &report);
+        array::convert(src.data(), SM_FLOAT64, dst.data(), SM_FLOAT32, src.size(), &report);
         CHECK(!report.overflowed);
         CHECK(report.has_nonfinite);
         CHECK(report.max_finite == 2.5);
@@ -110,7 +110,7 @@ void test_convert_report_edge_cases() {
         std::vector<double> src = {1.0, qnan, -3.5, 2.0, qnan, 0.0, -0.0, 0.5, 1.5};
         std::vector<float> dst(src.size(), 0.0f);
         array::ConvertReport report;
-        array::convert(src.data(), MS_FLOAT64, dst.data(), MS_FLOAT32, src.size(), &report);
+        array::convert(src.data(), SM_FLOAT64, dst.data(), SM_FLOAT32, src.size(), &report);
         CHECK(!report.overflowed);
         CHECK(report.has_nonfinite);
         CHECK(report.max_finite == 3.5);
@@ -123,7 +123,7 @@ void test_convert_report_edge_cases() {
         std::vector<double> src(17, qnan);
         std::vector<float> dst(src.size(), 0.0f);
         array::ConvertReport report;
-        array::convert(src.data(), MS_FLOAT64, dst.data(), MS_FLOAT32, src.size(), &report);
+        array::convert(src.data(), SM_FLOAT64, dst.data(), SM_FLOAT32, src.size(), &report);
         CHECK(!report.overflowed);
         CHECK(report.has_nonfinite);
         CHECK(report.max_finite == 0.0);
@@ -136,7 +136,7 @@ void test_convert_report_edge_cases() {
         std::vector<double> src = {inf, 1e39, -inf, 0.0, 1.0, 2.0, 3.0, 4.0, 5.0};
         std::vector<float> dst(src.size(), 0.0f);
         array::ConvertReport report;
-        array::convert(src.data(), MS_FLOAT64, dst.data(), MS_FLOAT32, src.size(), &report);
+        array::convert(src.data(), SM_FLOAT64, dst.data(), SM_FLOAT32, src.size(), &report);
         CHECK(report.overflowed);
         CHECK(report.has_nonfinite);
         CHECK(report.max_finite == 1e39);
@@ -167,7 +167,7 @@ void test_convert_report_edge_cases() {
                         src[snan_pos_idx] = snan;
                         src[val_pos_idx] = 1e39;
                         array::ConvertReport report;
-                        array::convert(src.data(), MS_FLOAT64, dst.data(), MS_FLOAT32, count, &report);
+                        array::convert(src.data(), SM_FLOAT64, dst.data(), SM_FLOAT32, count, &report);
                         CHECK(report.overflowed && report.has_nonfinite);
                         CHECK(report.max_finite == 1e39);
                         CHECK(report.max_magnitude == 1e39);
@@ -180,7 +180,7 @@ void test_convert_report_edge_cases() {
                         src[snan_pos_idx] = snan;
                         src[val_pos_idx] = 42.5;
                         array::ConvertReport report;
-                        array::convert(src.data(), MS_FLOAT64, dst.data(), MS_FLOAT32, count, &report);
+                        array::convert(src.data(), SM_FLOAT64, dst.data(), SM_FLOAT32, count, &report);
                         CHECK(!report.overflowed && report.has_nonfinite);
                         CHECK(report.max_finite == 42.5);
                         CHECK(report.max_magnitude == 42.5);
@@ -193,7 +193,7 @@ void test_convert_report_edge_cases() {
                         src[snan_pos_idx] = snan;
                         src[val_pos_idx] = inf_val;
                         array::ConvertReport report;
-                        array::convert(src.data(), MS_FLOAT64, dst.data(), MS_FLOAT32, count, &report);
+                        array::convert(src.data(), SM_FLOAT64, dst.data(), SM_FLOAT32, count, &report);
                         CHECK(!report.overflowed && report.has_nonfinite);
                         CHECK(report.max_finite == 1.0);
                         CHECK(std::isinf(report.max_magnitude) && report.max_magnitude > 0.0);
@@ -205,7 +205,7 @@ void test_convert_report_edge_cases() {
                     std::vector<double> src(count, snan);
                     std::vector<float> dst(count, 0.0f);
                     array::ConvertReport report;
-                    array::convert(src.data(), MS_FLOAT64, dst.data(), MS_FLOAT32, count, &report);
+                    array::convert(src.data(), SM_FLOAT64, dst.data(), SM_FLOAT32, count, &report);
                     CHECK(!report.overflowed && report.has_nonfinite);
                     CHECK(report.max_finite == 0.0);
                     CHECK(report.max_magnitude == 0.0);
@@ -220,7 +220,7 @@ void test_convert_report_edge_cases() {
         src[2 * 9 + 1] = -1e39;
         std::vector<float> dst(2 * 10, 0.0f);
         array::ConvertReport report;
-        array::convert(src.data(), MS_COMPLEX128, dst.data(), MS_COMPLEX64, 10, &report);
+        array::convert(src.data(), SM_COMPLEX128, dst.data(), SM_COMPLEX64, 10, &report);
         CHECK(report.overflowed);
         CHECK(!report.has_nonfinite);
         CHECK(report.max_finite == 1e39);
@@ -238,7 +238,7 @@ void test_convert_report_edge_cases() {
         for (size_t i = 0; i < src.size(); ++i) src[i] = specials[i % specials.size()];
         std::vector<float> dst(src.size(), 0.0f);
         array::ConvertReport report;
-        array::convert(src.data(), MS_FLOAT64, dst.data(), MS_FLOAT32, src.size(), &report);
+        array::convert(src.data(), SM_FLOAT64, dst.data(), SM_FLOAT32, src.size(), &report);
         CHECK(report.overflowed && report.has_nonfinite && report.max_finite == 1e39);
         for (size_t i = 0; i < src.size(); ++i) {
             const float ref = static_cast<float>(src[i]);
@@ -252,31 +252,31 @@ void test_convert_report_edge_cases() {
 }
 
 void test_route_info_and_report() {
-    ms_route_info info{};
+    sm_route_info info{};
     info.struct_size = sizeof(info);
-    info.abi_version = MS_ARRAY_ABI_VERSION;
+    info.abi_version = SM_ARRAY_ABI_VERSION;
     array::check_route_info(nullptr);
     array::check_route_info(&info);
 
-    array::report(&info, MS_EXECUTION_GPU, MS_FLOAT32, "");
-    CHECK(info.engine == MS_EXECUTION_GPU && info.compute_dtype == MS_FLOAT32 && info.reason[0] == '\0');
+    array::report(&info, SM_EXECUTION_GPU, SM_FLOAT32, "");
+    CHECK(info.engine == SM_EXECUTION_GPU && info.compute_dtype == SM_FLOAT32 && info.reason[0] == '\0');
 
-    array::report(&info, MS_EXECUTION_CPU, MS_FLOAT64, "float64 overflowed");
-    CHECK(info.engine == MS_EXECUTION_CPU && info.compute_dtype == MS_FLOAT64);
+    array::report(&info, SM_EXECUTION_CPU, SM_FLOAT64, "float64 overflowed");
+    CHECK(info.engine == SM_EXECUTION_CPU && info.compute_dtype == SM_FLOAT64);
     CHECK(std::strcmp(info.reason, "float64 overflowed") == 0);
 
     // Long reason is safely NUL-terminated
     std::string long_reason(400, 'x');
-    array::report(&info, MS_EXECUTION_CPU, MS_FLOAT64, long_reason.c_str());
+    array::report(&info, SM_EXECUTION_CPU, SM_FLOAT64, long_reason.c_str());
     CHECK(std::strlen(info.reason) == sizeof(info.reason) - 1);
 
-    // Bad version/size throws MS_EINVAL
-    ms_route_info bad{};
+    // Bad version/size throws SM_EINVAL
+    sm_route_info bad{};
     bool caught = false;
     try {
         array::check_route_info(&bad);
     } catch (const Error& err) {
-        caught = (err.status == MS_EINVAL);
+        caught = (err.status == SM_EINVAL);
     }
     CHECK(caught);
 }
@@ -285,14 +285,14 @@ void test_integer_bool_convert_and_inexact_report() {
     // 1. ConvertReport::inexact_int boundary at +-((1<<24)-1) vs +-(1<<24) for 32/64-bit ints.
     auto check_signed_inexact = [](auto tag) {
         using T = decltype(tag);
-        const uint32_t dt = std::is_same_v<T, int32_t> ? MS_INT32 : MS_INT64;
+        const uint32_t dt = std::is_same_v<T, int32_t> ? SM_INT32 : SM_INT64;
         for (size_t count : {size_t{5}, size_t{300000}}) {
             std::vector<T> exact(count, static_cast<T>(-3));
             exact[count - 1] = static_cast<T>((int64_t{1} << 24) - 1);
             exact[0] = static_cast<T>(-((int64_t{1} << 24) - 1));
             std::vector<float> dst(count, 0.0f);
             array::ConvertReport r;
-            array::convert(exact.data(), dt, dst.data(), MS_FLOAT32, count, &r);
+            array::convert(exact.data(), dt, dst.data(), SM_FLOAT32, count, &r);
             CHECK(!r.inexact_int && !r.overflowed && !r.has_nonfinite);
             CHECK(r.max_finite == static_cast<double>((int64_t{1} << 24) - 1));
             CHECK(dst[0] == -16777215.0f && dst[count - 1] == 16777215.0f);
@@ -301,7 +301,7 @@ void test_integer_bool_convert_and_inexact_report() {
                 std::vector<T> big(count, static_cast<T>(7));
                 big[count - 1] = static_cast<T>(lim);
                 array::ConvertReport rb;
-                array::convert(big.data(), dt, dst.data(), MS_FLOAT32, count, &rb);
+                array::convert(big.data(), dt, dst.data(), SM_FLOAT32, count, &rb);
                 CHECK(rb.inexact_int && !rb.overflowed && !rb.has_nonfinite);
                 CHECK(rb.max_finite == static_cast<double>(int64_t{1} << 24));
             }
@@ -312,13 +312,13 @@ void test_integer_bool_convert_and_inexact_report() {
 
     auto check_unsigned_inexact = [](auto tag) {
         using T = decltype(tag);
-        const uint32_t dt = std::is_same_v<T, uint32_t> ? MS_UINT32 : MS_UINT64;
+        const uint32_t dt = std::is_same_v<T, uint32_t> ? SM_UINT32 : SM_UINT64;
         for (size_t count : {size_t{5}, size_t{300000}}) {
             std::vector<T> exact(count, static_cast<T>(2));
             exact[count - 1] = static_cast<T>((uint64_t{1} << 24) - 1);
             std::vector<float> dst(count, 0.0f);
             array::ConvertReport r;
-            array::convert(exact.data(), dt, dst.data(), MS_FLOAT32, count, &r);
+            array::convert(exact.data(), dt, dst.data(), SM_FLOAT32, count, &r);
             CHECK(!r.inexact_int && !r.overflowed && !r.has_nonfinite);
             CHECK(r.max_finite == static_cast<double>((uint64_t{1} << 24) - 1));
             CHECK(dst[count - 1] == 16777215.0f);
@@ -326,7 +326,7 @@ void test_integer_bool_convert_and_inexact_report() {
             std::vector<T> big(count, static_cast<T>(2));
             big[count - 1] = static_cast<T>(uint64_t{1} << 24);
             array::ConvertReport rb;
-            array::convert(big.data(), dt, dst.data(), MS_FLOAT32, count, &rb);
+            array::convert(big.data(), dt, dst.data(), SM_FLOAT32, count, &rb);
             CHECK(rb.inexact_int && !rb.overflowed && !rb.has_nonfinite);
             CHECK(rb.max_finite == static_cast<double>(uint64_t{1} << 24));
         }
@@ -339,14 +339,14 @@ void test_integer_bool_convert_and_inexact_report() {
         const uint8_t bvals[] = {0, 1, 2, 255};
         float bf[4]{};
         array::ConvertReport br;
-        array::convert(bvals, MS_BOOL, bf, MS_FLOAT32, 4, &br);
+        array::convert(bvals, SM_BOOL, bf, SM_FLOAT32, 4, &br);
         CHECK(!br.inexact_int && !br.overflowed && !br.has_nonfinite && br.max_finite == 1.0);
         CHECK(bf[0] == 0.0f && bf[1] == 1.0f && bf[2] == 1.0f && bf[3] == 1.0f);
 
         const int16_t i16[] = {-32768, 32767};
         float f16[2]{};
         array::ConvertReport r16;
-        array::convert(i16, MS_INT16, f16, MS_FLOAT32, 2, &r16);
+        array::convert(i16, SM_INT16, f16, SM_FLOAT32, 2, &r16);
         CHECK(!r16.inexact_int && r16.max_finite == 32768.0);
         CHECK(f16[0] == -32768.0f && f16[1] == 32767.0f);
     }
@@ -359,7 +359,7 @@ void test_integer_bool_convert_and_inexact_report() {
         CHECK(expected_i != double_rounded_i);
         float got_i = 0.0f;
         array::ConvertReport ri;
-        array::convert(&i64_val, MS_INT64, &got_i, MS_FLOAT32, 1, &ri);
+        array::convert(&i64_val, SM_INT64, &got_i, SM_FLOAT32, 1, &ri);
         CHECK(ri.inexact_int);
         CHECK(std::memcmp(&got_i, &expected_i, sizeof(float)) == 0);
 
@@ -369,7 +369,7 @@ void test_integer_bool_convert_and_inexact_report() {
         CHECK(expected_u != double_rounded_u);
         float got_u = 0.0f;
         array::ConvertReport ru;
-        array::convert(&u64_val, MS_UINT64, &got_u, MS_FLOAT32, 1, &ru);
+        array::convert(&u64_val, SM_UINT64, &got_u, SM_FLOAT32, 1, &ru);
         CHECK(ru.inexact_int);
         CHECK(std::memcmp(&got_u, &expected_u, sizeof(float)) == 0);
     }
@@ -378,14 +378,14 @@ void test_integer_bool_convert_and_inexact_report() {
     {
         const int8_t neg = -1;
         uint64_t u64 = 0;
-        array::convert(&neg, MS_INT8, &u64, MS_UINT64, 1);
+        array::convert(&neg, SM_INT8, &u64, SM_UINT64, 1);
         CHECK(u64 == UINT64_MAX);
 
         const int64_t big_i64 = (int64_t{1} << 60) + 1234567;
         uint64_t mid_u64 = 0;
         int64_t back_i64 = 0;
-        array::convert(&big_i64, MS_INT64, &mid_u64, MS_UINT64, 1);
-        array::convert(&mid_u64, MS_UINT64, &back_i64, MS_INT64, 1);
+        array::convert(&big_i64, SM_INT64, &mid_u64, SM_UINT64, 1);
+        array::convert(&mid_u64, SM_UINT64, &back_i64, SM_INT64, 1);
         CHECK(back_i64 == big_i64);
     }
 
@@ -395,154 +395,154 @@ void test_integer_bool_convert_and_inexact_report() {
         const double inf = std::numeric_limits<double>::infinity();
         const double fvals[] = {-0.0, 0.5, -1.5, 1e20, -1e20, qnan, -inf};
         uint8_t b_out[7]{};
-        array::convert(fvals, MS_FLOAT64, b_out, MS_BOOL, 7);
+        array::convert(fvals, SM_FLOAT64, b_out, SM_BOOL, 7);
         CHECK(b_out[0] == 0 && b_out[1] == 1 && b_out[2] == 1 && b_out[3] == 1 && b_out[4] == 1 &&
               b_out[5] == 1 && b_out[6] == 1);
 
         uint8_t u8_out[7]{};
-        array::convert(fvals, MS_FLOAT64, u8_out, MS_UINT8, 7);
+        array::convert(fvals, SM_FLOAT64, u8_out, SM_UINT8, 7);
         CHECK(u8_out[0] == 0 && u8_out[1] == 0 && u8_out[2] == 255 && u8_out[3] == 255 && u8_out[4] == 0 &&
               u8_out[5] == 0 && u8_out[6] == 0);
 
         int32_t i32_out[7]{};
-        array::convert(fvals, MS_FLOAT64, i32_out, MS_INT32, 7);
+        array::convert(fvals, SM_FLOAT64, i32_out, SM_INT32, 7);
         CHECK(i32_out[0] == 0 && i32_out[1] == 0 && i32_out[2] == -1 && i32_out[3] == INT32_MAX &&
               i32_out[4] == INT32_MIN && i32_out[5] == 0 && i32_out[6] == INT32_MIN);
 
         uint64_t u64_out[7]{};
-        array::convert(fvals, MS_FLOAT64, u64_out, MS_UINT64, 7);
+        array::convert(fvals, SM_FLOAT64, u64_out, SM_UINT64, 7);
         CHECK(u64_out[0] == 0 && u64_out[1] == 0 && u64_out[2] == 0 && u64_out[3] == UINT64_MAX &&
               u64_out[4] == 0 && u64_out[5] == 0 && u64_out[6] == 0);
     }
 
-    // 5. ms_array_astype across all 13 dtypes through C ABI.
-    ms_context_options copts{};
+    // 5. sm_array_astype across all 13 dtypes through C ABI.
+    sm_context_options copts{};
     copts.struct_size = sizeof(copts);
-    copts.abi_version = MS_RUNTIME_ABI_VERSION;
-    copts.storage_kind = MS_BUFFER_CPU;
+    copts.abi_version = SM_RUNTIME_ABI_VERSION;
+    copts.storage_kind = SM_BUFFER_CPU;
     copts.memory_limit_bytes = uint64_t{64} << 20;
-    ms_context* ctx = nullptr;
-    CHECK(ms_context_create(&copts, &ctx) == MS_OK);
+    sm_context* ctx = nullptr;
+    CHECK(sm_context_create(&copts, &ctx) == SM_OK);
 
-    const uint32_t real_dtypes[] = {MS_FLOAT32, MS_FLOAT64, MS_BOOL,   MS_INT8,   MS_INT16, MS_INT32,
-                                    MS_INT64,   MS_UINT8,   MS_UINT16, MS_UINT32, MS_UINT64};
+    const uint32_t real_dtypes[] = {SM_FLOAT32, SM_FLOAT64, SM_BOOL,   SM_INT8,   SM_INT16, SM_INT32,
+                                    SM_INT64,   SM_UINT8,   SM_UINT16, SM_UINT32, SM_UINT64};
     uint64_t buf_src[4]{};
     buf_src[0] = 0;
     buf_src[1] = 1;
     for (uint32_t sdt : real_dtypes) {
-        ms_array in{};
+        sm_array in{};
         in.struct_size = sizeof(in);
-        in.abi_version = MS_ARRAY_ABI_VERSION;
+        in.abi_version = SM_ARRAY_ABI_VERSION;
         in.data = buf_src;
         in.dtype = sdt;
         in.ndim = 1;
         in.shape[0] = 2;
         for (uint32_t ddt : real_dtypes) {
-            ms_array_result res{};
-            CHECK(ms_array_astype(ctx, &in, ddt, &res) == MS_OK);
+            sm_array_result res{};
+            CHECK(sm_array_astype(ctx, &in, ddt, &res) == SM_OK);
             CHECK(res.dtype == ddt && res.ndim == 1 && res.shape[0] == 2);
-            ms_buffer_release(res.buffer);
+            sm_buffer_release(res.buffer);
         }
-        ms_array_result bad{};
-        CHECK(ms_array_astype(ctx, &in, MS_COMPLEX64, &bad) == MS_EINVAL);
+        sm_array_result bad{};
+        CHECK(sm_array_astype(ctx, &in, SM_COMPLEX64, &bad) == SM_EINVAL);
     }
     const double cvals[4] = {1.0, -2.0, 3.0, 4.0};
-    ms_array cin{};
+    sm_array cin{};
     cin.struct_size = sizeof(cin);
-    cin.abi_version = MS_ARRAY_ABI_VERSION;
+    cin.abi_version = SM_ARRAY_ABI_VERSION;
     cin.data = cvals;
-    cin.dtype = MS_COMPLEX128;
+    cin.dtype = SM_COMPLEX128;
     cin.ndim = 1;
     cin.shape[0] = 2;
-    ms_array_result cres{};
-    CHECK(ms_array_astype(ctx, &cin, MS_COMPLEX64, &cres) == MS_OK);
-    CHECK(cres.dtype == MS_COMPLEX64);
-    ms_buffer_release(cres.buffer);
-    CHECK(ms_array_astype(ctx, &cin, MS_INT32, &cres) == MS_EINVAL);
+    sm_array_result cres{};
+    CHECK(sm_array_astype(ctx, &cin, SM_COMPLEX64, &cres) == SM_OK);
+    CHECK(cres.dtype == SM_COMPLEX64);
+    sm_buffer_release(cres.buffer);
+    CHECK(sm_array_astype(ctx, &cin, SM_INT32, &cres) == SM_EINVAL);
 
-    ms_context_release(ctx);
+    sm_context_release(ctx);
 }
 
 void test_review_regressions() {
-    ms_context_options copts{};
+    sm_context_options copts{};
     copts.struct_size = sizeof(copts);
-    copts.abi_version = MS_RUNTIME_ABI_VERSION;
-    copts.storage_kind = MS_BUFFER_CPU;
+    copts.abi_version = SM_RUNTIME_ABI_VERSION;
+    copts.storage_kind = SM_BUFFER_CPU;
     copts.memory_limit_bytes = uint64_t{64} << 20;
-    ms_context* ctx = nullptr;
-    CHECK(ms_context_create(&copts, &ctx) == MS_OK);
+    sm_context* ctx = nullptr;
+    CHECK(sm_context_create(&copts, &ctx) == SM_OK);
 
     // 1. Scalar alignment check: misaligned pointers rejected, naturally-aligned complex accepted.
     alignas(16) uint8_t storage[64]{};
     {
-        ms_array bad{};
+        sm_array bad{};
         bad.struct_size = sizeof(bad);
-        bad.abi_version = MS_ARRAY_ABI_VERSION;
+        bad.abi_version = SM_ARRAY_ABI_VERSION;
         bad.data = storage + 1;
-        bad.dtype = MS_FLOAT64;
+        bad.dtype = SM_FLOAT64;
         bad.ndim = 1;
         bad.shape[0] = 2;
-        ms_array_result res{};
-        CHECK(ms_array_astype(ctx, &bad, MS_FLOAT32, &res) == MS_EINVAL);
+        sm_array_result res{};
+        CHECK(sm_array_astype(ctx, &bad, SM_FLOAT32, &res) == SM_EINVAL);
 
         bad.data = storage + 2;
-        bad.dtype = MS_FLOAT32;
-        CHECK(ms_array_astype(ctx, &bad, MS_FLOAT64, &res) == MS_EINVAL);
+        bad.dtype = SM_FLOAT32;
+        CHECK(sm_array_astype(ctx, &bad, SM_FLOAT64, &res) == SM_EINVAL);
 
         bad.data = storage + 4;
-        bad.dtype = MS_COMPLEX128;
-        CHECK(ms_array_astype(ctx, &bad, MS_COMPLEX64, &res) == MS_EINVAL);
+        bad.dtype = SM_COMPLEX128;
+        CHECK(sm_array_astype(ctx, &bad, SM_COMPLEX64, &res) == SM_EINVAL);
 
         // Naturally-aligned complex64 (+4) and complex128 (+8) must be accepted.
-        ms_array ok_c64 = bad;
+        sm_array ok_c64 = bad;
         ok_c64.data = storage + 4;
-        ok_c64.dtype = MS_COMPLEX64;
-        CHECK(ms_array_astype(ctx, &ok_c64, MS_COMPLEX128, &res) == MS_OK);
-        ms_buffer_release(res.buffer);
+        ok_c64.dtype = SM_COMPLEX64;
+        CHECK(sm_array_astype(ctx, &ok_c64, SM_COMPLEX128, &res) == SM_OK);
+        sm_buffer_release(res.buffer);
 
-        ms_array ok_c128 = bad;
+        sm_array ok_c128 = bad;
         ok_c128.data = storage + 8;
-        ok_c128.dtype = MS_COMPLEX128;
-        CHECK(ms_array_astype(ctx, &ok_c128, MS_COMPLEX64, &res) == MS_OK);
-        ms_buffer_release(res.buffer);
+        ok_c128.dtype = SM_COMPLEX128;
+        CHECK(sm_array_astype(ctx, &ok_c128, SM_COMPLEX64, &res) == SM_OK);
+        sm_buffer_release(res.buffer);
     }
 
-    // 2. Non-zero ms_route_options::reserved rejected, and report() clears info->reserved[1].
+    // 2. Non-zero sm_route_options::reserved rejected, and report() clears info->reserved[1].
     {
-        ms_route_options ro{};
+        sm_route_options ro{};
         ro.struct_size = sizeof(ro);
-        ro.abi_version = MS_ARRAY_ABI_VERSION;
-        ro.execution = MS_EXECUTION_AUTO;
-        ro.precision = MS_PRECISION_STRICT;
+        ro.abi_version = SM_ARRAY_ABI_VERSION;
+        ro.execution = SM_EXECUTION_AUTO;
+        ro.precision = SM_PRECISION_STRICT;
         ro.reserved[0] = 1;
         bool caught = false;
         try {
             array::check_options(&ro);
-        } catch (const ms::detail::Error& err) {
-            caught = (err.status == MS_EINVAL);
+        } catch (const sm::detail::Error& err) {
+            caught = (err.status == SM_EINVAL);
         }
         CHECK(caught);
 
-        ms_route_info info{};
+        sm_route_info info{};
         info.struct_size = sizeof(info);
-        info.abi_version = MS_ARRAY_ABI_VERSION;
+        info.abi_version = SM_ARRAY_ABI_VERSION;
         info.reserved[0] = 0x1234;
         info.reserved[1] = 0xdeadbeef;
-        array::report(&info, MS_EXECUTION_CPU, MS_FLOAT64, "ok");
+        array::report(&info, SM_EXECUTION_CPU, SM_FLOAT64, "ok");
         CHECK(info.reserved[0] == 0 && info.reserved[1] == 0);
     }
 
-    // 3. ms_array_astype byte-size overflow returns MS_EOVERFLOW.
+    // 3. sm_array_astype byte-size overflow returns SM_EOVERFLOW.
     {
-        ms_array huge{};
+        sm_array huge{};
         huge.struct_size = sizeof(huge);
-        huge.abi_version = MS_ARRAY_ABI_VERSION;
+        huge.abi_version = SM_ARRAY_ABI_VERSION;
         huge.data = storage;
-        huge.dtype = MS_UINT8;
+        huge.dtype = SM_UINT8;
         huge.ndim = 1;
         huge.shape[0] = uint64_t{1} << 61;
-        ms_array_result res{};
-        CHECK(ms_array_astype(ctx, &huge, MS_FLOAT64, &res) == MS_EOVERFLOW);
+        sm_array_result res{};
+        CHECK(sm_array_astype(ctx, &huge, SM_FLOAT64, &res) == SM_EOVERFLOW);
     }
 
     // 4. Single-pass float32/complex64 copy+scan report (small and large NEON paths, including sNaN).
@@ -551,7 +551,7 @@ void test_review_regressions() {
         src[count - 1] = -42.25f;
         std::vector<float> dst(count, 0.0f);
         array::ConvertReport r;
-        array::convert(src.data(), MS_FLOAT32, dst.data(), MS_FLOAT32, count, &r);
+        array::convert(src.data(), SM_FLOAT32, dst.data(), SM_FLOAT32, count, &r);
         CHECK(!r.has_nonfinite && !r.overflowed && !r.inexact_int);
         CHECK(r.max_finite == 42.25);
         CHECK(std::memcmp(src.data(), dst.data(), count * sizeof(float)) == 0);
@@ -561,18 +561,18 @@ void test_review_regressions() {
         std::memcpy(&snan, &snan_bits, sizeof(float));
         src[count / 2] = snan;
         array::ConvertReport rn;
-        array::convert(src.data(), MS_FLOAT32, dst.data(), MS_FLOAT32, count, &rn);
+        array::convert(src.data(), SM_FLOAT32, dst.data(), SM_FLOAT32, count, &rn);
         CHECK(rn.has_nonfinite && rn.max_finite == 42.25);
 
         std::vector<float> csrc(count * 2, 0.5f), cdst(count * 2, 0.0f);
         csrc[2 * (count - 1) + 1] = -128.0f;
         array::ConvertReport cr;
-        array::convert(csrc.data(), MS_COMPLEX64, cdst.data(), MS_COMPLEX64, count, &cr);
+        array::convert(csrc.data(), SM_COMPLEX64, cdst.data(), SM_COMPLEX64, count, &cr);
         CHECK(!cr.has_nonfinite && cr.max_finite == 128.0);
         CHECK(std::memcmp(csrc.data(), cdst.data(), count * 2 * sizeof(float)) == 0);
     }
 
-    ms_context_release(ctx);
+    sm_context_release(ctx);
 }
 
 void run_benchmark() {
@@ -586,12 +586,12 @@ void run_benchmark() {
             array::ConvertReport report;
             array::ConvertReport* rp = with_report ? &report : nullptr;
             // Warmup
-            array::convert(src.data(), MS_FLOAT64, dst.data(), MS_FLOAT32, n, rp);
+            array::convert(src.data(), SM_FLOAT64, dst.data(), SM_FLOAT32, n, rp);
             constexpr int reps = 7;
             std::vector<double> secs(reps);
             for (int r = 0; r < reps; ++r) {
                 const auto t0 = std::chrono::steady_clock::now();
-                array::convert(src.data(), MS_FLOAT64, dst.data(), MS_FLOAT32, n, rp);
+                array::convert(src.data(), SM_FLOAT64, dst.data(), SM_FLOAT32, n, rp);
                 const auto t1 = std::chrono::steady_clock::now();
                 secs[r] = std::chrono::duration<double>(t1 - t0).count();
             }

@@ -1,4 +1,4 @@
-# metal-sci — execution plan
+# SciMetal — execution plan
 
 Hand-off document for whoever (human or AI) continues this project. It is meant to be
 executed top to bottom without access to the conversation that produced it.
@@ -38,7 +38,7 @@ Words used throughout:
 
 ### 1.1 Mission
 
-Build `metal-sci`: a SciPy-compatible library that extracts the largest possible gains
+Build `SciMetal`: a SciPy-compatible library that extracts the largest possible gains
 from Apple Silicon, the GPU in particular. The fundamental algorithms live in native code
 (C++20 behind a C ABI, Metal Shading Language kernels); the public surface is Python and
 mirrors SciPy's namespaces.
@@ -51,7 +51,7 @@ mirrors SciPy's namespaces.
 | float64 policy | **Speed first.** By default float64 inputs are computed in float32 on the GPU and returned as float64 arrays with about 7 significant digits. A strict mode gives SciPy's exact results. |
 | Priorities | **Signal, FFT and image** first, then **linear algebra and sparse**. |
 | Audience | **The user's own machines first** (M1 Ultra, macOS 26, one pinned MLX version). Generalise later. |
-| Name and place | Folder `/Users/tunguz/Programming/metal-sci`, import name `metal_sci`, C prefix `ms_`. |
+| Name and place | Project name **SciMetal**: install and import name `scimetal`, C prefix `sm_`, library `libscimetal.dylib`, environment variables `SCIMETAL_*`. Renamed on 2026-11-21 from `metal-sci` (import `metal_sci`, prefix `ms_`): one word for install and import, and METAL-SCI is already the name of a public Apple Silicon Metal benchmark. The folder on disk is still `/Users/tunguz/Programming/metal-sci`. |
 
 ### 1.3 Hard constraints
 
@@ -113,10 +113,10 @@ The user asked whether to build on MLX or on Metal. The answer, backed by sectio
 
 | Layer | What it is | Where |
 |---|---|---|
-| Runtime | Context, shared-storage Metal buffers, buffer cache, command-buffer `Batch`, embedded metallib, performance-core thread lanes | `src/runtime/`, `include/ms_runtime.h`, `include/ms/detail/` (vendored from metal-arrow, see `src/runtime/PROVENANCE.md`) |
-| Core | Array descriptors, pooled outputs, threaded precision conversion, router | `include/ms_array.h`, `src/core/` |
-| Families | One directory per SciPy area: C ABI, CPU engine, GPU engine, kernels | `include/ms_<family>.h`, `src/<family>/` |
-| Python | ctypes binding, precision/device policy, SciPy-mirroring namespaces with fall-through | `python/metal_sci/` |
+| Runtime | Context, shared-storage Metal buffers, buffer cache, command-buffer `Batch`, embedded metallib, performance-core thread lanes | `src/runtime/`, `include/sm_runtime.h`, `include/sm/detail/` (vendored from metal-arrow, see `src/runtime/PROVENANCE.md`) |
+| Core | Array descriptors, pooled outputs, threaded precision conversion, router | `include/sm_array.h`, `src/core/` |
+| Families | One directory per SciPy area: C ABI, CPU engine, GPU engine, kernels | `include/sm_<family>.h`, `src/<family>/` |
+| Python | ctypes binding, precision/device policy, SciPy-mirroring namespaces with fall-through | `python/scimetal/` |
 | Oracle and tests | Native tests (ctest), Python tests (pytest), SciPy's suite against our routes | `tests/` |
 
 The Python binding is **ctypes over the C ABI**, not a compiled extension module. That is
@@ -126,7 +126,7 @@ hand-off per call, which only matters for inputs small enough to decline anyway.
 
 ### 3.2 Precision policy
 
-`metal_sci.set_precision(...)` or `with metal_sci.precision(...)`:
+`scimetal.set_precision(...)` or `with scimetal.precision(...)`:
 
 - **`fast`** (default): double-precision inputs may run on the GPU engine in single
   precision; results come back in the dtype SciPy would return, with about 6–7 digits.
@@ -136,9 +136,9 @@ hand-off per call, which only matters for inputs small enough to decline anyway.
 - **`strict`**: SciPy's result. Double precision never goes to the GPU. For the ndimage
   filters the CPU engine is bit-identical to SciPy 1.18.1.
 
-`metal_sci.set_device('auto' | 'cpu' | 'gpu')` forces an engine; `gpu` never falls back to
-the CPU engine (it declines to SciPy instead). `metal_sci.explain()` and
-`metal_sci.last_route()` say how the last call ran.
+`scimetal.set_device('auto' | 'cpu' | 'gpu')` forces an engine; `gpu` never falls back to
+the CPU engine (it declines to SciPy instead). `scimetal.explain()` and
+`scimetal.last_route()` say how the last call ran.
 
 **Not building:** float-float ("double-double") emulation on the GPU. By the arithmetic
 it lands at 0.3–1.0 TFLOPS-equivalent against a measured 0.8 TFLOPS for real `dgemm`.
@@ -210,27 +210,27 @@ if the caller keeps every result it is about 53×.
 ```
 metal-sci/
   PLAN.md                     this document
-  CMakeLists.txt              targets ms_contract (static), mscore (shared, libmetalsci.dylib), tests
+  CMakeLists.txt              targets sm_contract (static), smcore (shared, libscimetal.dylib), tests
   CMakePresets.json           presets: metal, metal-asan-ubsan, metal-tsan, cpu-only
-  pyproject.toml              scikit-build-core, py3 wheel that carries libmetalsci.dylib
+  pyproject.toml              scikit-build-core, py3 wheel that carries libscimetal.dylib
   cmake/EmbedMetallib.cmake   metallib -> C array
   include/
-    ms.h, ms_runtime.h        runtime ABI (contexts, buffers)            [vendored]
-    ms_array.h                array descriptors (ABI v2), routing structs (reason[256]), ms_array_astype, ms_array_capabilities
-    ms_ndimage.h              ms_ndimage_separable_filter[_to], ms_ndimage_dense_filter, ms_ndimage_composite_filter
-    ms_fft.h                  ms_fft_transform, ms_fft_plan, ms_fft_auto_min_points
-    ms_signal.h               ms_signal_convolve, ms_signal_fftconvolve, ms_signal_choose_conv_method
-    ms/detail/                storage.hpp, backend.hpp, parallel.hpp     [vendored, private]
+    sm.h, sm_runtime.h        runtime ABI (contexts, buffers)            [vendored]
+    sm_array.h                array descriptors (ABI v2), routing structs (reason[256]), sm_array_astype, sm_array_capabilities
+    sm_ndimage.h              sm_ndimage_separable_filter[_to], sm_ndimage_dense_filter, sm_ndimage_composite_filter
+    sm_fft.h                  sm_fft_transform, sm_fft_plan, sm_fft_auto_min_points
+    sm_signal.h               sm_signal_convolve, sm_signal_fftconvolve, sm_signal_choose_conv_method
+    sm/detail/                storage.hpp, backend.hpp, parallel.hpp     [vendored, private]
   src/
     runtime/                  storage, Metal storage, Batch (metal_compute), pipeline cache  [vendored + local changes]
     core/                     array.{hpp,cpp}, router.{hpp,cpp}, dense_correlate.{hpp,cpp,_gpu.cpp,_kernels.h,.metal}
-    kernels/                  ms_kernels.h (host<->kernel structs), smoke.metal
+    kernels/                  sm_kernels.h (host<->kernel structs), smoke.metal
     ndimage/                  filters.{hpp,cpp}, filters_cpu.cpp, filters_gpu.cpp, ndimage_kernels.h, ndimage_filters.metal
     fft/                      plan.{hpp,cpp}, fft.cpp, engine.hpp, gpu_engine.cpp, fft_kernels.{h,metal}
     signal/                   convolve.cpp, fft_conv.hpp, fft_conv_gpu.cpp, signal_kernels.{h,metal}
     <family>/sources.cmake    appends the family's sources to the build
     <family>/tests.cmake      registers the family's native tests
-  python/metal_sci/
+  python/scimetal/
     __init__.py               policy API, PrecisionWarning, explain(), accelerated(), namespace loading
     _config.py                precision / device / small-input policy
     _dispatch.py              @accelerated decorator, NotAccelerated (with context hook), PrecisionWarning, Route, counters
@@ -241,7 +241,7 @@ metal-sci/
   tests/
     native/                   ctest executables
     python/                   pytest (conftest.py puts python/ on sys.path and keeps small inputs native)
-    oracle/metal_sci_oracle.py   pytest plugin: SciPy's suite against our routes
+    oracle/scimetal_oracle.py   pytest plugin: SciPy's suite against our routes
   bench/                      ndimage_filters.py, fft.py, signal_convolve.py
   probes/                     Phase 0 probes and results
   tools/                      vendor_runtime.sh, vendor_mlx_kernels.sh
@@ -253,26 +253,26 @@ metal-sci/
 
 ### 5.2 What exists
 
-**Runtime (vendored from metal-arrow at commit `f578b4e5`, renamed `ma_` → `ms_`).**
+**Runtime (vendored from metal-arrow at commit `f578b4e5`, renamed `ma_` → `sm_`).**
 Local changes are listed in `src/runtime/PROVENANCE.md`: N-D dispatch grids, indexed
 bindings and function-constant specialisations (needed by MLX's kernels), a per-dispatch
 threadgroup-capacity check, `max_threads_per_group`, performance-core lane count.
 Re-vendor with `tools/vendor_runtime.sh`, then re-apply the listed changes.
 
-**Core.** `ms_array` descriptors (C-contiguous real `float32`/`float64`/`bool`/`int8`–`int64`/`uint8`–`uint64`
-and `complex64`/`complex128`, up to 8 dimensions), `ms_route_options` (execution, precision),
-`ms_route_info` (ABI v3: engine, compute dtype, `reason[256]`), pooled result buffers, single-pass
+**Core.** `sm_array` descriptors (C-contiguous real `float32`/`float64`/`bool`/`int8`–`int64`/`uint8`–`uint64`
+and `complex64`/`complex128`, up to 8 dimensions), `sm_route_options` (execution, precision),
+`sm_route_info` (ABI v3: engine, compute dtype, `reason[256]`), pooled result buffers, single-pass
 NEON threaded `array::convert` (`ConvertReport` tracking `overflowed`, `inexact_int` for `|x| >= 2^24`
 32/64-bit ints, `has_nonfinite`, `max_finite`, `max_magnitude` at `>= 150 GB/s`), a router that picks
 the engine from the policy and a per-family work threshold, and the shared N-D stencil primitive
-`ms::detail::dense_correlate` (CPU + GPU `encode_gpu`, supporting arbitrary `out_shape`, `before[8]`,
+`sm::detail::dense_correlate` (CPU + GPU `encode_gpu`, supporting arbitrary `out_shape`, `before[8]`,
 all real & complex float/int/bool dtypes, `AccumMode`, and zero-tap pruning).
 
-**Python package.** Drop-in namespaces (`import metal_sci.ndimage as ndimage`): a name
+**Python package.** Drop-in namespaces (`import scimetal.ndimage as ndimage`): a name
 with a native route is ours, every other name is SciPy's own object. Sub-modules without
 a file of ours alias SciPy's module object (never a second copy). Results are NumPy
 arrays that view the native buffer and return it to the pool when dropped. Calling any
-fast-mode route on double-precision inputs emits `metal_sci.PrecisionWarning` once by
+fast-mode route on double-precision inputs emits `scimetal.PrecisionWarning` once by
 default (naming `set_precision('strict')` and `warnings.filterwarnings`), and
 `explain()` / `last_route()` surface re-route reasons.
 
@@ -282,8 +282,8 @@ default (naming `set_precision('strict')` and `warnings.filterwarnings`), and
 `gaussian_laplace`, `gaussian_gradient_magnitude`, plus `generic_laplace` /
 `generic_gradient_magnitude` when the derivative callback reduces to supported native
 passes via `ContextVar` symbolic tracing).
-- Three C primitives: `ms_ndimage_separable_filter[_to]`, `ms_ndimage_dense_filter`, and
-  `ms_ndimage_composite_filter` across all 11 real dtypes (`float32`, `float64`, `bool`,
+- Three C primitives: `sm_ndimage_separable_filter[_to]`, `sm_ndimage_dense_filter`, and
+  `sm_ndimage_composite_filter` across all 11 real dtypes (`float32`, `float64`, `bool`,
   `int8`–`int64`, `uint8`–`uint64`), including cross-dtype `output=` among real dtypes.
 - CPU engine: double accumulation, SciPy's operation order and integer/boolean conversion
   rules (`NI_LineBufferToArray` and `CASE_FILTER_OUT_SAFE`, raw `bool` bytes, wrapping
@@ -298,7 +298,7 @@ passes via `ContextVar` symbolic tracing).
   (`ndimage_cast_from_float`) convert output to any real `out_dtype`.
 - Guard rails (A5, A6): `AUTO` double inputs whose narrowing or filter gain overflows float32,
   or 32/64-bit integers with `|x| >= 2^24`, re-route to the CPU engine in `float64` with
-  the reason recorded in `ms_route_info::reason`; forced `GPU` declines (`MS_ENOTSUP`).
+  the reason recorded in `sm_route_info::reason`; forced `GPU` declines (`SM_ENOTSUP`).
 - Routing: separable work = elements × CPU operations over all passes (GPU from `80·2^20`);
   dense work = elements × non-zero taps (GPU from `128·2^20`). `strict` with `auto`
   always uses the CPU engine, float32 and int/bool included.
@@ -307,18 +307,18 @@ passes via `ContextVar` symbolic tracing).
   `longdouble`/non-native-endian dtype, wrong shape, read-only, or partly overlapping;
   complex or non-1-D/rank-incompatible weights; general non-traceable callbacks in
   `generic_*`; anything SciPy would reject; fewer than 16384 elements (unless
-  `metal_sci.set_small_inputs('native')`).
+  `scimetal.set_small_inputs('native')`).
 
 **`fft`** — `fft`, `ifft`, `rfft`, `irfft`, `fft2`, `ifft2`, `fftn`, `ifftn`, `rfft2`,
-`irfft2`, `rfftn`, `irfftn`, plus `metal_sci.fft.register()` (the `scipy.fft` uarray
+`irfft2`, `rfftn`, `irfftn`, plus `scimetal.fft.register()` (the `scipy.fft` uarray
 backend, so unmodified `scipy.fft` calls are accelerated) and
-`metal_sci.fft.prepare(...)` (calls `ms_fft_plan(..., prepare=1)` to pre-compile and
+`scimetal.fft.prepare(...)` (calls `sm_fft_plan(..., prepare=1)` to pre-compile and
 cache GPU pipelines ahead of first use). Internal `fft::Scratch`, `fft::encode(...)`,
 and `fft::next_fast_len(...)` allow `signal` to compose forward/inverse FFT stages into
 its own `gpu::Batch`.
 - GPU engine only, single precision: MLX's kernels (vendored byte for byte), our own
   planner (`src/fft/plan.cpp`, which also ports MLX's plan logic under its MIT notice)
-  and our own strided pass `ms_fft_strided` for long, non-power-of-two and off-axis
+  and our own strided pass `sm_fft_strided` for long, non-power-of-two and off-axis
   transforms. One command buffer per call.
 - Coverage by transform length n:
 
@@ -347,14 +347,14 @@ its own `gpu::Batch`.
   2^17 points or more), the fall-through sets `workers` to the core count. That result
   is double-precision SciPy but **not always bit-identical to single-worker SciPy**:
   pocketfft's SIMD and scalar paths round differently depending on how rows split
-  between threads (about 1e-16 relative). `METAL_SCI_FFT_THREADED_FALLBACK=0` turns the
+  between threads (about 1e-16 relative). `SCIMETAL_FFT_THREADED_FALLBACK=0` turns the
   threading off.
 - Routing is a cost model in nanoseconds (`router::Family{"fft", 375000}`): host cost
   from points × ns/point per axis (scaled for double, real transforms and the threads
   SciPy would use), device cost 0.3 ms + 0.35 ns/point (1.0 for double), and the GPU
   must be predicted 1.25× faster. Crossovers: 2^17 points for a single complex64
   transform, 2^16 for complex128, 170k–500k points for batches. The FFT route has its
-  own small-input floor (`ms_fft_auto_min_points`, 12461 points) and does not consult
+  own small-input floor (`sm_fft_auto_min_points`, 12461 points) and does not consult
   `set_small_inputs`.
 - `unregister()` leaves the uarray backend registered but inert: uarray has no public
   call that removes one backend.
@@ -367,12 +367,12 @@ its own `gpu::Batch`.
 (`full`/`same`/`valid`), `method` (`auto`/`direct`/`fft`), `axes` (for FFT forms), and
 2-D `boundary` (`fill`/`wrap`/`symm`) / `fillvalue` for plain C-contiguous real and
 complex float arrays (`float32`, `float64`, `complex64`, `complex128`, rank 1–8).
-- Direct path (`ms_signal_convolve`): reuses `ms::detail::dense_correlate` (`signal.convolve.direct`
+- Direct path (`sm_signal_convolve`): reuses `sm::detail::dense_correlate` (`signal.convolve.direct`
   crossover `128·2^20`). CPU matches SciPy's `_correlate_nd.cc` / `_firfilter.cc`
   accumulation (preserving `0.0 * NaN = NaN`); GPU runs single precision (`float32` /
   `complex64`) and checks overflow/gain so `AUTO` double inputs that overflow float32
-  re-route to CPU with the reason in `ms_route_info::reason`.
-- FFT & overlap-add GPU path (`ms_signal_fftconvolve`, `fft_gpu_min_elements = 2^15`):
+  re-route to CPU with the reason in `sm_route_info::reason`.
+- FFT & overlap-add GPU path (`sm_signal_fftconvolve`, `fft_gpu_min_elements = 2^15`):
   single precision (`fast` / `refined` only); in one `gpu::Batch` per call, pads/chunks
   inputs (`fft::next_fast_len` and Lambert-W OA block sizing), runs forward FFTs via
   `fft::encode` (r2c on the last axis for real inputs), multiplies spectra, runs the
@@ -381,26 +381,26 @@ complex float arrays (`float32`, `float64`, `complex64`, `complex128`, rank 1–
   overlap_elems > 2^124`).
 - `strict` FFT (`fftconvolve`, `oaconvolve`, `method='fft'`, and double `method='auto'`
   when FFT wins): declines to SciPy wrapped in `scipy.fft.set_workers(performance_cores())`
-  for calls `>= 2^17` elements when `workers == 1` (`METAL_SCI_FFT_THREADED_FALLBACK=0`
+  for calls `>= 2^17` elements when `workers == 1` (`SCIMETAL_FFT_THREADED_FALLBACK=0`
   disables).
 - Declines: integer/boolean/`float16`/`longdouble` inputs, 0-D/empty/rank>8 or
   mismatched-rank inputs, non-NumPy/unaligned/invalid arguments, 1-D/N-D non-`fill`
   boundary or non-zero `fillvalue` outside `convolve2d`/`correlate2d`, and small calls
   below break-even (`2^16` 1-D direct, `2^12` N-D direct, `2^15` FFT unless
-  `metal_sci.set_small_inputs('native')`).
+  `scimetal.set_small_inputs('native')`).
 
 ### 5.3 Measured results of the product so far
 
 Measured 2026-11-19 alone on a quiet M1 Ultra (sequential runs with debug/override
 env vars unset; pre/post `uptime` load averages `1.32–2.85`, recorded in each JSON),
-through the public Python API (plus `ms_array_test --bench`), median of warm runs. Raw
+through the public Python API (plus `sm_array_test --bench`), median of warm runs. Raw
 output: `bench/results/m1-ultra/ndimage_filters.json`,
 `ndimage_filters_calibrate.json`, `fft.json`, `fft_crossover.json`, and
 `signal_convolve.json` (`fft.baseline.json` and `fft_crossover.baseline.json` are
 preserved as M1 pre-A1-optimization baselines; `*.quick.log` are the 2026-11-18
 Phase-1-handoff logs).
 
-**Core `array::convert` (double → single narrowing, `./.build/metal/ms_array_test --bench`):**
+**Core `array::convert` (double → single narrowing, `./.build/metal/sm_array_test --bench`):**
 256 MB: `165.17 GB/s` (`no_report`), `172.14 GB/s` (`with_report`); 1024 MB:
 `170.35 GB/s` (`no_report`), `179.44 GB/s` (`with_report`).
 
@@ -432,12 +432,12 @@ families × 2 dtypes) confirmed `gpu_min_work = 80·2^20`.
 
 Small inputs (CPU engine, either policy): a native call has a floor of about 16 µs
 against SciPy's 3 µs. Break-even is 96²–128² in 2-D and 16384 elements in 1-D, hence the
-16384-element decline in `python/metal_sci/ndimage/_filters.py`.
+16384-element decline in `python/scimetal/ndimage/_filters.py`.
 
 **FFT** (`bench/fft.py`, `uptime` loadavg before `1.77 1.88 2.42`, after `1.69 1.85 2.40`),
 default policy (`fast`, `auto`):
 
-| Case | dtype | metal-sci ms | SciPy 1 worker ms | × | SciPy 16 workers ms | × | first call ms |
+| Case | dtype | SciMetal ms | SciPy 1 worker ms | × | SciPy 16 workers ms | × | first call ms |
 |---|---|---|---|---|---|---|---|
 | fft 2^16 | complex128 | 0.54 | 0.69 | 1.3 | 0.27 | **0.50** | 58.1 |
 | fft 2^16 | complex64 | 0.27 (SciPy) | 0.25 | 0.9 | 0.25 | 0.92 | — |
@@ -459,11 +459,11 @@ What these say, plainly:
   2^20 points. Against SciPy with 16 workers it is 1.1–4.0× faster on these cases, and
   at 2^16 complex128 it is **slower** (0.52×); the router compares against the worker
   count the caller asked for, which defaults to one.
-- Stage A1 profiled the FFT host path (`METAL_SCI_FFT_PROFILE=1`, 15 warm runs on
+- Stage A1 profiled the FFT host path (`SCIMETAL_FFT_PROFILE=1`, 15 warm runs on
   `2^24 complex64`, `four-step 16×32×32×32×32`) and cut non-GPU overhead via a bounded
   `ResolvedPlan` cache keyed by monotonic `Plan::id`, `commandBufferWithUnretainedReferences()`,
   `__restrict__` / `memcpy` load/store fast paths, and `ctz` power-of-2 shifts in
-  `ms_fft_strided`. Remaining non-GPU overhead is ~1.32 ms (~27 µs planning/alloc/encode,
+  `sm_fft_strided`. Remaining non-GPU overhead is ~1.32 ms (~27 µs planning/alloc/encode,
   ~14.5 µs Python wrapper, ~0.95 ms 16-thread `memcpy` copy-in, ~0.32–0.35 ms wait
   overhead, 0.04 µs publish):
 
@@ -480,8 +480,8 @@ What these say, plainly:
   Python (`≤ 4.0 ms`), whereas interleaved CPU/GPU loops (such as `fft.json`'s 5.51 ms
   median / 5.05 ms min) often catch mid-frequency GPU DVFS P-states (`gpu` ~3.55 ms).
 - First calls pay for pipeline compilation (up to ~198 ms for some plans with Metal's
-  on-disk shader cache already warm). `metal_sci.fft.prepare(...)` now calls
-  `ms_fft_plan(..., prepare=1)` ahead of time so subsequent first calls avoid pipeline
+  on-disk shader cache already warm). `scimetal.fft.prepare(...)` now calls
+  `sm_fft_plan(..., prepare=1)` ahead of time so subsequent first calls avoid pipeline
   compilation latency.
 - Quiet FFT crossover sweep (`bench/results/m1-ultra/fft_crossover.json`, 118 rows across
   59 shapes × 2 dtypes) verified against `fft_crossover.baseline.json`: 0 / 118 false
@@ -555,11 +555,11 @@ export PATH=$PWD/.venv/bin:$PATH
 cmake --preset metal && cmake --build --preset metal && ctest --preset metal --output-on-failure
 cmake --preset cpu-only && cmake --build --preset cpu-only && ctest --preset cpu-only --output-on-failure
 .venv/bin/python -m pytest tests/python -q -p no:warnings
-PYTHONPATH=python:tests/oracle .venv/bin/python -m pytest -p metal_sci_oracle \
+PYTHONPATH=python:tests/oracle .venv/bin/python -m pytest -p scimetal_oracle \
     --pyargs scipy.ndimage.tests.test_filters -q -p no:cacheprovider
-PYTHONPATH=python:tests/oracle .venv/bin/python -m pytest -p metal_sci_oracle \
+PYTHONPATH=python:tests/oracle .venv/bin/python -m pytest -p scimetal_oracle \
     --pyargs scipy.fft.tests.test_basic -q -p no:cacheprovider
-PYTHONPATH=python:tests/oracle .venv/bin/python -m pytest -p metal_sci_oracle \
+PYTHONPATH=python:tests/oracle .venv/bin/python -m pytest -p scimetal_oracle \
     --pyargs scipy.signal.tests.test_signaltools -k "Convolve or Correlate or choose_conv_method" -q -p no:cacheprovider
 ```
 
@@ -575,18 +575,18 @@ all families):
 | Check | Result |
 |---|---|
 | `cmake --build --preset metal && ctest --preset metal --output-on-failure` | **20 / 20 passed** in 57.18s (runtime 10, array 1, ndimage 4, fft 3, signal 2; `_validated` targets run under Metal API and shader validation) |
-| `cmake --build --preset cpu-only && ctest --preset cpu-only --output-on-failure` | **11 / 11 passed** in 3.86s (`MS_ENABLE_METAL=OFF`) |
+| `cmake --build --preset cpu-only && ctest --preset cpu-only --output-on-failure` | **11 / 11 passed** in 3.86s (`SM_ENABLE_METAL=OFF`) |
 | `pytest tests/python` | **728 passed** (verified on wheel + `./tools/check.sh`; includes A6 int/bool dtypes, A5 guard rails, A3/A4 ndimage, A2 signal, and strict + forced-GPU oracle tests) |
-| `METAL_SCI_LIBRARY=$PWD/.build/cpu-only/libmetalsci.dylib pytest tests/python` | **371 passed, 357 skipped** in 22.98s (`0 failed, 0 errors`; GPU-only FFT/GPU tests skip cleanly when `not _native.has_metal()`) |
-| `METAL_SCI_FFT_EXHAUSTIVE=1 pytest tests/python/test_fft_sizes.py` | **3 passed in 31.38s** (41,424 calls) |
-| `./.build/metal/ms_array_test --bench` | `with_report` **172.14 GB/s** (256 MB), **179.44 GB/s** (1024 MB) (`no_report` 165.17 / 170.35 GB/s) |
+| `SCIMETAL_LIBRARY=$PWD/.build/cpu-only/libscimetal.dylib pytest tests/python` | **371 passed, 357 skipped** in 22.98s (`0 failed, 0 errors`; GPU-only FFT/GPU tests skip cleanly when `not _native.has_metal()`) |
+| `SCIMETAL_FFT_EXHAUSTIVE=1 pytest tests/python/test_fft_sizes.py` | **3 passed in 31.38s** (41,424 calls) |
+| `./.build/metal/sm_array_test --bench` | `with_report` **172.14 GB/s** (256 MB), **179.44 GB/s** (1024 MB) (`no_report` 165.17 / 170.35 GB/s) |
 | Oracle, filters, strict / auto | **2479 passed** (all 15 functions native > 0, integer fall-throughs eliminated) |
 | Oracle, filters, fast / GPU | **2448 passed, 31 failed** (15 float32 accuracy `< 1e-3` + 16 int intermediate quantization `<= 20`, pinned in `test_ndimage_oracle.py`) |
 | Oracle, FFT, strict / auto | **171 passed**, **0 native calls** (see 5.3) |
 | Oracle, FFT, fast / GPU | **148 passed, 23 failed** (808 native calls; float32 vs float64 tolerances, exercised in `test_fft_oracle.py`) |
 | Oracle, signal, strict / auto | **11690 passed, 1 skipped** (`Convolve or Correlate or choose_conv_method`; 5 CPU-capable functions native > 0, `fftconvolve`/`oaconvolve` fall through to threaded SciPy) |
 | Oracle, signal, fast / GPU | **428 passed, 928 failed** (`-m "not slow"`; all 7 functions native > 0, all failures float32 numerical tolerance, verified in `test_signal_oracle.py`) |
-| Wheel (`macosx_15_0_arm64`) | `MACOSX_DEPLOYMENT_TARGET=15.0 .venv/bin/python -m pip wheel . -w dist --no-deps --no-build-isolation` builds `metal_sci-0.1.0.dev0-py3-none-macosx_15_0_arm64.whl` (2.2 MB, bundles `libmetalsci.dylib`); clean-venv install passes **728 / 728** (`METAL_SCI_TEST_INSTALLED=1`) from `/tmp` |
+| Wheel (`macosx_15_0_arm64`) | `MACOSX_DEPLOYMENT_TARGET=15.0 .venv/bin/python -m pip wheel . -w dist --no-deps --no-build-isolation` builds `scimetal-0.1.0.dev0-py3-none-macosx_15_0_arm64.whl` (2.2 MB, bundles `libscimetal.dylib`); clean-venv install passes **728 / 728** (`SCIMETAL_TEST_INSTALLED=1`) from `/tmp` |
 | `tools/vendor_mlx_kernels.sh --check` | **identical** to MLX 0.31.1 sources (verified 2026-11-19) |
 
 Milestone status:
@@ -611,14 +611,14 @@ Follow the two existing families; `ndimage` is the model for a family with both 
    module. Write down: accepted dtypes, argument validation order and messages, the
    arithmetic's precision and *order of operations*, boundary behaviour, output dtype
    rules, in-place behaviour. The strict engine has to reproduce these.
-2. **C ABI** in `include/ms_<family>.h`: plain C, opaque handles, option structs that
+2. **C ABI** in `include/sm_<family>.h`: plain C, opaque handles, option structs that
    start with `struct_size` and `abi_version` and end with zeroed `reserved` fields,
-   `ms_status` return, results through `ms_array_result`, route through `ms_route_info`.
+   `sm_status` return, results through `sm_array_result`, route through `sm_route_info`.
    Document precisely what each engine computes, its error bound, and every refusal.
 3. **Validation and routing** in `src/<family>/<name>.cpp`: build a `Plan` from the
    arguments (all checks here), compute the router's work figure, call `router::decide`,
    run one engine, `array::publish`, `array::report`. Wrap the body in
-   `ms::detail::api(context, [&] { ... })`, which turns `Error(status, message)` into a
+   `sm::detail::api(context, [&] { ... })`, which turns `Error(status, message)` into a
    status code and stores the message on the context.
 4. **CPU engine** in `src/<family>/<name>_cpu.cpp`: threads through
    `parallel::parallel_for` / `parallel_ranges` (performance cores only); arithmetic in
@@ -628,19 +628,19 @@ Follow the two existing families; `ndimage` is the model for a family with both 
    `commit_and_wait()` once. Bracket with `GpuOperationScope`.
 6. **Kernels** in `src/<family>/<name>.metal`, parameter structs in a `.h` shared with
    the host (`static_assert` the layout on the host side).
-7. **Build wiring**: `src/<family>/sources.cmake` appends to `MS_FAMILY_SOURCES`,
-   `MS_FAMILY_GPU_SOURCES`, `MS_METAL_SOURCES`, `MS_METAL_INCLUDE_DIRS`;
-   `src/<family>/tests.cmake` registers tests with `ms_add_gpu_test(... PLAIN VALIDATED)`.
+7. **Build wiring**: `src/<family>/sources.cmake` appends to `SM_FAMILY_SOURCES`,
+   `SM_FAMILY_GPU_SOURCES`, `SM_METAL_SOURCES`, `SM_METAL_INCLUDE_DIRS`;
+   `src/<family>/tests.cmake` registers tests with `sm_add_gpu_test(... PLAIN VALIDATED)`.
    Do not edit the top-level `CMakeLists.txt` for a family.
 8. **Native test** in `tests/native/<family>_<name>_test.cpp`: CPU engine against an
    independent reference written in the test; forced-GPU engine against the CPU engine
    within the documented bound; argument validation; routing; exactly one command buffer
-   per call (`ms_context_execution_info`); buffer reuse; runs clean under Metal API and
+   per call (`sm_context_execution_info`); buffer reuse; runs clean under Metal API and
    shader validation.
-9. **Python binding** in `python/metal_sci/<family>/_native_<family>.py`: ctypes
+9. **Python binding** in `python/scimetal/<family>/_native_<family>.py`: ctypes
    structs and prototypes declared lazily; raise `NotAccelerated` if the loaded library
    lacks the symbol.
-10. **Python route** in `python/metal_sci/<family>/_<name>.py`: SciPy's exact signature,
+10. **Python route** in `python/scimetal/<family>/_<name>.py`: SciPy's exact signature,
     decorated with `@accelerated("<family>.<function>")`. Validate the way SciPy does and
     **decline instead of raising**, so the exception a caller sees is SciPy's own. Call
     `_native.decline_small(elements, break_even)` with a measured break-even.
@@ -655,15 +655,15 @@ Follow the two existing families; `ndimage` is the model for a family with both 
 
 ### 6.2 C ABI conventions
 
-- Status codes: `MS_OK`, `MS_EINVAL` (caller error), `MS_ENOTSUP` (valid but not handled
-  here: Python turns it into a fall-through), `MS_EOVERFLOW`, `MS_EOOM`, `MS_ETIMEOUT`,
-  `MS_EBACKEND`, `MS_ESTATE` (for example after fork: also a fall-through).
+- Status codes: `SM_OK`, `SM_EINVAL` (caller error), `SM_ENOTSUP` (valid but not handled
+  here: Python turns it into a fall-through), `SM_EOVERFLOW`, `SM_EOOM`, `SM_ETIMEOUT`,
+  `SM_EBACKEND`, `SM_ESTATE` (for example after fork: also a fall-through).
 - Inputs are borrowed C-contiguous host memory, valid for the duration of the call. The
   core never retains input pointers.
-- Results are owned buffers with one retained reference (`ms_array_result.buffer`).
+- Results are owned buffers with one retained reference (`sm_array_result.buffer`).
 - Every struct is versioned. Add fields only by bumping the family's ABI version.
 - No exceptions cross the ABI. No Objective-C or Metal types in public headers.
-- `ms_dtype` currently has four codes (float32, float64, complex64, complex128). Integer
+- `sm_dtype` currently has four codes (float32, float64, complex64, complex128). Integer
   and boolean codes are work package A6.
 
 ### 6.3 CPU engine rules
@@ -687,8 +687,8 @@ Follow the two existing families; `ndimage` is the model for a family with both 
 - Kernels are compiled with `-std=metal3.1 -O2 -fno-fast-math -ffp-contract=off`. Do not
   loosen these: results must not depend on reassociation.
 - Never read or write float64 in a kernel except the final store, which writes the
-  widened bit pattern as `ulong` (see `ms_ndimage_widen`, bit-exact against a C cast).
-- Index arithmetic in kernels is 32-bit. Decline (AUTO → CPU, forced GPU → `MS_ENOTSUP`)
+  widened bit pattern as `ulong` (see `sm_ndimage_widen`, bit-exact against a C cast).
+- Index arithmetic in kernels is 32-bit. Decline (AUTO → CPU, forced GPU → `SM_ENOTSUP`)
   when element counts reach 2^31, and bound every intermediate product.
 - Threadgroup shape matters by 1.5–8×. Measured on 4096²: along the contiguous axis flat
   groups of 256–1024 threads; along a strided axis 32 × 32. Ask the pipeline for its
@@ -699,7 +699,7 @@ Follow the two existing families; `ndimage` is the model for a family with both 
 - A command buffer should not hold the GPU for more than about a second (the window
   server shares it). Split or decline to the CPU above that.
 - Every kernel must run clean under `MTL_DEBUG_LAYER=1 MTL_SHADER_VALIDATION=1`
-  (`ms_add_gpu_test(... VALIDATED)`).
+  (`sm_add_gpu_test(... VALIDATED)`).
 - State an error bound for the GPU engine in the header and test against it. Derive it;
   the first closed-form bound written for the filters was wrong and a property test
   caught it.
@@ -707,7 +707,7 @@ Follow the two existing families; `ndimage` is the model for a family with both 
 ### 6.5 Routing and calibration
 
 - `router::decide(ctx, family, options, input_dtype, work)`: forced CPU → CPU engine in
-  the input's dtype; forced GPU → GPU or `MS_ENOTSUP` (no Metal, or strict with a double
+  the input's dtype; forced GPU → GPU or `SM_ENOTSUP` (no Metal, or strict with a double
   input); AUTO → GPU iff a GPU exists, the policy allows it and `work >= gpu_min_work`.
 - The work unit is the *CPU engine's* cost in its own operations, so that one threshold
   covers the family. Return 0 work for shapes where the GPU would do disproportionately
@@ -716,9 +716,9 @@ Follow the two existing families; `ndimage` is the model for a family with both 
   constant and the measurement that justifies it next to each other in the source.
 - Python declines calls below a measured break-even size before touching the core
   (`_native.decline_small`). The oracle and the test suite switch that off with
-  `metal_sci.set_small_inputs('native')` so small arrays still reach native code.
+  `scimetal.set_small_inputs('native')` so small arrays still reach native code.
 - Thresholds are for `applegpu_g13d` with 16 performance cores. A table keyed by GPU and
-  core count, and `metal_sci.calibrate()`, are work package X1.
+  core count, and `scimetal.calibrate()`, are work package X1.
 
 ### 6.6 Precision rules
 
@@ -784,14 +784,14 @@ ASan was reported to hang at start-up and TSan to crash even for the smallest te
 
 Independent families can be built concurrently by separate agents if:
 
-- each agent owns only `include/ms_<family>.h`, `src/<family>/**`,
-  `tests/native/<family>_*`, `python/metal_sci/<family>/**`,
+- each agent owns only `include/sm_<family>.h`, `src/<family>/**`,
+  `tests/native/<family>_*`, `python/scimetal/<family>/**`,
   `tests/python/test_<family>_*.py`, `bench/<family>*.py`;
-- shared files (`CMakeLists.txt`, `src/core`, `src/runtime`, `python/metal_sci/_*.py`,
+- shared files (`CMakeLists.txt`, `src/core`, `src/runtime`, `python/scimetal/_*.py`,
   `tests/oracle`, `tests/python/conftest.py`) are changed only by the lead, on request;
 - each agent builds in its own tree with only its family:
   `cmake -S . -B .build/<family> -G Ninja -DMS_FAMILIES=<family>` and points Python at it
-  with `METAL_SCI_LIBRARY=$PWD/.build/<family>/libmetalsci.dylib`;
+  with `SCIMETAL_LIBRARY=$PWD/.build/<family>/libscimetal.dylib`;
 - the lead reviews the code (not just the report), integrates, runs the full ladder,
   and re-runs every benchmark alone.
 
@@ -810,7 +810,7 @@ Format: **Goal** / **Scope** / **Design** / **Gate** / **Notes**. Sizes are rela
 
 Small, do first:
 
-- FFT route: use `_native.decline_small` and `metal_sci.set_small_inputs` like ndimage
+- FFT route: use `_native.decline_small` and `scimetal.set_small_inputs` like ndimage
   does, instead of its private floor, so one switch controls small inputs everywhere.
 - `NotAccelerated` should be able to carry keyword overrides for the fall-through (the
   FFT route wants to add `workers=`); today `fft/_basic.py` calls SciPy itself and
@@ -844,8 +844,8 @@ while `fast`/`refined` thread eligible declines (`workers=16`).
    what is not GPU time: for complex64 the input copy is one threaded memcpy of 256 MB
    (about 1.5 ms at measured bandwidth); the output is already a pooled buffer.
 3. Re-run the exhaustive length sweep and the FFT crossover grid in the final state.
-4. Call `ms_fft_plan(..., prepare=1)` from somewhere useful (for example a
-   `metal_sci.fft.prepare(shape, dtype)` helper) so first calls need not pay 50–180 ms.
+4. Call `sm_fft_plan(..., prepare=1)` from somewhere useful (for example a
+   `scimetal.fft.prepare(shape, dtype)` helper) so first calls need not pay 50–180 ms.
 **Gate.** Section 5.4 passes (`15/15` ctest, `369` pytest, `2479` ndimage oracle, `171`
 FFT oracle); gaussian 4096² σ = 3 fast ≤ 3.5 ms (**met**: `3.425 ms` float64 / `2.816 ms`
 float32); FFT 2^24 complex64 ≤ 4 ms through the public API (**reached at boosted GPU
@@ -853,8 +853,8 @@ clock**, `3.82 ms` C++ / `3.93 ms` Python min when `gpu` ~2.51 ms, vs `5.51 ms` 
 `5.05 ms` min in interleaved `bench/fft.py` at mid-DVFS clock `gpu` ~3.55 ms; non-GPU
 overhead cut to ~1.32 ms; full stage breakdown recorded in 5.3, moving on per gate rule).
 **Status.** Done. Quiet benchmarks (`ndimage_filters.json`, `ndimage_filters_calibrate.json`,
-`fft.json`, `fft_crossover.json`), `METAL_SCI_FFT_PROFILE=1` instrumentation,
-`metal_sci.fft.prepare(...)`, `cpu-only` (`8/8`), and `METAL_SCI_FFT_EXHAUSTIVE=1` (`3 passed`,
+`fft.json`, `fft_crossover.json`), `SCIMETAL_FFT_PROFILE=1` instrumentation,
+`scimetal.fft.prepare(...)`, `cpu-only` (`8/8`), and `SCIMETAL_FFT_EXHAUSTIVE=1` (`3 passed`,
 41,424 calls) all passed; crossover thresholds kept (`0 / 118` false negatives).
 
 #### A2. `signal` convolution and correlation (L)
@@ -870,7 +870,7 @@ cannot guarantee exactness above 2^24).
   `_freq_domain_conv`, `_apply_conv_mode`, `_centered`, `_inputs_swap_needed`,
   `_reverse_and_conj`, `_fftconv_faster`, `_np_conv_ok`) and
   `scipy/signal/_correlate_nd.cc`.
-- *FFT method, GPU:* a native `ms_signal_fftconvolve` that, in one command buffer, pads
+- *FFT method, GPU:* a native `sm_signal_fftconvolve` that, in one command buffer, pads
   both inputs to a transform shape the FFT planner likes, runs the forward transforms
   (r2c along the last axis for real inputs), multiplies the spectra in a pointwise
   kernel, runs the inverse and crops to the requested mode. This needs the FFT family's
@@ -954,22 +954,22 @@ dense, and composite filters; CPU `uniform_filter` 4096² size 9 = `3.65 ms` (fl
 - Make `array::convert` (double → single) report, at no extra pass, whether any finite
   value overflowed to infinity and the largest magnitude seen. A call whose narrowing
   overflowed re-routes to the CPU engine and records the reason.
-- A one-time `metal_sci.PrecisionWarning` the first time a double-precision input is
+- A one-time `scimetal.PrecisionWarning` the first time a double-precision input is
   computed in single precision, naming `set_precision('strict')` and how to silence it.
 - `explain()` already reports engine and compute dtype; add the reason for a re-route.
 - Tests: a float64 array with values near 1e39 through every fast route returns finite,
   correct values.
 **Gate.** The tests above, and no measurable slowdown of the narrowing (≥ 150 GB/s).
 **Status.** Done (M1, M5). Overflowing `1e39` float64 inputs re-route to CPU/SciPy with
-`ms_route_info::reason` surfaced in `explain()` / `last_route()`; one-time
-`PrecisionWarning` verified in `test_precision_guard.py`; `ms_array_test --bench`
+`sm_route_info::reason` surfaced in `explain()` / `last_route()`; one-time
+`PrecisionWarning` verified in `test_precision_guard.py`; `sm_array_test --bench`
 `with_report` = `175.17 GB/s` (256 MB), `176.85 GB/s` (1024 MB).
 
 #### A6. Integer and boolean dtypes (M)
 
 **Goal.** Most real images are uint8/uint16; about 1950 of the oracle's filter calls fall
 through for that reason alone.
-**Do.** Extend `ms_dtype` with bool, int8–int64, uint8–uint64 (bump the array ABI
+**Do.** Extend `sm_dtype` with bool, int8–int64, uint8–uint64 (bump the array ABI
 version). Filters: SciPy converts every input to double per line, filters in double and
 casts back with its own rules; read the conversion macros in
 `scipy/ndimage/src/ni_support.h` and `ni_filters.c` and reproduce them exactly in the
@@ -978,7 +978,7 @@ values). GPU: convert to float32 on the way in, and only in `fast`, and only whe
 input range is exactly representable (|x| < 2^24).
 **Gate.** Oracle strict passes with the integer fall-throughs gone; uint8 gaussian 4096²
 strict ≥ 30×.
-**Status.** Done (M1). ABI bumped to `MS_ARRAY_ABI_VERSION = 3u` across `bool` and
+**Status.** Done (M1). ABI bumped to `SM_ARRAY_ABI_VERSION = 3u` across `bool` and
 `int8..64`/`uint8..64`; CPU `ndimage` passes `scipy.ndimage.tests.test_filters` strict
 oracle (**2479 passed**, integer fall-throughs gone) and bit-exact native C++ & Python
 tests across all 15 filters; `uint8` `gaussian_filter` 4096² σ = 3 achieves **38.8×**
@@ -1013,7 +1013,7 @@ with Python + alloc + ctypes handoff erasing gains below `<= 16384`; keeping the
 **Do.**
 - `README.md` at the repo root exists but is minimal; expand it with install, usage,
   the precision policy, the accuracy table and the coverage list
-  (`metal_sci.accelerated()`).
+  (`scimetal.accelerated()`).
 - The wheel builds (`.venv/bin/python -m pip wheel . -w dist --no-deps
   --no-build-isolation`) and works when unpacked outside the tree. Still to do: fix the
   platform tag (it says macOS 26; export `MACOSX_DEPLOYMENT_TARGET=15.0`), install it in
@@ -1021,15 +1021,15 @@ with Python + alloc + ctypes handoff erasing gains below `<= 16384`; keeping the
   `conftest.py` puts `python/` first on `sys.path`; add an environment switch to skip
   that).
 - Verify the `cpu-only` preset end to end, including the Python tests with
-  `METAL_SCI_LIBRARY` pointing at it (they should run the CPU engines and skip GPU
+  `SCIMETAL_LIBRARY` pointing at it (they should run the CPU engines and skip GPU
   cases).
 - `tools/check.sh`: the whole ladder in one command.
 **Gate.** A clean venv with only the wheel installed passes the Python tests.
 **Status.** Done (M1 reached). Expanded `README.md`, created executable `tools/check.sh`
 (with `--wheel`), skipped GPU-only FFT tests cleanly when `not _native.has_metal()`
-(`cpu-only` Python suite **371 passed, 357 skipped**), added `METAL_SCI_TEST_INSTALLED`
+(`cpu-only` Python suite **371 passed, 357 skipped**), added `SCIMETAL_TEST_INSTALLED`
 in `tests/python/conftest.py` and all subprocess `PYTHONPATH` setups, built
-`dist/metal_sci-0.1.0.dev0-py3-none-macosx_15_0_arm64.whl`, and verified **728 passed**
+`dist/scimetal-0.1.0.dev0-py3-none-macosx_15_0_arm64.whl`, and verified **728 passed**
 against the installed wheel inside an isolated venv from `/tmp`.
 
 ### Stage B — Phase 2: signal, FFT and image breadth
@@ -1256,10 +1256,10 @@ shows ≥ 2×. A two-stage GPU eigensolver is out of scope until profiling justi
 #### D1. Types and SpMV (L)
 
 **Design.**
-- `metal_sci.sparse.csr_array` / `csr_matrix` as **subclasses** of SciPy's classes that
+- `scimetal.sparse.csr_array` / `csr_matrix` as **subclasses** of SciPy's classes that
   override the matrix-vector and matrix-matrix products (`_matmul_vector`,
   `_matmul_multivector`), so `isinstance` checks inside SciPy keep working and nothing
-  in SciPy is patched. `metal_sci.sparse.accelerate(A)` re-types an existing matrix
+  in SciPy is patched. `scimetal.sparse.accelerate(A)` re-types an existing matrix
   without copying its arrays.
 - CPU SpMV: threaded CSR with rows partitioned by non-zero count; same per-row
   summation order as `scipy/sparse/sparsetools/csr.h` (`csr_matvec`), so strict is
@@ -1326,7 +1326,7 @@ factorisation, Schur-type algorithms, callback-driven solvers.
 #### X1. Cost-model router and `calibrate()` (M)
 Replace per-family constants with `t_call + n_cb·t_cb + work/rate + bytes/bandwidth`,
 a table keyed by GPU architecture and performance-core count, and
-`metal_sci.calibrate()` that measures and stores a table for the current machine. Do
+`scimetal.calibrate()` that measures and stores a table for the current machine. Do
 this when a second machine enters the picture, not before.
 
 #### X2. MLX bridge (M)
@@ -1338,11 +1338,11 @@ buffer, so there is no extra synchronisation (probe E8, `probes/e8_mlx_primitive
 #### X3. Wrap cache (S)
 Inputs that come back unchanged (the same array filtered with several parameters) can be
 wrapped once and reused. Only for arrays the caller marks read-only, or with an explicit
-`metal_sci.pin(array)`: an unmarked array can change under us.
+`scimetal.pin(array)`: an unmarked array can change under us.
 
 #### X4. Memory behaviour (S)
-The context's limit is half of physical memory (`METAL_SCI_MEMORY_LIMIT_GB`). Add
-`metal_sci.trim()` (calls `ms_context_trim`) and an idle trim. Document that a kept
+The context's limit is half of physical memory (`SCIMETAL_MEMORY_LIMIT_GB`). Add
+`scimetal.trim()` (calls `sm_context_trim`) and an idle trim. Document that a kept
 result holds a page-aligned Metal buffer.
 
 #### X5. Thread safety (S)
@@ -1400,7 +1400,7 @@ of this document, and report to the user with the gates that passed and failed.
 - FFT has no native CPU engine (A7); its coverage gaps are listed in 5.2 (B0); its
   threaded fall-through is not bit-identical to single-worker SciPy; against SciPy with
   16 workers its gain is 1.1–4.0×, and at 2^16 complex128 it loses (0.52×); the 2^31-point
-  limit was exercised only through `ms_fft_plan`, never at real size; under shader
+  limit was exercised only through `sm_fft_plan`, never at real size; under shader
   validation plans use smaller threadgroups, so the validated test covers a reduced set
   of Rader and Bluestein sizes.
 - The Phase 1 gate "SciPy's FFT tests pass in strict" is met only trivially (zero native
@@ -1428,13 +1428,13 @@ of this document, and report to the user with the gates that passed and failed.
 
 1. **Remote.** The repository is local only. Push it somewhere, and where?
 2. **`lstsq`.** The default driver returns singular values, which a fast QR path cannot.
-   Accelerate only `gelsy`, or change the default in `metal_sci.linalg.lstsq`?
+   Accelerate only `gelsy`, or change the default in `scimetal.linalg.lstsq`?
 3. **Warning by default.** Should the one-time `PrecisionWarning` be on by default under
    the speed-first policy?
 4. **Integer images in fast mode.** Compute uint8/uint16 filters in float32 on the GPU
    (exact for these ranges) by default?
 5. **Non-SciPy extras.** NumPy's `A @ B` cannot be intercepted. Offer
-   `metal_sci.extras.matmul` (GPU, 5× `sgemm`, 20× `dgemm`) even though it is not SciPy
+   `scimetal.extras.matmul` (GPU, 5× `sgemm`, 20× `dgemm`) even though it is not SciPy
    API?
 6. **Threaded fall-through.** Declined FFT calls are handed to SciPy with all cores,
    which is faster but not bit-identical to stock SciPy for some shapes. Keep it on by
@@ -1458,16 +1458,16 @@ cmake --preset cpu-only && cmake --build --preset cpu-only && ctest --preset cpu
 # one family in its own tree
 cmake -S . -B .build/ndimage -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DMS_FAMILIES=ndimage
 cmake --build .build/ndimage && ctest --test-dir .build/ndimage --output-on-failure
-METAL_SCI_LIBRARY=$PWD/.build/ndimage/libmetalsci.dylib .venv/bin/python -m pytest tests/python/test_ndimage_filters.py -q
+SCIMETAL_LIBRARY=$PWD/.build/ndimage/libscimetal.dylib .venv/bin/python -m pytest tests/python/test_ndimage_filters.py -q
 
-# Python tests (source tree; finds .build/metal/libmetalsci.dylib)
+# Python tests (source tree; finds .build/metal/libscimetal.dylib)
 .venv/bin/python -m pytest tests/python -q -p no:warnings
 
 # oracle: SciPy's suite against our routes
-PYTHONPATH=python:tests/oracle .venv/bin/python -m pytest -p metal_sci_oracle \
+PYTHONPATH=python:tests/oracle .venv/bin/python -m pytest -p scimetal_oracle \
     --pyargs scipy.ndimage.tests.test_filters -q -p no:cacheprovider
-METAL_SCI_ORACLE_PRECISION=fast METAL_SCI_ORACLE_DEVICE=gpu PYTHONPATH=python:tests/oracle \
-    .venv/bin/python -m pytest -p metal_sci_oracle --pyargs scipy.fft.tests.test_basic -q -p no:cacheprovider
+SCIMETAL_ORACLE_PRECISION=fast SCIMETAL_ORACLE_DEVICE=gpu PYTHONPATH=python:tests/oracle \
+    .venv/bin/python -m pytest -p scimetal_oracle --pyargs scipy.fft.tests.test_basic -q -p no:cacheprovider
 
 # benchmarks (run alone)
 uptime
@@ -1482,33 +1482,33 @@ tools/vendor_runtime.sh                              # then re-apply src/runtime
 tools/vendor_mlx_kernels.sh --check
 ```
 
-Environment variables: `METAL_SCI_LIBRARY` (path to `libmetalsci.dylib`),
-`METAL_SCI_PRECISION`, `METAL_SCI_DEVICE`, `METAL_SCI_SMALL_INPUTS` (`scipy` | `native`),
-`METAL_SCI_MEMORY_LIMIT_GB`, `METAL_SCI_ORACLE_PRECISION`, `METAL_SCI_ORACLE_DEVICE`,
-`METAL_SCI_FFT_THREADED_FALLBACK`, `METAL_SCI_FFT_EXHAUSTIVE`, `METAL_SCI_FFT_PROFILE`.
+Environment variables: `SCIMETAL_LIBRARY` (path to `libscimetal.dylib`),
+`SCIMETAL_PRECISION`, `SCIMETAL_DEVICE`, `SCIMETAL_SMALL_INPUTS` (`scipy` | `native`),
+`SCIMETAL_MEMORY_LIMIT_GB`, `SCIMETAL_ORACLE_PRECISION`, `SCIMETAL_ORACLE_DEVICE`,
+`SCIMETAL_FFT_THREADED_FALLBACK`, `SCIMETAL_FFT_EXHAUSTIVE`, `SCIMETAL_FFT_PROFILE`.
 
 ### 10.2 Python API
 
 ```python
-import metal_sci
-import metal_sci.ndimage as ndimage        # drop-in for scipy.ndimage
-import metal_sci.fft                        # drop-in for scipy.fft
-metal_sci.fft.register()                    # make scipy.fft itself use the native routes
-metal_sci.fft.prepare(shape, dtype, ...)    # pre-compile and cache GPU FFT pipelines
+import scimetal
+import scimetal.ndimage as ndimage        # drop-in for scipy.ndimage
+import scimetal.fft                        # drop-in for scipy.fft
+scimetal.fft.register()                    # make scipy.fft itself use the native routes
+scimetal.fft.prepare(shape, dtype, ...)    # pre-compile and cache GPU FFT pipelines
 
-metal_sci.set_precision("fast" | "refined" | "strict");  with metal_sci.precision("strict"): ...
-metal_sci.set_device("auto" | "cpu" | "gpu");            with metal_sci.device("gpu"): ...
-metal_sci.set_small_inputs("scipy" | "native")
-metal_sci.explain()        # 'ndimage.gaussian_filter: engine=gpu, computed in float32, policy=fast'
-metal_sci.last_route()     # Route(function, engine, compute_dtype, policy, reason)
-metal_sci.accelerated()    # {'fft': [...], 'ndimage': [...]}
+scimetal.set_precision("fast" | "refined" | "strict");  with scimetal.precision("strict"): ...
+scimetal.set_device("auto" | "cpu" | "gpu");            with scimetal.device("gpu"): ...
+scimetal.set_small_inputs("scipy" | "native")
+scimetal.explain()        # 'ndimage.gaussian_filter: engine=gpu, computed in float32, policy=fast'
+scimetal.last_route()     # Route(function, engine, compute_dtype, policy, reason)
+scimetal.accelerated()    # {'fft': [...], 'ndimage': [...]}
 ```
 
-### 10.3 Internal C++ API (namespace `ms::detail`)
+### 10.3 Internal C++ API (namespace `sm::detail`)
 
 ```cpp
 // error handling: every C entry point
-return ms::detail::api(context, [&] { ...; throw Error(MS_EINVAL, "message"); });
+return sm::detail::api(context, [&] { ...; throw Error(SM_EINVAL, "message"); });
 
 // arrays (src/core/array.hpp)
 array::Shape shape = array::checked_shape(input);          // validates the descriptor
@@ -1524,7 +1524,7 @@ array::report(info, engine, compute_dtype);
 constexpr router::Family family{"family.name", gpu_min_work};
 router::Decision d = router::decide(context, family, *options, input_dtype, work);
 
-// threads (include/ms/detail/parallel.hpp): performance cores only
+// threads (include/sm/detail/parallel.hpp): performance cores only
 parallel::parallel_for(count, min_items_per_lane, [&](uint64_t begin, uint64_t end) { ... });
 
 // GPU (src/runtime/metal_compute.hpp)

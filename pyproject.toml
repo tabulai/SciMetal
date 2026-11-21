@@ -3,7 +3,7 @@ requires = ["scikit-build-core>=0.10"]
 build-backend = "scikit_build_core.build"
 
 [project]
-name = "metal-sci"
+name = "scimetal"
 version = "0.1.0.dev0"
 description = "SciPy's API, accelerated on Apple Silicon: Metal GPU kernels and a multithreaded Accelerate/NEON CPU engine"
 readme = "README.md"
@@ -16,14 +16,14 @@ mlx = ["mlx>=0.31"]
 
 [tool.scikit-build]
 minimum-version = "build-system.requires"
-wheel.packages = ["python/metal_sci"]
+wheel.packages = ["python/scimetal"]
 # The Python side talks to the native core through ctypes, so the wheel has no
 # Python ABI dependence: one wheel serves every Python 3.
 wheel.py-api = "py3"
-build.targets = ["mscore"]
+build.targets = ["smcore"]
 install.components = ["python"]
 cmake.build-type = "Release"
 
 [tool.scikit-build.cmake.define]
-MS_ENABLE_METAL = "ON"
+SM_ENABLE_METAL = "ON"
 CMAKE_OSX_DEPLOYMENT_TARGET = "15.0"

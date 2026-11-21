@@ -1,6 +1,6 @@
 // Shared dense N-D correlation primitive: tap builder and threaded CPU engine.
 #include "dense_correlate.hpp"
-#include "ms/detail/parallel.hpp"
+#include "sm/detail/parallel.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -12,7 +12,7 @@
 // Preserve exact FMA contraction matching SciPy's _NI_Correlate on arm64.
 #pragma STDC FP_CONTRACT OFF
 
-namespace ms::detail::dense_correlate {
+namespace sm::detail::dense_correlate {
 namespace {
 
 constexpr uint64_t min_work_per_lane = uint64_t{1} << 17;
@@ -26,7 +26,7 @@ bool overflows_float32(double v) noexcept {
 
 unsigned lanes_for(uint64_t elements, uint64_t taps) {
     uint64_t work = 0;
-    if (ms_checked_mul(elements, std::max<uint64_t>(taps, 1), &work) != MS_OK) work = UINT64_MAX;
+    if (sm_checked_mul(elements, std::max<uint64_t>(taps, 1), &work) != SM_OK) work = UINT64_MAX;
     return static_cast<unsigned>(std::clamp<uint64_t>(work / min_work_per_lane, 1, parallel::hardware_lanes()));
 }
 
@@ -124,7 +124,7 @@ void sweep_interior_real(AccumT* __restrict acc, const SrcT* const* ptrs, const 
 inline void compute_row_bases(const StencilSpec& spec, const TapTable& taps, const int64_t* in_strides,
                               uint64_t row_idx, uint8_t* outer_ok, int64_t* row_bases, int64_t* inner_offsets) {
     const uint32_t ndim = spec.out_shape.ndim;
-    int64_t p_outer[MS_MAX_NDIM] = {};
+    int64_t p_outer[SM_MAX_NDIM] = {};
     if (ndim > 1) {
         uint64_t rem = row_idx;
         for (int32_t d = static_cast<int32_t>(ndim) - 2; d >= 0; --d) {
@@ -164,7 +164,7 @@ void run_real_impl(const StencilSpec& spec, const TapTable& taps, const void* in
     const uint64_t outer_rows = spec.out_shape.elements / inner_u64;
     const size_t num_taps = taps.taps.size();
 
-    int64_t in_strides[MS_MAX_NDIM] = {};
+    int64_t in_strides[SM_MAX_NDIM] = {};
     if (ndim > 0) {
         in_strides[ndim - 1] = 1;
         for (int32_t d = static_cast<int32_t>(ndim) - 2; d >= 0; --d) {
@@ -285,7 +285,7 @@ void run_complex_impl(const StencilSpec& spec, const TapTable& taps, const void*
     const uint64_t outer_rows = spec.out_shape.elements / inner_u64;
     const size_t num_taps = taps.taps.size();
 
-    int64_t in_strides[MS_MAX_NDIM] = {};
+    int64_t in_strides[SM_MAX_NDIM] = {};
     if (ndim > 0) {
         in_strides[ndim - 1] = 1;
         for (int32_t d = static_cast<int32_t>(ndim) - 2; d >= 0; --d) {
@@ -432,18 +432,18 @@ void store_dense_row(uint32_t dst_dtype, const double* __restrict__ acc, void* d
         }
     };
     switch (dst_dtype) {
-    case MS_FLOAT64: run(static_cast<double*>(dst)); break;
-    case MS_FLOAT32: run(static_cast<float*>(dst)); break;
-    case MS_BOOL:
-    case MS_UINT8: run(static_cast<uint8_t*>(dst)); break;
-    case MS_UINT16: run(static_cast<uint16_t*>(dst)); break;
-    case MS_UINT32: run(static_cast<uint32_t*>(dst)); break;
-    case MS_UINT64: run(static_cast<uint64_t*>(dst)); break;
-    case MS_INT8: run(static_cast<int8_t*>(dst)); break;
-    case MS_INT16: run(static_cast<int16_t*>(dst)); break;
-    case MS_INT32: run(static_cast<int32_t*>(dst)); break;
-    case MS_INT64: run(static_cast<int64_t*>(dst)); break;
-    default: throw Error(MS_EINVAL, "unknown dense_correlate output dtype");
+    case SM_FLOAT64: run(static_cast<double*>(dst)); break;
+    case SM_FLOAT32: run(static_cast<float*>(dst)); break;
+    case SM_BOOL:
+    case SM_UINT8: run(static_cast<uint8_t*>(dst)); break;
+    case SM_UINT16: run(static_cast<uint16_t*>(dst)); break;
+    case SM_UINT32: run(static_cast<uint32_t*>(dst)); break;
+    case SM_UINT64: run(static_cast<uint64_t*>(dst)); break;
+    case SM_INT8: run(static_cast<int8_t*>(dst)); break;
+    case SM_INT16: run(static_cast<int16_t*>(dst)); break;
+    case SM_INT32: run(static_cast<int32_t*>(dst)); break;
+    case SM_INT64: run(static_cast<int64_t*>(dst)); break;
+    default: throw Error(SM_EINVAL, "unknown dense_correlate output dtype");
     }
 }
 
@@ -459,7 +459,7 @@ void run_real_int_src(const StencilSpec& spec, const TapTable& taps, const void*
     const uint64_t outer_rows = spec.out_shape.elements / inner_u64;
     const size_t num_taps = taps.taps.size();
 
-    int64_t in_strides[MS_MAX_NDIM] = {};
+    int64_t in_strides[SM_MAX_NDIM] = {};
     if (ndim > 0) {
         in_strides[ndim - 1] = 1;
         for (int32_t d = static_cast<int32_t>(ndim) - 2; d >= 0; --d) {
@@ -556,18 +556,18 @@ void run_real_int_src(const StencilSpec& spec, const TapTable& taps, const void*
 
 void run_real_generic_int(const StencilSpec& spec, const TapTable& taps, const void* input_ptr, void* output_ptr) {
     switch (spec.in_dtype) {
-    case MS_FLOAT64: run_real_int_src<double>(spec, taps, input_ptr, output_ptr); break;
-    case MS_FLOAT32: run_real_int_src<float>(spec, taps, input_ptr, output_ptr); break;
-    case MS_BOOL:
-    case MS_UINT8: run_real_int_src<uint8_t>(spec, taps, input_ptr, output_ptr); break;
-    case MS_UINT16: run_real_int_src<uint16_t>(spec, taps, input_ptr, output_ptr); break;
-    case MS_UINT32: run_real_int_src<uint32_t>(spec, taps, input_ptr, output_ptr); break;
-    case MS_UINT64: run_real_int_src<uint64_t>(spec, taps, input_ptr, output_ptr); break;
-    case MS_INT8: run_real_int_src<int8_t>(spec, taps, input_ptr, output_ptr); break;
-    case MS_INT16: run_real_int_src<int16_t>(spec, taps, input_ptr, output_ptr); break;
-    case MS_INT32: run_real_int_src<int32_t>(spec, taps, input_ptr, output_ptr); break;
-    case MS_INT64: run_real_int_src<int64_t>(spec, taps, input_ptr, output_ptr); break;
-    default: throw Error(MS_EINVAL, "unknown dense_correlate input dtype");
+    case SM_FLOAT64: run_real_int_src<double>(spec, taps, input_ptr, output_ptr); break;
+    case SM_FLOAT32: run_real_int_src<float>(spec, taps, input_ptr, output_ptr); break;
+    case SM_BOOL:
+    case SM_UINT8: run_real_int_src<uint8_t>(spec, taps, input_ptr, output_ptr); break;
+    case SM_UINT16: run_real_int_src<uint16_t>(spec, taps, input_ptr, output_ptr); break;
+    case SM_UINT32: run_real_int_src<uint32_t>(spec, taps, input_ptr, output_ptr); break;
+    case SM_UINT64: run_real_int_src<uint64_t>(spec, taps, input_ptr, output_ptr); break;
+    case SM_INT8: run_real_int_src<int8_t>(spec, taps, input_ptr, output_ptr); break;
+    case SM_INT16: run_real_int_src<int16_t>(spec, taps, input_ptr, output_ptr); break;
+    case SM_INT32: run_real_int_src<int32_t>(spec, taps, input_ptr, output_ptr); break;
+    case SM_INT64: run_real_int_src<int64_t>(spec, taps, input_ptr, output_ptr); break;
+    default: throw Error(SM_EINVAL, "unknown dense_correlate input dtype");
     }
 }
 
@@ -575,21 +575,21 @@ void run_real_generic_int(const StencilSpec& spec, const TapTable& taps, const v
 
 TapTable build_taps(const StencilSpec& spec) {
     const uint32_t ndim = spec.in_shape.ndim;
-    if (ndim < 1 || ndim > MS_MAX_NDIM || spec.out_shape.ndim != ndim)
-        throw Error(MS_EINVAL, "dense_correlate: invalid rank");
-    if (!spec.weights) throw Error(MS_EINVAL, "dense_correlate: null weights");
+    if (ndim < 1 || ndim > SM_MAX_NDIM || spec.out_shape.ndim != ndim)
+        throw Error(SM_EINVAL, "dense_correlate: invalid rank");
+    if (!spec.weights) throw Error(SM_EINVAL, "dense_correlate: null weights");
     (void)array::dtype_size(spec.weights_dtype);
     if (!array::is_float(spec.weights_dtype) && !array::is_complex(spec.weights_dtype))
-        throw Error(MS_EINVAL, "dense_correlate: weights dtype must be floating-point or complex");
+        throw Error(SM_EINVAL, "dense_correlate: weights dtype must be floating-point or complex");
 
     uint64_t w_total = 1;
     for (uint32_t d = 0; d < ndim; ++d) {
-        if (spec.wshape[d] < 1) throw Error(MS_EINVAL, "dense_correlate: weight extent must be >= 1");
-        if (ms_checked_mul(w_total, spec.wshape[d], &w_total) != MS_OK)
-            throw Error(MS_EOVERFLOW, "dense_correlate: weight count overflows");
+        if (spec.wshape[d] < 1) throw Error(SM_EINVAL, "dense_correlate: weight extent must be >= 1");
+        if (sm_checked_mul(w_total, spec.wshape[d], &w_total) != SM_OK)
+            throw Error(SM_EOVERFLOW, "dense_correlate: weight count overflows");
     }
 
-    int64_t in_strides[MS_MAX_NDIM] = {};
+    int64_t in_strides[SM_MAX_NDIM] = {};
     in_strides[ndim - 1] = 1;
     for (int32_t d = static_cast<int32_t>(ndim) - 2; d >= 0; --d) {
         in_strides[d] = in_strides[d + 1] * static_cast<int64_t>(spec.in_shape.dims[d + 1]);
@@ -602,9 +602,9 @@ TapTable build_taps(const StencilSpec& spec) {
     table.is_complex_weights = cw;
     table.taps.reserve(static_cast<size_t>(std::min<uint64_t>(w_total, 4096)));
 
-    uint32_t w_coord[MS_MAX_NDIM] = {};
-    int64_t min_c[MS_MAX_NDIM] = {};
-    int64_t max_c[MS_MAX_NDIM] = {};
+    uint32_t w_coord[SM_MAX_NDIM] = {};
+    int64_t min_c[SM_MAX_NDIM] = {};
+    int64_t max_c[SM_MAX_NDIM] = {};
     bool first_kept = true;
 
     for (uint64_t idx = 0; idx < w_total; ++idx) {
@@ -687,10 +687,10 @@ TapTable build_taps(const StencilSpec& spec) {
     return table;
 }
 
-BufferPtr run_cpu(ms_context* ctx, const StencilSpec& spec, const TapTable& taps, const void* input) {
+BufferPtr run_cpu(sm_context* ctx, const StencilSpec& spec, const TapTable& taps, const void* input) {
     uint64_t out_bytes = 0;
-    if (ms_checked_mul(spec.out_shape.elements, array::dtype_size(spec.out_dtype), &out_bytes) != MS_OK)
-        throw Error(MS_EOVERFLOW, "dense_correlate: output byte size overflows");
+    if (sm_checked_mul(spec.out_shape.elements, array::dtype_size(spec.out_dtype), &out_bytes) != SM_OK)
+        throw Error(SM_EOVERFLOW, "dense_correlate: output byte size overflows");
     BufferPtr result = array::allocate(ctx, out_bytes);
     if (spec.out_shape.elements == 0) return result;
     void* out_ptr = mutable_data(result.get());
@@ -702,7 +702,7 @@ BufferPtr run_cpu(ms_context* ctx, const StencilSpec& spec, const TapTable& taps
         // Only possible if CONSTANT mode everywhere; handle via standard path.
         for (uint32_t d = 0; d < spec.in_shape.ndim; ++d) {
             if (spec.in_shape.dims[d] == 0 && spec.mode[d] != Constant)
-                throw Error(MS_EINVAL, "dense_correlate: empty input with non-constant boundary");
+                throw Error(SM_EINVAL, "dense_correlate: empty input with non-constant boundary");
         }
     }
 
@@ -714,14 +714,14 @@ BufferPtr run_cpu(ms_context* ctx, const StencilSpec& spec, const TapTable& taps
             return result;
         }
         const bool use_f32_accum =
-            spec.cpu_accum == AccumMode::InputDtype && spec.in_dtype == MS_FLOAT32 && spec.out_dtype == MS_FLOAT32;
+            spec.cpu_accum == AccumMode::InputDtype && spec.in_dtype == SM_FLOAT32 && spec.out_dtype == SM_FLOAT32;
         if (use_f32_accum) {
             run_real_impl<float, float, float>(spec, taps, input, out_ptr);
-        } else if (spec.in_dtype == MS_FLOAT32 && spec.out_dtype == MS_FLOAT32) {
+        } else if (spec.in_dtype == SM_FLOAT32 && spec.out_dtype == SM_FLOAT32) {
             run_real_impl<float, float, double>(spec, taps, input, out_ptr);
-        } else if (spec.in_dtype == MS_FLOAT32 && spec.out_dtype == MS_FLOAT64) {
+        } else if (spec.in_dtype == SM_FLOAT32 && spec.out_dtype == SM_FLOAT64) {
             run_real_impl<float, double, double>(spec, taps, input, out_ptr);
-        } else if (spec.in_dtype == MS_FLOAT64 && spec.out_dtype == MS_FLOAT32) {
+        } else if (spec.in_dtype == SM_FLOAT64 && spec.out_dtype == SM_FLOAT32) {
             run_real_impl<double, float, double>(spec, taps, input, out_ptr);
         } else {
             run_real_impl<double, double, double>(spec, taps, input, out_ptr);
@@ -729,7 +729,7 @@ BufferPtr run_cpu(ms_context* ctx, const StencilSpec& spec, const TapTable& taps
         return result;
     }
 
-    if (!out_c) throw Error(MS_EINVAL, "dense_correlate: complex input or weights require complex output");
+    if (!out_c) throw Error(SM_EINVAL, "dense_correlate: complex input or weights require complex output");
     const bool use_f32_accum = spec.cpu_accum == AccumMode::InputDtype && !array::is_double(spec.in_dtype) &&
                                !array::is_double(spec.out_dtype);
     const bool in_d = array::is_double(spec.in_dtype);
@@ -748,7 +748,7 @@ BufferPtr run_cpu(ms_context* ctx, const StencilSpec& spec, const TapTable& taps
         }
     } else {
         if (!array::is_float(spec.in_dtype))
-            throw Error(MS_EINVAL, "dense_correlate: real input for complex output must be floating-point");
+            throw Error(SM_EINVAL, "dense_correlate: real input for complex output must be floating-point");
         if (use_f32_accum) {
             run_complex_impl<false, float, float, float>(spec, taps, input, out_ptr);
         } else if (!in_d && !out_d) {
@@ -764,8 +764,8 @@ BufferPtr run_cpu(ms_context* ctx, const StencilSpec& spec, const TapTable& taps
     return result;
 }
 
-#if !defined(MS_ENABLE_METAL)
+#if !defined(SM_ENABLE_METAL)
 bool gpu_supports(const StencilSpec&, const TapTable&) noexcept { return false; }
 #endif
 
-} // namespace ms::detail::dense_correlate
+} // namespace sm::detail::dense_correlate

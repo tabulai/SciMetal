@@ -25,7 +25,7 @@ inline double now_s() noexcept {
     return std::chrono::duration<double>(clock::now().time_since_epoch()).count();
 }
 
-// Persistent P-core worker pool matching metal-sci's QOS_CLASS_USER_INTERACTIVE scheduling.
+// Persistent P-core worker pool matching SciMetal's QOS_CLASS_USER_INTERACTIVE scheduling.
 class Pool {
 public:
     static constexpr size_t max_threads = 16;

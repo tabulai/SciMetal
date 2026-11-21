@@ -1,13 +1,13 @@
-// scipy.fft-compatible transforms behind the C ABI (ms_fft.h): request
+// scipy.fft-compatible transforms behind the C ABI (sm_fft.h): request
 // checking, routing, the per-axis plans of one call, and the host side of the
 // GPU route (loading rows into a pooled single-precision buffer, storing the
 // result in the precision SciPy returns).
-#include "ms_fft.h"
+#include "sm_fft.h"
 #include "core/array.hpp"
 #include "core/router.hpp"
-#include "ms/detail/parallel.hpp"
+#include "sm/detail/parallel.hpp"
 #include "plan.hpp"
-#if defined(MS_ENABLE_METAL)
+#if defined(SM_ENABLE_METAL)
 #include "engine.hpp"
 #endif
 
@@ -20,9 +20,9 @@
 #include <string>
 #include <vector>
 
-namespace ms::detail::fft {
+namespace sm::detail::fft {
 namespace {
-// Routing. MS_EXECUTION_AUTO takes the GPU when it is predicted to beat the
+// Routing. SM_EXECUTION_AUTO takes the GPU when it is predicted to beat the
 // caller's own FFT (pocketfft, as SciPy runs it) by a margin. Both sides are
 // modelled in nanoseconds, calibrated on applegpu_g13d (M1 Ultra) with
 // bench/fft.py --crossover:
@@ -63,7 +63,7 @@ double host_ns_per_point(uint64_t length) {
 
 struct Call {
     Transform transform = Transform::c2c;
-    bool inverse = false;            // the transform's direction: MS_FFT_INVERSE and MS_FFT_C2R
+    bool inverse = false;            // the transform's direction: SM_FFT_INVERSE and SM_FFT_C2R
     array::Shape in_shape;
     uint32_t in_dtype = 0;
     array::Shape out_shape;
@@ -78,29 +78,29 @@ struct Call {
     uint64_t work = 0;               // router work (see above)
 };
 
-Call parse(uint32_t dtype, const array::Shape& shape, const ms_fft_options* options) {
-    if (!options) throw Error(MS_EINVAL, "null FFT options");
-    if (options->struct_size != sizeof(ms_fft_options) || options->abi_version != MS_FFT_ABI_VERSION)
-        throw Error(MS_EINVAL, "FFT options size or ABI version mismatch");
-    if (options->reserved[0] || options->reserved[1]) throw Error(MS_EINVAL, "FFT options reserved fields must be zero");
-    if (options->norm > MS_FFT_NORM_FORWARD) throw Error(MS_EINVAL, "unknown FFT normalisation");
+Call parse(uint32_t dtype, const array::Shape& shape, const sm_fft_options* options) {
+    if (!options) throw Error(SM_EINVAL, "null FFT options");
+    if (options->struct_size != sizeof(sm_fft_options) || options->abi_version != SM_FFT_ABI_VERSION)
+        throw Error(SM_EINVAL, "FFT options size or ABI version mismatch");
+    if (options->reserved[0] || options->reserved[1]) throw Error(SM_EINVAL, "FFT options reserved fields must be zero");
+    if (options->norm > SM_FFT_NORM_FORWARD) throw Error(SM_EINVAL, "unknown FFT normalisation");
     if (options->axis_count < 1 || options->axis_count > shape.ndim)
-        throw Error(MS_EINVAL, "an FFT transforms between one and all of the input's axes");
+        throw Error(SM_EINVAL, "an FFT transforms between one and all of the input's axes");
 
     Call call;
     switch (options->kind) {
-    case MS_FFT_FORWARD: call.transform = Transform::c2c; break;
-    case MS_FFT_INVERSE: call.transform = Transform::c2c; call.inverse = true; break;
-    case MS_FFT_R2C: call.transform = Transform::r2c; break;
-    case MS_FFT_C2R: call.transform = Transform::c2r; call.inverse = true; break;
-    default: throw Error(MS_EINVAL, "unknown FFT kind");
+    case SM_FFT_FORWARD: call.transform = Transform::c2c; break;
+    case SM_FFT_INVERSE: call.transform = Transform::c2c; call.inverse = true; break;
+    case SM_FFT_R2C: call.transform = Transform::r2c; break;
+    case SM_FFT_C2R: call.transform = Transform::c2r; call.inverse = true; break;
+    default: throw Error(SM_EINVAL, "unknown FFT kind");
     }
     const uint32_t last = shape.ndim - 1;
     uint32_t seen = 0;
     for (uint32_t i = 0; i < options->axis_count; ++i) {
         const uint32_t axis = options->axes[i];
-        if (axis >= shape.ndim) throw Error(MS_EINVAL, "FFT axis exceeds the input's rank");
-        if (seen & (1u << axis)) throw Error(MS_EINVAL, "FFT axes must be distinct");
+        if (axis >= shape.ndim) throw Error(SM_EINVAL, "FFT axis exceeds the input's rank");
+        if (seen & (1u << axis)) throw Error(SM_EINVAL, "FFT axes must be distinct");
         seen |= 1u << axis;
     }
     call.last_axis = (seen & (1u << last)) != 0;
@@ -108,16 +108,16 @@ Call parse(uint32_t dtype, const array::Shape& shape, const ms_fft_options* opti
         if (seen & (1u << axis)) call.inner.push_back(axis);
     }
     const bool real = call.transform != Transform::c2c;
-    if (real && !call.last_axis) throw Error(MS_EINVAL, "a real FFT transforms the input's last axis");
+    if (real && !call.last_axis) throw Error(SM_EINVAL, "a real FFT transforms the input's last axis");
     if (call.transform == Transform::r2c && array::is_complex(dtype))
-        throw Error(MS_EINVAL, "a real-to-complex FFT needs a real input");
+        throw Error(SM_EINVAL, "a real-to-complex FFT needs a real input");
     if (options->n && !call.last_axis)
-        throw Error(MS_EINVAL, "an FFT length applies to the last axis, which is not transformed");
+        throw Error(SM_EINVAL, "an FFT length applies to the last axis, which is not transformed");
     if (array::is_int_or_bool(dtype))
-        throw Error(MS_ENOTSUP, "FFT takes floating-point or complex arrays");
+        throw Error(SM_ENOTSUP, "FFT takes floating-point or complex arrays");
 
     // Empty inputs and lengths are SciPy's to reject.
-    if (shape.elements == 0) throw Error(MS_ENOTSUP, "empty FFT input");
+    if (shape.elements == 0) throw Error(SM_ENOTSUP, "empty FFT input");
     call.in_shape = shape;
     call.in_dtype = dtype;
     call.have = shape.dims[last];
@@ -126,26 +126,26 @@ Call parse(uint32_t dtype, const array::Shape& shape, const ms_fft_options* opti
         call.n = options->n;
     } else if (call.transform == Transform::c2r) {
         if (call.have - 1 > static_cast<uint64_t>(INT32_MAX) / 2)
-            throw Error(MS_ENOTSUP, "the FFT length exceeds the kernels' 32-bit indexing");
+            throw Error(SM_ENOTSUP, "the FFT length exceeds the kernels' 32-bit indexing");
         call.n = 2 * (call.have - 1);
     } else {
         call.n = call.have;
     }
-    if (call.n == 0) throw Error(MS_ENOTSUP, "empty FFT length");
-    if (call.n > INT32_MAX) throw Error(MS_ENOTSUP, "the FFT length exceeds the kernels' 32-bit indexing");
+    if (call.n == 0) throw Error(SM_ENOTSUP, "empty FFT length");
+    if (call.n > INT32_MAX) throw Error(SM_ENOTSUP, "the FFT length exceeds the kernels' 32-bit indexing");
     call.need = call.transform == Transform::c2r ? call.n / 2 + 1 : call.n;
 
     call.out_shape = shape;
     const uint64_t out_row = call.transform == Transform::r2c ? call.n / 2 + 1 : call.n;
     call.out_shape.dims[last] = out_row;
-    if (ms_checked_mul(call.rows, out_row, &call.out_shape.elements) != MS_OK)
-        throw Error(MS_ENOTSUP, "the FFT result exceeds the kernels' 32-bit indexing");
+    if (sm_checked_mul(call.rows, out_row, &call.out_shape.elements) != SM_OK)
+        throw Error(SM_ENOTSUP, "the FFT result exceeds the kernels' 32-bit indexing");
     const bool is_double = array::is_double(dtype);
-    call.out_dtype = call.transform == Transform::c2r ? (is_double ? MS_FLOAT64 : MS_FLOAT32)
-                                                      : (is_double ? MS_COMPLEX128 : MS_COMPLEX64);
+    call.out_dtype = call.transform == Transform::c2r ? (is_double ? SM_FLOAT64 : SM_FLOAT32)
+                                                      : (is_double ? SM_COMPLEX128 : SM_COMPLEX64);
     uint64_t out_bytes = 0;
-    if (ms_checked_mul(call.out_shape.elements, array::dtype_size(call.out_dtype), &out_bytes) != MS_OK)
-        throw Error(MS_EOVERFLOW, "FFT output byte size overflows");
+    if (sm_checked_mul(call.out_shape.elements, array::dtype_size(call.out_dtype), &out_bytes) != SM_OK)
+        throw Error(SM_EOVERFLOW, "FFT output byte size overflows");
 
     // Normalisation and router work over the transformed axes.
     const double points = static_cast<double>(call.rows) * static_cast<double>(call.n);
@@ -165,8 +165,8 @@ Call parse(uint32_t dtype, const array::Shape& shape, const ms_fft_options* opti
     }
     for (const uint32_t axis : call.inner) add_axis(shape.dims[axis], precision_factor);
     switch (options->norm) {
-    case MS_FFT_NORM_ORTHO: call.scale = 1.0 / std::sqrt(total); break;
-    case MS_FFT_NORM_FORWARD: call.scale = call.inverse ? 1.0 : 1.0 / total; break;
+    case SM_FFT_NORM_ORTHO: call.scale = 1.0 / std::sqrt(total); break;
+    case SM_FFT_NORM_FORWARD: call.scale = call.inverse ? 1.0 : 1.0 / total; break;
     default: call.scale = call.inverse ? 1.0 / total : 1.0; break;
     }
     const double saved = host_ns - required_advantage * points * (is_double ? device_ns_per_point_double : device_ns_per_point);
@@ -176,22 +176,22 @@ Call parse(uint32_t dtype, const array::Shape& shape, const ms_fft_options* opti
 
 array::Shape checked_shape(uint32_t dtype, uint32_t ndim, const uint64_t* shape) {
     const uint64_t width = array::dtype_size(dtype);
-    if (ndim < 1 || ndim > MS_MAX_NDIM || !shape) throw Error(MS_EINVAL, "array rank must be 1 to 8");
+    if (ndim < 1 || ndim > SM_MAX_NDIM || !shape) throw Error(SM_EINVAL, "array rank must be 1 to 8");
     array::Shape result;
     result.ndim = ndim;
     result.elements = 1;
     for (uint32_t axis = 0; axis < ndim; ++axis) {
         result.dims[axis] = shape[axis];
-        if (ms_checked_mul(result.elements, shape[axis], &result.elements) != MS_OK)
-            throw Error(MS_EOVERFLOW, "array element count overflows");
+        if (sm_checked_mul(result.elements, shape[axis], &result.elements) != SM_OK)
+            throw Error(SM_EOVERFLOW, "array element count overflows");
     }
     uint64_t bytes = 0;
-    if (ms_checked_mul(result.elements, width, &bytes) != MS_OK)
-        throw Error(MS_EOVERFLOW, "array byte size overflows");
+    if (sm_checked_mul(result.elements, width, &bytes) != SM_OK)
+        throw Error(SM_EOVERFLOW, "array byte size overflows");
     return result;
 }
 
-#if defined(MS_ENABLE_METAL)
+#if defined(SM_ENABLE_METAL)
 // The plans of one call, in execution order, and what the host does around them.
 struct Staged {
     std::vector<Stage> stages;
@@ -235,7 +235,7 @@ Staged stage_with_last(const Call& call, std::shared_ptr<const Plan> last, const
                        bool with_description = true) {
     Staged staged;
     if (last && last->clear_dc_imag && !call.inner.empty())
-        throw Error(MS_ENOTSUP, "the Bluestein inverse real FFT is not available together with other axes");
+        throw Error(SM_ENOTSUP, "the Bluestein inverse real FFT is not available together with other axes");
     // Row length of the device array while the inner axes are transformed:
     // after the last axis for a forward transform, before it for an inverse.
     const uint64_t before = last ? last->input_row : call.have;
@@ -253,13 +253,13 @@ Staged stage_with_last(const Call& call, std::shared_ptr<const Plan> last, const
         request.tail = inner_row;
         for (uint32_t other = 0; other < *axis; ++other) request.count *= call.in_shape.dims[other];
         for (uint32_t other = *axis + 1; other + 1 < call.in_shape.ndim; ++other) {
-            if (ms_checked_mul(request.tail, call.in_shape.dims[other], &request.tail) != MS_OK)
-                throw Error(MS_ENOTSUP, "the FFT exceeds the kernels' 32-bit indexing");
+            if (sm_checked_mul(request.tail, call.in_shape.dims[other], &request.tail) != SM_OK)
+                throw Error(SM_ENOTSUP, "the FFT exceeds the kernels' 32-bit indexing");
         }
         if (request.n == 1) continue;  // a one-point transform is the identity
         Planned planned = plan(request, limits);
         if (!planned.plan)
-            throw Error(MS_ENOTSUP, "no GPU plan for an FFT of length " + std::to_string(request.n) + " along axis " +
+            throw Error(SM_ENOTSUP, "no GPU plan for an FFT of length " + std::to_string(request.n) + " along axis " +
                                         std::to_string(*axis) + ": " + planned.reason);
         inner.push_back({std::move(planned.plan), request.count});
         inner_axes.push_back(*axis);
@@ -278,7 +278,7 @@ Staged stage_with_last(const Call& call, std::shared_ptr<const Plan> last, const
         staged.stages.push_back({last, call.rows});
         staged.stage_axes.push_back(last_axis_idx);
     }
-    if (staged.stages.empty()) throw Error(MS_ENOTSUP, "a one-point FFT is a copy");
+    if (staged.stages.empty()) throw Error(SM_ENOTSUP, "a one-point FFT is a copy");
     refresh_staged_metadata(call, staged, with_description);
     return staged;
 }
@@ -292,7 +292,7 @@ Staged stage(const Call& call, const Limits& limits, bool with_description = tru
         request.n = call.n;
         request.count = call.rows;
         Planned planned = plan(request, limits);
-        if (!planned.plan) throw Error(MS_ENOTSUP, "no GPU plan for an FFT of length " + std::to_string(call.n) + ": " + planned.reason);
+        if (!planned.plan) throw Error(SM_ENOTSUP, "no GPU plan for an FFT of length " + std::to_string(call.n) + ": " + planned.reason);
         last = std::move(planned.plan);
     }
     return stage_with_last(call, std::move(last), limits, with_description);
@@ -441,16 +441,16 @@ constexpr double narrow_floor = 0x1p-100;
 
 uint64_t checked_slot_bytes(uint64_t slot_scalars, uint64_t count, uint64_t tail_scalars = 0) {
     uint64_t scalars = 0;
-    if (ms_checked_mul(slot_scalars, count, &scalars) != MS_OK ||
-        ms_checked_add(scalars, tail_scalars, &scalars) != MS_OK)
-        throw Error(MS_EOVERFLOW, "FFT device buffer byte size overflows");
+    if (sm_checked_mul(slot_scalars, count, &scalars) != SM_OK ||
+        sm_checked_add(scalars, tail_scalars, &scalars) != SM_OK)
+        throw Error(SM_EOVERFLOW, "FFT device buffer byte size overflows");
     uint64_t bytes = 0;
-    if (ms_checked_mul(scalars, sizeof(float), &bytes) != MS_OK)
-        throw Error(MS_EOVERFLOW, "FFT device buffer byte size overflows");
+    if (sm_checked_mul(scalars, sizeof(float), &bytes) != SM_OK)
+        throw Error(SM_EOVERFLOW, "FFT device buffer byte size overflows");
     return bytes;
 }
 
-BufferPtr load(ms_context* context, const ms_array& input, const Call& call, const Staged& staged,
+BufferPtr load(sm_context* context, const sm_array& input, const Call& call, const Staged& staged,
                Profile* profile = nullptr) {
     using Clock = std::chrono::steady_clock;
     const auto elapsed_ns = [](Clock::time_point start, Clock::time_point end) -> uint64_t {
@@ -473,10 +473,10 @@ BufferPtr load(ms_context* context, const ms_array& input, const Call& call, con
     const bool device_complex = !staged.device_real;
     const uint64_t used = std::min(call.have, call.need);
     uint64_t row_bytes = 0;
-    if (ms_checked_mul(call.rows, staged.device_row, &row_bytes) != MS_OK ||
-        ms_checked_mul(row_bytes, (device_complex ? 2 : 1) * sizeof(float), &row_bytes) != MS_OK ||
+    if (sm_checked_mul(call.rows, staged.device_row, &row_bytes) != SM_OK ||
+        sm_checked_mul(row_bytes, (device_complex ? 2 : 1) * sizeof(float), &row_bytes) != SM_OK ||
         row_bytes > slot0_bytes)
-        throw Error(MS_EBACKEND, "FFT input slot is smaller than the rows it holds");
+        throw Error(SM_EBACKEND, "FFT input slot is smaller than the rows it holds");
     const bool host_clear_hermitian = staged.clear_hermitian_imag && staged.stages.size() == 1;
     // Slack beyond the rows (a real input slot sized for the spectrum that
     // replaces it) is written by the last pass before anything reads it.
@@ -500,7 +500,7 @@ BufferPtr load(ms_context* context, const ms_array& input, const Call& call, con
         const double ceiling = std::min(narrow_ceiling, 0x1p124 / std::max(max_gain, 1.0));
         if (!(peak <= ceiling) || (peak != 0.0 && peak < narrow_floor)) {
             if (profile) profile->copy_in_ns = elapsed_ns(t1, Clock::now());
-            throw Error(MS_ENOTSUP, "the input's magnitudes do not fit single precision; SciPy's FFT is used");
+            throw Error(SM_ENOTSUP, "the input's magnitudes do not fit single precision; SciPy's FFT is used");
         }
     } else {
         load_rows(static_cast<const float*>(input.data), source_complex, device, device_complex, call.rows, call.have,
@@ -515,7 +515,7 @@ BufferPtr load(ms_context* context, const ms_array& input, const Call& call, con
 
 // The plans of a call that this device's pipelines can run: stages the call
 // and replaces any plan whose threadgroups its pipeline does not hold, until
-// all fit. MS_ENOTSUP when a length is left without a plan. Builds the
+// all fit. SM_ENOTSUP when a length is left without a plan. Builds the
 // pipelines, so it is also what preparing a transform ahead of time means.
 Staged fit(const Call& call, const Limits& limits, Profile* profile = nullptr, bool with_description = true) {
     using Clock = std::chrono::steady_clock;
@@ -549,7 +549,7 @@ Staged fit(const Call& call, const Limits& limits, Profile* profile = nullptr, b
             ++profile->replan_iters;
         }
         if (!replacement.plan) {
-            throw Error(MS_ENOTSUP, "no GPU plan for an FFT of length " + std::to_string(request.n) + ": " +
+            throw Error(SM_ENOTSUP, "no GPU plan for an FFT of length " + std::to_string(request.n) + ": " +
                                         replacement.reason);
         }
         Clock::time_point ts;
@@ -558,7 +558,7 @@ Staged fit(const Call& call, const Limits& limits, Profile* profile = nullptr, b
             call.last_axis && ((!call.inverse && idx == 0) || (call.inverse && idx + 1 == staged.stages.size()));
         if (is_last) {
             if (replacement.plan->clear_dc_imag && !call.inner.empty())
-                throw Error(MS_ENOTSUP, "the Bluestein inverse real FFT is not available together with other axes");
+                throw Error(SM_ENOTSUP, "the Bluestein inverse real FFT is not available together with other axes");
             const uint64_t old_inner_row =
                 call.inverse ? stage_refused.plan->input_row : stage_refused.plan->result_row;
             const uint64_t new_inner_row =
@@ -580,10 +580,10 @@ Staged fit(const Call& call, const Limits& limits, Profile* profile = nullptr, b
         }
         if (profile) profile->stage_ns += elapsed_ns(ts, Clock::now());
     }
-    throw Error(MS_ENOTSUP, "could not fit FFT plan to device threadgroup limits");
+    throw Error(SM_ENOTSUP, "could not fit FFT plan to device threadgroup limits");
 }
 
-BufferPtr transform(ms_context* context, const ms_array& input, const Call& call, const Limits& limits,
+BufferPtr transform(sm_context* context, const sm_array& input, const Call& call, const Limits& limits,
                     Profile* profile = nullptr) {
     using Clock = std::chrono::steady_clock;
     const auto elapsed_ns = [](Clock::time_point start, Clock::time_point end) -> uint64_t {
@@ -596,14 +596,14 @@ BufferPtr transform(ms_context* context, const ms_array& input, const Call& call
         std::string reason;
         for (const Stage& each : staged.stages) {
             if (!instantiate(*each.plan, each.count, dispatches, reason))
-                throw Error(MS_ENOTSUP, reason);
+                throw Error(SM_ENOTSUP, reason);
         }
     }
     const uint64_t out_row = call.out_shape.dims[call.out_shape.ndim - 1];
     const bool out_complex = array::is_complex(call.out_dtype);
     uint64_t out_bytes = 0;
-    if (ms_checked_mul(call.out_shape.elements, array::dtype_size(call.out_dtype), &out_bytes) != MS_OK)
-        throw Error(MS_EOVERFLOW, "FFT output byte size overflows");
+    if (sm_checked_mul(call.out_shape.elements, array::dtype_size(call.out_dtype), &out_bytes) != SM_OK)
+        throw Error(SM_EOVERFLOW, "FFT output byte size overflows");
     const double remaining = call.scale / staged.applied;
 
     // A single-precision result that needs no cropping is the device buffer
@@ -616,7 +616,7 @@ BufferPtr transform(ms_context* context, const ms_array& input, const Call& call
                            publish_device ? static_cast<float>(remaining) : 1.0f, profile);
     if (publish_device) {
         if (buffer_size(result.get(), context) != out_bytes)
-            throw Error(MS_EBACKEND, "FFT result buffer does not match the result's size");
+            throw Error(SM_EBACKEND, "FFT result buffer does not match the result's size");
         return result;
     }
     Clock::time_point tw0;
@@ -667,50 +667,50 @@ uint64_t footprint(const Call& call, const Staged& staged) {
     }
     if (array::is_double(call.out_dtype) || staged.store != Store::direct) {
         uint64_t out_bytes = 0;
-        if (ms_checked_mul(call.out_shape.elements, array::dtype_size(call.out_dtype), &out_bytes) != MS_OK)
-            throw Error(MS_EOVERFLOW, "FFT output byte size overflows");
+        if (sm_checked_mul(call.out_shape.elements, array::dtype_size(call.out_dtype), &out_bytes) != SM_OK)
+            throw Error(SM_EOVERFLOW, "FFT output byte size overflows");
         total += out_bytes;
     }
     return total;
 }
 #endif
 
-// Routes a checked call: the decision, or MS_ENOTSUP when it stays on the CPU.
-router::Decision route(ms_context* context, const Call& call, const ms_route_options& options) {
+// Routes a checked call: the decision, or SM_ENOTSUP when it stays on the CPU.
+router::Decision route(sm_context* context, const Call& call, const sm_route_options& options) {
     const router::Decision decision = router::decide(context, family, options, call.in_dtype, call.work);
-    if (decision.engine != MS_EXECUTION_GPU) {
-        if (options.execution == MS_EXECUTION_CPU)
-            throw Error(MS_ENOTSUP, "there is no native CPU FFT; SciPy's is used");
-        if (array::is_double(call.in_dtype) && options.precision == MS_PRECISION_STRICT)
-            throw Error(MS_ENOTSUP, "strict precision keeps double-precision FFTs on the CPU, where SciPy's is used");
-#if !defined(MS_ENABLE_METAL)
-        throw Error(MS_ENOTSUP, "this build has no GPU engine and there is no native CPU FFT");
+    if (decision.engine != SM_EXECUTION_GPU) {
+        if (options.execution == SM_EXECUTION_CPU)
+            throw Error(SM_ENOTSUP, "there is no native CPU FFT; SciPy's is used");
+        if (array::is_double(call.in_dtype) && options.precision == SM_PRECISION_STRICT)
+            throw Error(SM_ENOTSUP, "strict precision keeps double-precision FFTs on the CPU, where SciPy's is used");
+#if !defined(SM_ENABLE_METAL)
+        throw Error(SM_ENOTSUP, "this build has no GPU engine and there is no native CPU FFT");
 #else
-        if (storage_kind(context) != MS_BUFFER_METAL)
-            throw Error(MS_ENOTSUP, "GPU execution needs a Metal-storage context; SciPy's FFT is used");
-        throw Error(MS_ENOTSUP, "the FFT is below the GPU crossover; SciPy's is used");
+        if (storage_kind(context) != SM_BUFFER_METAL)
+            throw Error(SM_ENOTSUP, "GPU execution needs a Metal-storage context; SciPy's FFT is used");
+        throw Error(SM_ENOTSUP, "the FFT is below the GPU crossover; SciPy's is used");
 #endif
     }
     return decision;
 }
 } // namespace
-} // namespace ms::detail::fft
+} // namespace sm::detail::fft
 
-using ms::detail::Error;
-namespace array = ms::detail::array;
-namespace fft = ms::detail::fft;
+using sm::detail::Error;
+namespace array = sm::detail::array;
+namespace fft = sm::detail::fft;
 
-#if defined(MS_ENABLE_METAL)
+#if defined(SM_ENABLE_METAL)
 struct ProfileGuard {
     using Clock = std::chrono::steady_clock;
     bool active = false;
     fft::Profile data;
     Clock::time_point entry;
-    const ms_array* input = nullptr;
-    const ms_fft_options* options = nullptr;
-    ms_status status = MS_OK;
+    const sm_array* input = nullptr;
+    const sm_fft_options* options = nullptr;
+    sm_status status = SM_OK;
 
-    ProfileGuard(const ms_array* in, const ms_fft_options* opts) noexcept
+    ProfileGuard(const sm_array* in, const sm_fft_options* opts) noexcept
         : active(fft::profile_enabled()), input(in), options(opts) {
         if (active) entry = Clock::now();
     }
@@ -721,15 +721,15 @@ struct ProfileGuard {
 
         char shape_buf[128] = "null";
         const char* dtype_str = "?";
-        if (input && input->struct_size == sizeof(ms_array)) {
+        if (input && input->struct_size == sizeof(sm_array)) {
             switch (input->dtype) {
-            case MS_FLOAT32: dtype_str = "f32"; break;
-            case MS_FLOAT64: dtype_str = "f64"; break;
-            case MS_COMPLEX64: dtype_str = "c64"; break;
-            case MS_COMPLEX128: dtype_str = "c128"; break;
+            case SM_FLOAT32: dtype_str = "f32"; break;
+            case SM_FLOAT64: dtype_str = "f64"; break;
+            case SM_COMPLEX64: dtype_str = "c64"; break;
+            case SM_COMPLEX128: dtype_str = "c128"; break;
             default: dtype_str = "?"; break;
             }
-            if (input->ndim >= 1 && input->ndim <= MS_MAX_NDIM) {
+            if (input->ndim >= 1 && input->ndim <= SM_MAX_NDIM) {
                 size_t pos = 0;
                 for (uint32_t i = 0; i < input->ndim && pos + 1 < sizeof(shape_buf); ++i) {
                     const int w = std::snprintf(shape_buf + pos, sizeof(shape_buf) - pos, "%s%llu",
@@ -743,31 +743,31 @@ struct ProfileGuard {
             }
         }
         const char* kind_str = "?";
-        if (options && options->struct_size == sizeof(ms_fft_options)) {
+        if (options && options->struct_size == sizeof(sm_fft_options)) {
             switch (options->kind) {
-            case MS_FFT_FORWARD: kind_str = "fwd"; break;
-            case MS_FFT_INVERSE: kind_str = "inv"; break;
-            case MS_FFT_R2C: kind_str = "r2c"; break;
-            case MS_FFT_C2R: kind_str = "c2r"; break;
+            case SM_FFT_FORWARD: kind_str = "fwd"; break;
+            case SM_FFT_INVERSE: kind_str = "inv"; break;
+            case SM_FFT_R2C: kind_str = "r2c"; break;
+            case SM_FFT_C2R: kind_str = "c2r"; break;
             default: kind_str = "?"; break;
             }
         }
         const char* status_str = "?";
         switch (status) {
-        case MS_OK: status_str = "OK"; break;
-        case MS_EINVAL: status_str = "EINVAL"; break;
-        case MS_ENOTSUP: status_str = "ENOTSUP"; break;
-        case MS_EOVERFLOW: status_str = "EOVERFLOW"; break;
-        case MS_EOOM: status_str = "EOOM"; break;
-        case MS_ETIMEOUT: status_str = "ETIMEOUT"; break;
-        case MS_EBACKEND: status_str = "EBACKEND"; break;
-        case MS_ESTATE: status_str = "ESTATE"; break;
+        case SM_OK: status_str = "OK"; break;
+        case SM_EINVAL: status_str = "EINVAL"; break;
+        case SM_ENOTSUP: status_str = "ENOTSUP"; break;
+        case SM_EOVERFLOW: status_str = "EOVERFLOW"; break;
+        case SM_EOOM: status_str = "EOOM"; break;
+        case SM_ETIMEOUT: status_str = "ETIMEOUT"; break;
+        case SM_EBACKEND: status_str = "EBACKEND"; break;
+        case SM_ESTATE: status_str = "ESTATE"; break;
         }
 
         char buf[768];
         const int len = std::snprintf(
             buf, sizeof(buf),
-            "ms_fft_profile shape=%s dtype=%s kind=%s status=%s narrowed=%d replan_iters=%u "
+            "sm_fft_profile shape=%s dtype=%s kind=%s status=%s narrowed=%d replan_iters=%u "
             "total_ns=%llu parse_route_ns=%llu stage_ns=%llu refused_ns=%llu replan_ns=%llu "
             "alloc_in_ns=%llu copy_in_ns=%llu alloc_scratch_ns=%llu encode_ns=%llu gpu_ns=%llu "
             "wait_overhead_ns=%llu widen_alloc_ns=%llu widen_store_ns=%llu publish_ns=%llu\n",
@@ -795,35 +795,35 @@ struct ProfileGuard {
 };
 #endif
 
-ms_status ms_fft_transform(ms_context* context, const ms_array* input, const ms_fft_options* options,
-                           const ms_route_options* route_options, ms_array_result* out, ms_route_info* info) {
-#if defined(MS_ENABLE_METAL)
+sm_status sm_fft_transform(sm_context* context, const sm_array* input, const sm_fft_options* options,
+                           const sm_route_options* route_options, sm_array_result* out, sm_route_info* info) {
+#if defined(SM_ENABLE_METAL)
     ProfileGuard profile(input, options);
     fft::Profile* const prof = profile.active ? &profile.data : nullptr;
-    profile.status = ms::detail::api(context, [&] {
+    profile.status = sm::detail::api(context, [&] {
         using Clock = std::chrono::steady_clock;
         Clock::time_point t0;
         if (prof) t0 = Clock::now();
-        if (!out) throw Error(MS_EINVAL, "null output");
+        if (!out) throw Error(SM_EINVAL, "null output");
         array::check_route_info(info);
         array::check_options(route_options);
         const array::Shape shape = array::checked_shape(input);
         const fft::Call call = fft::parse(input->dtype, shape, options);
-        const ms::detail::router::Decision decision = fft::route(context, call, *route_options);
+        const sm::detail::router::Decision decision = fft::route(context, call, *route_options);
         if (prof) {
             prof->parse_route_ns = static_cast<uint64_t>(
                 std::chrono::duration_cast<std::chrono::nanoseconds>(Clock::now() - t0).count());
         }
         const fft::Limits limits = fft::device_limits();
-        ms::detail::GpuOperationScope operation(context, true);
-        ms::detail::BufferPtr result;
+        sm::detail::GpuOperationScope operation(context, true);
+        sm::detail::BufferPtr result;
         try {
             result = fft::transform(context, *input, call, limits, prof);
         } catch (const Error& error) {
             // A drop-in must not fail where SciPy would not: without room for
             // the buffers the call is declined instead.
-            if (error.status == MS_EOOM)
-                throw Error(MS_ENOTSUP, std::string("the context's memory budget cannot hold the FFT's buffers: ") + error.what());
+            if (error.status == SM_EOOM)
+                throw Error(SM_ENOTSUP, std::string("the context's memory budget cannot hold the FFT's buffers: ") + error.what());
             throw;
         }
         Clock::time_point tp;
@@ -838,36 +838,36 @@ ms_status ms_fft_transform(ms_context* context, const ms_array* input, const ms_
     });
     return profile.status;
 #else
-    return ms::detail::api(context, [&] {
-        if (!out) throw Error(MS_EINVAL, "null output");
+    return sm::detail::api(context, [&] {
+        if (!out) throw Error(SM_EINVAL, "null output");
         array::check_route_info(info);
         array::check_options(route_options);
         const array::Shape shape = array::checked_shape(input);
         const fft::Call call = fft::parse(input->dtype, shape, options);
-        const ms::detail::router::Decision decision = fft::route(context, call, *route_options);
+        const sm::detail::router::Decision decision = fft::route(context, call, *route_options);
         (void)decision;
         (void)info;
-        throw Error(MS_ENOTSUP, "this build has no GPU engine and there is no native CPU FFT");
+        throw Error(SM_ENOTSUP, "this build has no GPU engine and there is no native CPU FFT");
     });
 #endif
 }
 
-ms_status ms_fft_plan(ms_context* context, uint32_t dtype, uint32_t ndim, const uint64_t* shape,
-                      const ms_fft_options* options, const ms_route_options* route_options, uint32_t prepare,
-                      ms_fft_plan_info* out) {
-    return ms::detail::api(context, [&] {
-        if (!out || out->struct_size != sizeof(ms_fft_plan_info) || out->abi_version != MS_FFT_ABI_VERSION)
-            throw Error(MS_EINVAL, "FFT plan info size or ABI version mismatch");
+sm_status sm_fft_plan(sm_context* context, uint32_t dtype, uint32_t ndim, const uint64_t* shape,
+                      const sm_fft_options* options, const sm_route_options* route_options, uint32_t prepare,
+                      sm_fft_plan_info* out) {
+    return sm::detail::api(context, [&] {
+        if (!out || out->struct_size != sizeof(sm_fft_plan_info) || out->abi_version != SM_FFT_ABI_VERSION)
+            throw Error(SM_EINVAL, "FFT plan info size or ABI version mismatch");
         array::check_options(route_options);
         const array::Shape checked = fft::checked_shape(dtype, ndim, shape);
-        ms_fft_plan_info result{};
+        sm_fft_plan_info result{};
         result.struct_size = sizeof(result);
-        result.abi_version = MS_FFT_ABI_VERSION;
+        result.abi_version = SM_FFT_ABI_VERSION;
         std::string description;
         try {
             const fft::Call call = fft::parse(dtype, checked, options);
-            const ms::detail::router::Decision decision = fft::route(context, call, *route_options);
-#if defined(MS_ENABLE_METAL)
+            const sm::detail::router::Decision decision = fft::route(context, call, *route_options);
+#if defined(SM_ENABLE_METAL)
             // Preparing builds the pipelines and so finds the plans that fit them;
             // otherwise the plans are the planner's for this device's limits.
             const fft::Staged staged = prepare ? fft::fit(call, fft::device_limits()) : fft::stage(call, fft::device_limits());
@@ -875,7 +875,7 @@ ms_status ms_fft_plan(ms_context* context, uint32_t dtype, uint32_t ndim, const 
             for (size_t idx = 0; idx < staged.stages.size(); ++idx) {
                 const fft::Stage& each = staged.stages[idx];
                 std::string reason;
-                if (!fft::instantiate(*each.plan, each.count, dispatches, reason)) throw Error(MS_ENOTSUP, reason);
+                if (!fft::instantiate(*each.plan, each.count, dispatches, reason)) throw Error(SM_ENOTSUP, reason);
                 if (idx > 0 && each.plan->clear_hermitian_imag) ++result.passes;
                 result.passes += static_cast<uint32_t>(each.plan->steps.size());
             }
@@ -895,18 +895,18 @@ ms_status ms_fft_plan(ms_context* context, uint32_t dtype, uint32_t ndim, const 
                 if (!fused) ++result.passes;
             }
             if (prepare) fft::prepare(staged.stages);
-            result.status = MS_OK;
+            result.status = SM_OK;
             result.engine = decision.engine;
             result.device_bytes = fft::footprint(call, staged);
             description = staged.description;
 #else
             (void)decision;
             (void)prepare;
-            throw Error(MS_ENOTSUP, "this build has no GPU engine and there is no native CPU FFT");
+            throw Error(SM_ENOTSUP, "this build has no GPU engine and there is no native CPU FFT");
 #endif
         } catch (const Error& error) {
-            if (error.status != MS_ENOTSUP) throw;
-            result.status = MS_ENOTSUP;
+            if (error.status != SM_ENOTSUP) throw;
+            result.status = SM_ENOTSUP;
             result.passes = 0;
             description = error.what();
         }
@@ -915,13 +915,13 @@ ms_status ms_fft_plan(ms_context* context, uint32_t dtype, uint32_t ndim, const 
     });
 }
 
-uint64_t ms_fft_auto_min_points(void) {
+uint64_t sm_fft_auto_min_points(void) {
     // An upper bound on the work of any call with p points: every one of up to
-    // MS_MAX_NDIM axes as costly per point as the longest possible, in double
+    // SM_MAX_NDIM axes as costly per point as the longest possible, in double
     // precision.
     static const uint64_t points = [] {
         for (uint64_t p = 2;; ++p) {
-            const double axes = std::min<double>(MS_MAX_NDIM, std::floor(std::log2(static_cast<double>(p))));
+            const double axes = std::min<double>(SM_MAX_NDIM, std::floor(std::log2(static_cast<double>(p))));
             const double saved = static_cast<double>(p) * (axes * fft::host_ns_per_point(p) * fft::host_double_factor -
                                                            fft::required_advantage * fft::device_ns_per_point_double);
             if (saved >= static_cast<double>(fft::family.gpu_min_work)) return p;

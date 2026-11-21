@@ -4,7 +4,7 @@
 #include "signal_kernels.h"
 using namespace metal;
 
-static inline ulong ms_signal_widen(uint b) {
+static inline ulong sm_signal_widen(uint b) {
     const uint sign = b & 0x80000000u;
     const uint e = (b >> 23) & 0xFFu;
     uint m = b & 0x007FFFFFu;
@@ -22,21 +22,21 @@ static inline ulong ms_signal_widen(uint b) {
     return (ulong(hi) << 32) | ulong(m << 29);
 }
 
-static inline void ms_signal_store(device float* dst, uint index, float value) { dst[index] = value; }
-static inline void ms_signal_store(device ulong* dst, uint index, float value) {
-    dst[index] = ms_signal_widen(as_type<uint>(value));
+static inline void sm_signal_store(device float* dst, uint index, float value) { dst[index] = value; }
+static inline void sm_signal_store(device ulong* dst, uint index, float value) {
+    dst[index] = sm_signal_widen(as_type<uint>(value));
 }
-static inline void ms_signal_store(device float2* dst, uint index, float2 value) { dst[index] = value; }
-static inline void ms_signal_store(device ulong2* dst, uint index, float2 value) {
-    dst[index] = ulong2(ms_signal_widen(as_type<uint>(value.x)),
-                        ms_signal_widen(as_type<uint>(value.y)));
+static inline void sm_signal_store(device float2* dst, uint index, float2 value) { dst[index] = value; }
+static inline void sm_signal_store(device ulong2* dst, uint index, float2 value) {
+    dst[index] = ulong2(sm_signal_widen(as_type<uint>(value.x)),
+                        sm_signal_widen(as_type<uint>(value.y)));
 }
 
-static inline float2 ms_signal_cmul(float2 a, float2 b) {
+static inline float2 sm_signal_cmul(float2 a, float2 b) {
     return float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
 }
 
-static inline bool ms_signal_pad_lookup(constant MSSignalPadParams& p, uint gid, thread uint& out_in_idx) {
+static inline bool sm_signal_pad_lookup(constant SMSignalPadParams& p, uint gid, thread uint& out_in_idx) {
     if (p.ndim == 1u) {
         const uint fl = p.fft_len[0];
         uint pos;
@@ -79,7 +79,7 @@ static inline bool ms_signal_pad_lookup(constant MSSignalPadParams& p, uint gid,
     return true;
 }
 
-kernel void ms_signal_fft_pad_f32_f32(constant MSSignalPadParams& p [[buffer(0)]],
+kernel void sm_signal_fft_pad_f32_f32(constant SMSignalPadParams& p [[buffer(0)]],
                                       device const float* src [[buffer(1)]],
                                       device float* dst [[buffer(2)]],
                                       device atomic_uint* nf_flag [[buffer(3)]],
@@ -87,14 +87,14 @@ kernel void ms_signal_fft_pad_f32_f32(constant MSSignalPadParams& p [[buffer(0)]
     if (gid >= p.dst_elements) return;
     uint in_idx = 0u;
     float v = 0.0f;
-    if (ms_signal_pad_lookup(p, gid, in_idx)) {
+    if (sm_signal_pad_lookup(p, gid, in_idx)) {
         v = src[in_idx];
         if (!isfinite(v)) atomic_fetch_or_explicit(nf_flag, 1u, memory_order_relaxed);
     }
     dst[gid] = v;
 }
 
-kernel void ms_signal_fft_pad_f32_c64(constant MSSignalPadParams& p [[buffer(0)]],
+kernel void sm_signal_fft_pad_f32_c64(constant SMSignalPadParams& p [[buffer(0)]],
                                       device const float* src [[buffer(1)]],
                                       device float2* dst [[buffer(2)]],
                                       device atomic_uint* nf_flag [[buffer(3)]],
@@ -102,14 +102,14 @@ kernel void ms_signal_fft_pad_f32_c64(constant MSSignalPadParams& p [[buffer(0)]
     if (gid >= p.dst_elements) return;
     uint in_idx = 0u;
     float v = 0.0f;
-    if (ms_signal_pad_lookup(p, gid, in_idx)) {
+    if (sm_signal_pad_lookup(p, gid, in_idx)) {
         v = src[in_idx];
         if (!isfinite(v)) atomic_fetch_or_explicit(nf_flag, 1u, memory_order_relaxed);
     }
     dst[gid] = float2(v, 0.0f);
 }
 
-kernel void ms_signal_fft_pad_c64_c64(constant MSSignalPadParams& p [[buffer(0)]],
+kernel void sm_signal_fft_pad_c64_c64(constant SMSignalPadParams& p [[buffer(0)]],
                                       device const float2* src [[buffer(1)]],
                                       device float2* dst [[buffer(2)]],
                                       device atomic_uint* nf_flag [[buffer(3)]],
@@ -117,26 +117,26 @@ kernel void ms_signal_fft_pad_c64_c64(constant MSSignalPadParams& p [[buffer(0)]
     if (gid >= p.dst_elements) return;
     uint in_idx = 0u;
     float2 v = float2(0.0f, 0.0f);
-    if (ms_signal_pad_lookup(p, gid, in_idx)) {
+    if (sm_signal_pad_lookup(p, gid, in_idx)) {
         v = src[in_idx];
         if (!isfinite(v.x) || !isfinite(v.y)) atomic_fetch_or_explicit(nf_flag, 1u, memory_order_relaxed);
-        if (p.flags & MS_SIGNAL_PAD_CONJ) v.y = -v.y;
+        if (p.flags & SM_SIGNAL_PAD_CONJ) v.y = -v.y;
     }
     dst[gid] = v;
 }
 
-kernel void ms_signal_spectral_mul_inplace(constant MSSignalMulInplaceParams& p [[buffer(0)]],
+kernel void sm_signal_spectral_mul_inplace(constant SMSignalMulInplaceParams& p [[buffer(0)]],
                                            device float2* a [[buffer(1)]],
                                            device const float2* b [[buffer(2)]],
                                            device atomic_uint* nf_flag [[buffer(3)]],
                                            uint gid [[thread_position_in_grid]]) {
     if (gid >= p.elements) return;
-    const float2 prod = ms_signal_cmul(a[gid], b[gid]);
+    const float2 prod = sm_signal_cmul(a[gid], b[gid]);
     if (!isfinite(prod.x) || !isfinite(prod.y)) atomic_fetch_or_explicit(nf_flag, 2u, memory_order_relaxed);
     a[gid] = prod;
 }
 
-kernel void ms_signal_spectral_mul_broadcast_inplace(constant MSSignalMulBroadcastParams& p [[buffer(0)]],
+kernel void sm_signal_spectral_mul_broadcast_inplace(constant SMSignalMulBroadcastParams& p [[buffer(0)]],
                                                      device float2* a [[buffer(1)]],
                                                      device const float2* b [[buffer(2)]],
                                                      device atomic_uint* nf_flag [[buffer(3)]],
@@ -150,12 +150,12 @@ kernel void ms_signal_spectral_mul_broadcast_inplace(constant MSSignalMulBroadca
         rem -= c * s;
         ib += c * p.b_stride[d];
     }
-    const float2 prod = ms_signal_cmul(a[gid], b[ib]);
+    const float2 prod = sm_signal_cmul(a[gid], b[ib]);
     if (!isfinite(prod.x) || !isfinite(prod.y)) atomic_fetch_or_explicit(nf_flag, 2u, memory_order_relaxed);
     a[gid] = prod;
 }
 
-kernel void ms_signal_spectral_mul_broadcast(constant MSSignalMulBroadcastParams& p [[buffer(0)]],
+kernel void sm_signal_spectral_mul_broadcast(constant SMSignalMulBroadcastParams& p [[buffer(0)]],
                                              device const float2* a [[buffer(1)]],
                                              device const float2* b [[buffer(2)]],
                                              device float2* out [[buffer(3)]],
@@ -172,13 +172,13 @@ kernel void ms_signal_spectral_mul_broadcast(constant MSSignalMulBroadcastParams
         ia += c * p.a_stride[d];
         ib += c * p.b_stride[d];
     }
-    const float2 prod = ms_signal_cmul(a[ia], b[ib]);
+    const float2 prod = sm_signal_cmul(a[ia], b[ib]);
     if (!isfinite(prod.x) || !isfinite(prod.y)) atomic_fetch_or_explicit(nf_flag, 2u, memory_order_relaxed);
     out[gid] = prod;
 }
 
 template <typename SrcT>
-static inline SrcT ms_signal_combine_eval(constant MSSignalCombineParams& p,
+static inline SrcT sm_signal_combine_eval(constant SMSignalCombineParams& p,
                                           device const SrcT* src,
                                           uint gid) {
     const uint rev_mask = p.flags >> 8u;
@@ -240,75 +240,75 @@ static inline SrcT ms_signal_combine_eval(constant MSSignalCombineParams& p,
     return acc * p.scale;
 }
 
-kernel void ms_signal_oa_combine_r_f32(constant MSSignalCombineParams& p [[buffer(0)]],
+kernel void sm_signal_oa_combine_r_f32(constant SMSignalCombineParams& p [[buffer(0)]],
                                        device const float* src [[buffer(1)]],
                                        device float* dst [[buffer(2)]],
                                        device atomic_uint* nf_flag [[buffer(3)]],
                                        uint gid [[thread_position_in_grid]]) {
     if (gid >= p.out_elements) return;
-    const float v = ms_signal_combine_eval<float>(p, src, gid);
+    const float v = sm_signal_combine_eval<float>(p, src, gid);
     if (!isfinite(v)) atomic_fetch_or_explicit(nf_flag, 4u, memory_order_relaxed);
-    ms_signal_store(dst, gid, v);
+    sm_signal_store(dst, gid, v);
 }
 
-kernel void ms_signal_oa_combine_r_f64(constant MSSignalCombineParams& p [[buffer(0)]],
+kernel void sm_signal_oa_combine_r_f64(constant SMSignalCombineParams& p [[buffer(0)]],
                                        device const float* src [[buffer(1)]],
                                        device ulong* dst [[buffer(2)]],
                                        device atomic_uint* nf_flag [[buffer(3)]],
                                        uint gid [[thread_position_in_grid]]) {
     if (gid >= p.out_elements) return;
-    const float v = ms_signal_combine_eval<float>(p, src, gid);
+    const float v = sm_signal_combine_eval<float>(p, src, gid);
     if (!isfinite(v)) atomic_fetch_or_explicit(nf_flag, 4u, memory_order_relaxed);
-    ms_signal_store(dst, gid, v);
+    sm_signal_store(dst, gid, v);
 }
 
-kernel void ms_signal_oa_combine_c_f32(constant MSSignalCombineParams& p [[buffer(0)]],
+kernel void sm_signal_oa_combine_c_f32(constant SMSignalCombineParams& p [[buffer(0)]],
                                        device const float2* src [[buffer(1)]],
                                        device float* dst [[buffer(2)]],
                                        device atomic_uint* nf_flag [[buffer(3)]],
                                        uint gid [[thread_position_in_grid]]) {
     if (gid >= p.out_elements) return;
-    const float v = ms_signal_combine_eval<float2>(p, src, gid).x;
+    const float v = sm_signal_combine_eval<float2>(p, src, gid).x;
     if (!isfinite(v)) atomic_fetch_or_explicit(nf_flag, 4u, memory_order_relaxed);
-    ms_signal_store(dst, gid, v);
+    sm_signal_store(dst, gid, v);
 }
 
-kernel void ms_signal_oa_combine_c_f64(constant MSSignalCombineParams& p [[buffer(0)]],
+kernel void sm_signal_oa_combine_c_f64(constant SMSignalCombineParams& p [[buffer(0)]],
                                        device const float2* src [[buffer(1)]],
                                        device ulong* dst [[buffer(2)]],
                                        device atomic_uint* nf_flag [[buffer(3)]],
                                        uint gid [[thread_position_in_grid]]) {
     if (gid >= p.out_elements) return;
-    const float v = ms_signal_combine_eval<float2>(p, src, gid).x;
+    const float v = sm_signal_combine_eval<float2>(p, src, gid).x;
     if (!isfinite(v)) atomic_fetch_or_explicit(nf_flag, 4u, memory_order_relaxed);
-    ms_signal_store(dst, gid, v);
+    sm_signal_store(dst, gid, v);
 }
 
-kernel void ms_signal_oa_combine_c_c64(constant MSSignalCombineParams& p [[buffer(0)]],
+kernel void sm_signal_oa_combine_c_c64(constant SMSignalCombineParams& p [[buffer(0)]],
                                        device const float2* src [[buffer(1)]],
                                        device float2* dst [[buffer(2)]],
                                        device atomic_uint* nf_flag [[buffer(3)]],
                                        uint gid [[thread_position_in_grid]]) {
     if (gid >= p.out_elements) return;
-    float2 v = ms_signal_combine_eval<float2>(p, src, gid);
+    float2 v = sm_signal_combine_eval<float2>(p, src, gid);
     if (!isfinite(v.x) || !isfinite(v.y)) atomic_fetch_or_explicit(nf_flag, 4u, memory_order_relaxed);
-    if (p.flags & MS_SIGNAL_COMBINE_REV_CONJ) v.y = -v.y;
-    ms_signal_store(dst, gid, v);
+    if (p.flags & SM_SIGNAL_COMBINE_REV_CONJ) v.y = -v.y;
+    sm_signal_store(dst, gid, v);
 }
 
-kernel void ms_signal_oa_combine_c_c128(constant MSSignalCombineParams& p [[buffer(0)]],
+kernel void sm_signal_oa_combine_c_c128(constant SMSignalCombineParams& p [[buffer(0)]],
                                         device const float2* src [[buffer(1)]],
                                         device ulong2* dst [[buffer(2)]],
                                         device atomic_uint* nf_flag [[buffer(3)]],
                                         uint gid [[thread_position_in_grid]]) {
     if (gid >= p.out_elements) return;
-    float2 v = ms_signal_combine_eval<float2>(p, src, gid);
+    float2 v = sm_signal_combine_eval<float2>(p, src, gid);
     if (!isfinite(v.x) || !isfinite(v.y)) atomic_fetch_or_explicit(nf_flag, 4u, memory_order_relaxed);
-    if (p.flags & MS_SIGNAL_COMBINE_REV_CONJ) v.y = -v.y;
-    ms_signal_store(dst, gid, v);
+    if (p.flags & SM_SIGNAL_COMBINE_REV_CONJ) v.y = -v.y;
+    sm_signal_store(dst, gid, v);
 }
 
-kernel void ms_signal_rev_conj_f32(constant MSSignalRevConjParams& p [[buffer(0)]],
+kernel void sm_signal_rev_conj_f32(constant SMSignalRevConjParams& p [[buffer(0)]],
                                    device const float* src [[buffer(1)]],
                                    device float* dst [[buffer(2)]],
                                    uint gid [[thread_position_in_grid]]) {
@@ -316,7 +316,7 @@ kernel void ms_signal_rev_conj_f32(constant MSSignalRevConjParams& p [[buffer(0)
     dst[gid] = src[(p.elements - 1u) - gid];
 }
 
-kernel void ms_signal_rev_conj_f64(constant MSSignalRevConjParams& p [[buffer(0)]],
+kernel void sm_signal_rev_conj_f64(constant SMSignalRevConjParams& p [[buffer(0)]],
                                    device const ulong* src [[buffer(1)]],
                                    device ulong* dst [[buffer(2)]],
                                    uint gid [[thread_position_in_grid]]) {
@@ -324,7 +324,7 @@ kernel void ms_signal_rev_conj_f64(constant MSSignalRevConjParams& p [[buffer(0)
     dst[gid] = src[(p.elements - 1u) - gid];
 }
 
-kernel void ms_signal_rev_conj_c64(constant MSSignalRevConjParams& p [[buffer(0)]],
+kernel void sm_signal_rev_conj_c64(constant SMSignalRevConjParams& p [[buffer(0)]],
                                    device const float2* src [[buffer(1)]],
                                    device float2* dst [[buffer(2)]],
                                    uint gid [[thread_position_in_grid]]) {
@@ -334,7 +334,7 @@ kernel void ms_signal_rev_conj_c64(constant MSSignalRevConjParams& p [[buffer(0)
     dst[gid] = v;
 }
 
-kernel void ms_signal_rev_conj_c128(constant MSSignalRevConjParams& p [[buffer(0)]],
+kernel void sm_signal_rev_conj_c128(constant SMSignalRevConjParams& p [[buffer(0)]],
                                     device const ulong2* src [[buffer(1)]],
                                     device ulong2* dst [[buffer(2)]],
                                     uint gid [[thread_position_in_grid]]) {
@@ -344,7 +344,7 @@ kernel void ms_signal_rev_conj_c128(constant MSSignalRevConjParams& p [[buffer(0
     dst[gid] = v;
 }
 
-kernel void ms_signal_check_finite_f32(constant MSSignalFiniteParams& p [[buffer(0)]],
+kernel void sm_signal_check_finite_f32(constant SMSignalFiniteParams& p [[buffer(0)]],
                                        device const float* src [[buffer(1)]],
                                        device atomic_uint* nf_flag [[buffer(2)]],
                                        uint gid [[thread_position_in_grid]],

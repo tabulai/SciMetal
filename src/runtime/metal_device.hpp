@@ -3,24 +3,24 @@
 // metal_storage.cpp defines the metal-cpp implementation macros.
 #include <Foundation/Foundation.hpp>
 #include <Metal/Metal.hpp>
-#include "ms/detail/backend.hpp"
+#include "sm/detail/backend.hpp"
 
 #include <memory>
 #include <unistd.h>
 
-namespace ms::detail {
+namespace sm::detail {
 // Captured when the library loads, without creating a Metal device. Check
 // before touching a lazy static's guard, which could be inherited locked.
 inline const pid_t metal_process = ::getpid();
 
 inline void require_original_process() {
-    if (::getpid() != metal_process) throw Error(MS_ESTATE, "Metal is unavailable after fork; use exec or spawn");
+    if (::getpid() != metal_process) throw Error(SM_ESTATE, "Metal is unavailable after fork; use exec or spawn");
 }
 
 struct AutoreleasePool {
     NS::AutoreleasePool* pool = NS::AutoreleasePool::alloc()->init();
     AutoreleasePool() {
-        if (!pool) throw Error(MS_EOOM, "Metal autorelease-pool allocation failed");
+        if (!pool) throw Error(SM_EOOM, "Metal autorelease-pool allocation failed");
     }
     ~AutoreleasePool() {
         if (::getpid() == metal_process && pool) pool->release();
@@ -41,6 +41,6 @@ struct DeviceOwner {
     }
 };
 
-// Creates the system default device on first use; MS_ENOTSUP without one.
+// Creates the system default device on first use; SM_ENOTSUP without one.
 const std::shared_ptr<DeviceOwner>& shared_device();
-} // namespace ms::detail
+} // namespace sm::detail

@@ -1,4 +1,4 @@
-#include "ms/detail/storage.hpp"
+#include "sm/detail/storage.hpp"
 
 #include <algorithm>
 #include <atomic>
@@ -15,9 +15,9 @@
 #include <unistd.h>
 
 namespace {
-using ms::detail::AsyncSync;
-using ms::detail::Error;
-using ms::detail::RawAllocation;
+using sm::detail::AsyncSync;
+using sm::detail::Error;
+using sm::detail::RawAllocation;
 
 constexpr uint64_t arena_slab_bytes = 256u << 10;
 constexpr uint64_t arena_slice_alignment = 256;
@@ -82,17 +82,17 @@ struct State {
     std::atomic<uint64_t> gpu_operations{0}, gpu_command_buffers{0}, gpu_dispatches{0}, gpu_ns{0};
     std::atomic<uint64_t> native_allocations{0}, cached_reuses{0};
     std::atomic<uint64_t> host_wait_ns{0}, host_fill_bytes{0};
-    explicit State(const ms_context_options& options)
-        : kind(options.storage_kind), poison((options.flags & MS_CONTEXT_POISON_UNWRITTEN) != 0),
+    explicit State(const sm_context_options& options)
+        : kind(options.storage_kind), poison((options.flags & SM_CONTEXT_POISON_UNWRITTEN) != 0),
           limit(options.memory_limit_bytes), external(options.external_reservation_bytes), peak(external),
-          cache_limit(kind == MS_BUFFER_METAL ? (limit - external) / 4 : 0) {}
+          cache_limit(kind == SM_BUFFER_METAL ? (limit - external) / 4 : 0) {}
     uint64_t total() const noexcept { return external + owned + borrowed + pending + cached; }
     // Learn the actual owned-storage footprint, including idle scratch from an
     // earlier phase of a synchronous operation. Pending reservations can count
     // cached storage a second time, and borrowed storage cannot be reused here.
     // An explicit caller limit always wins, including a limit of zero.
     void observe_owned_storage() noexcept {
-        if (kind == MS_BUFFER_METAL && !explicit_cache_limit)
+        if (kind == SM_BUFFER_METAL && !explicit_cache_limit)
             cache_limit = std::max(cache_limit, std::min(owned + cached, (limit - external) / 2));
     }
     // The caller holds mutex. Storage is freed before its bytes leave the budget.
@@ -120,7 +120,7 @@ struct State {
     // Idle cached storage gives way before admission fails.
     void admit(uint64_t bytes) {
         while (bytes > limit - total() && !cache.empty()) evict_oldest();
-        if (bytes > limit - total()) throw Error(MS_EOOM, "context memory limit exceeded");
+        if (bytes > limit - total()) throw Error(SM_EOOM, "context memory limit exceeded");
     }
     void mark_peak() noexcept { peak = std::max(peak, total()); }
 };
@@ -143,15 +143,15 @@ void erase_live_metal(State& state, void* metal, Allocation* allocation) noexcep
 // with different backing or owners are rejected, rather than treated as aliases.
 struct Identity {
     void* owner;
-    ms_owner_callback retain, release;
+    sm_owner_callback retain, release;
     bool operator==(const Identity&) const = default;
 };
 std::atomic<uint64_t> next_id{1}, next_generation{1};
 
 struct ForeignHold {
-    ms_buffer_view view{};
+    sm_buffer_view view{};
     bool active = false;
-    explicit ForeignHold(const ms_buffer_view& source) : view(source) {
+    explicit ForeignHold(const sm_buffer_view& source) : view(source) {
         view.retain(view.owner);
         active = true;
     }
@@ -295,18 +295,18 @@ void state_error(const std::shared_ptr<State>& state, const char* message) noexc
 
 uint64_t checked_add(uint64_t left, uint64_t right) {
     uint64_t result;
-    if (ms_checked_add(left, right, &result) != MS_OK)
-        throw Error(MS_EOVERFLOW, "buffer size arithmetic overflow");
+    if (sm_checked_add(left, right, &result) != SM_OK)
+        throw Error(SM_EOVERFLOW, "buffer size arithmetic overflow");
     return result;
 }
 } // namespace
 
-struct ms_context {
+struct sm_context {
     std::atomic<uint64_t> refs{1};
     pid_t pid = getpid();
     std::shared_ptr<State> state;
-    explicit ms_context(std::shared_ptr<State> value) : state(std::move(value)) {}
-    ~ms_context() {
+    explicit sm_context(std::shared_ptr<State> value) : state(std::move(value)) {}
+    ~sm_context() {
         // Without a handle nothing can reuse cached storage: free it, and let
         // surviving buffers free their storage directly.
         if (pid != getpid()) return;
@@ -324,32 +324,32 @@ struct ms_context {
         }
     }
 };
-struct ms_buffer {
+struct sm_buffer {
     std::atomic<uint64_t> refs{1};
     pid_t pid = getpid();
     std::shared_ptr<Allocation> allocation;
     uint64_t offset, size;
-    ms_buffer(std::shared_ptr<Allocation> value, uint64_t start, uint64_t length)
+    sm_buffer(std::shared_ptr<Allocation> value, uint64_t start, uint64_t length)
         : allocation(std::move(value)), offset(start), size(length) {}
 };
 
 namespace {
-void check_buffer(const ms_buffer* buffer) {
-    if (!buffer) throw Error(MS_EINVAL, "null buffer");
-    if (buffer->pid != getpid()) throw Error(MS_ESTATE, "inherited buffer is unusable after fork");
+void check_buffer(const sm_buffer* buffer) {
+    if (!buffer) throw Error(SM_EINVAL, "null buffer");
+    if (buffer->pid != getpid()) throw Error(SM_ESTATE, "inherited buffer is unusable after fork");
 }
-void check_buffer_context(const ms_buffer* buffer, ms_context* expected) {
+void check_buffer_context(const sm_buffer* buffer, sm_context* expected) {
     check_buffer(buffer);
     if (expected) {
-        ms::detail::check_context(expected);
+        sm::detail::check_context(expected);
         if (buffer->allocation->state != expected->state)
-            throw Error(MS_EINVAL, "buffer must first be admitted to operation context");
+            throw Error(SM_EINVAL, "buffer must first be admitted to operation context");
     }
 }
 // Zeroed storage, or for complete producers only zeroed padding. Returns the
 // bytes zero-filled (test-only poisoning is not counted).
-uint64_t initialize(uint8_t* host, uint64_t logical, uint64_t capacity, ms::detail::Fill fill, bool poison) {
-    if (fill == ms::detail::Fill::zero || fill == ms::detail::Fill::device_zero) {
+uint64_t initialize(uint8_t* host, uint64_t logical, uint64_t capacity, sm::detail::Fill fill, bool poison) {
+    if (fill == sm::detail::Fill::zero || fill == sm::detail::Fill::device_zero) {
         std::memset(host, 0, static_cast<size_t>(capacity));
         return capacity;
     }
@@ -358,21 +358,21 @@ uint64_t initialize(uint8_t* host, uint64_t logical, uint64_t capacity, ms::deta
     return capacity - logical;
 }
 
-void wait_raw_in_flight(RawAllocation& raw, ms_context* waiter) {
+void wait_raw_in_flight(RawAllocation& raw, sm_context* waiter) {
     if (raw.in_flight_sync) {
         raw.in_flight_sync->wait(waiter);
         raw.in_flight_sync.reset();
         raw.in_flight_event = nullptr;
         raw.in_flight_value = 0;
     } else if (raw.in_flight_event && raw.in_flight_value) {
-        const uint64_t ns = ms::detail::wait_metal_event(raw.in_flight_event, raw.in_flight_value);
-        if (waiter && ns) ms::detail::record_host_wait(waiter, ns);
+        const uint64_t ns = sm::detail::wait_metal_event(raw.in_flight_event, raw.in_flight_value);
+        if (waiter && ns) sm::detail::record_host_wait(waiter, ns);
         raw.in_flight_event = nullptr;
         raw.in_flight_value = 0;
     }
 }
 
-void ensure_host_ready(Allocation& allocation, ms_context* waiter) {
+void ensure_host_ready(Allocation& allocation, sm_context* waiter) {
     if (allocation.host_ready.load(std::memory_order_acquire)) return;
     std::lock_guard lock(allocation.sync_mutex);
     if (allocation.host_ready.load(std::memory_order_relaxed)) return;
@@ -382,20 +382,20 @@ void ensure_host_ready(Allocation& allocation, ms_context* waiter) {
         allocation.producer_event = nullptr;
         allocation.producer_value = 0;
     } else if (allocation.producer_event && allocation.producer_value) {
-        const uint64_t ns = ms::detail::wait_metal_event(allocation.producer_event, allocation.producer_value);
-        if (waiter && ns) ms::detail::record_host_wait(waiter, ns);
+        const uint64_t ns = sm::detail::wait_metal_event(allocation.producer_event, allocation.producer_value);
+        if (waiter && ns) sm::detail::record_host_wait(waiter, ns);
         allocation.producer_event = nullptr;
         allocation.producer_value = 0;
     }
     if (allocation.prior_event && allocation.prior_value) {
-        const uint64_t ns = ms::detail::wait_metal_event(allocation.prior_event, allocation.prior_value);
-        if (waiter && ns) ms::detail::record_host_wait(waiter, ns);
+        const uint64_t ns = sm::detail::wait_metal_event(allocation.prior_event, allocation.prior_value);
+        if (waiter && ns) sm::detail::record_host_wait(waiter, ns);
         allocation.prior_event = nullptr;
         allocation.prior_value = 0;
     }
     if (allocation.pending_fill.active) {
         auto* base = static_cast<uint8_t*>(allocation.host) + allocation.pending_fill.offset;
-        const auto fill = allocation.pending_fill.zero_logical ? ms::detail::Fill::zero : ms::detail::Fill::unfilled;
+        const auto fill = allocation.pending_fill.zero_logical ? sm::detail::Fill::zero : sm::detail::Fill::unfilled;
         const uint64_t zeroed = initialize(base, allocation.pending_fill.logical, allocation.pending_fill.capacity,
                                            fill, allocation.pending_fill.poison_logical);
         allocation.state->host_fill_bytes.fetch_add(zeroed, std::memory_order_relaxed);
@@ -404,21 +404,21 @@ void ensure_host_ready(Allocation& allocation, ms_context* waiter) {
     allocation.host_ready.store(true, std::memory_order_release);
 }
 
-template<class Function> ms_status buffer_api(const ms_buffer* buffer, Function&& function) noexcept {
+template<class Function> sm_status buffer_api(const sm_buffer* buffer, Function&& function) noexcept {
     try {
         check_buffer(buffer);
         function();
         state_error(buffer->allocation->state, "");
-        return MS_OK;
+        return SM_OK;
     } catch (const Error& error) {
         if (buffer && buffer->pid == getpid()) state_error(buffer->allocation->state, error.what());
         return error.status;
     } catch (const std::bad_alloc&) {
         if (buffer && buffer->pid == getpid()) state_error(buffer->allocation->state, "native allocation failed");
-        return MS_EOOM;
+        return SM_EOOM;
     } catch (...) {
         if (buffer && buffer->pid == getpid()) state_error(buffer->allocation->state, "native buffer operation failed");
-        return MS_EBACKEND;
+        return SM_EBACKEND;
     }
 }
 struct ExportOwner {
@@ -437,29 +437,29 @@ void export_release(void* pointer) noexcept {
         delete owner;
 }
 
-Identity source_identity(const ms_buffer_view& source) {
+Identity source_identity(const sm_buffer_view& source) {
     if (source.retain == export_retain && source.release == export_release) {
         const auto* owner = static_cast<const ExportOwner*>(source.owner);
-        if (owner->pid != getpid()) throw Error(MS_ESTATE, "inherited export is unusable after fork");
+        if (owner->pid != getpid()) throw Error(SM_ESTATE, "inherited export is unusable after fork");
         const auto& allocation = owner->allocation;
         if (allocation->key != Key{source.kind, source.device_id, source.allocation_id} ||
             allocation->host != source.host_base || allocation->metal != source.metal_buffer ||
             allocation->capacity != source.capacity)
-            throw Error(MS_EINVAL, "native export backing metadata changed");
+            throw Error(SM_EINVAL, "native export backing metadata changed");
         return allocation->identity;
     }
     return {source.owner, source.retain, source.release};
 }
-bool same_backing(const Allocation& allocation, const ms_buffer_view& source, Identity identity) {
+bool same_backing(const Allocation& allocation, const sm_buffer_view& source, Identity identity) {
     return allocation.host == source.host_base && allocation.metal == source.metal_buffer &&
            allocation.capacity == source.capacity && allocation.identity == identity;
 }
 
-std::shared_ptr<Allocation> admitted_source(ms_context* context, const ms_buffer_view& source) {
+std::shared_ptr<Allocation> admitted_source(sm_context* context, const sm_buffer_view& source) {
     const Identity identity = source_identity(source);
     const Key key{source.kind, source.device_id, source.allocation_id};
     const auto state = context->state;
-    const bool need_producer = source.kind == MS_BUFFER_METAL && !(source.flags & MS_BUFFER_PRODUCER_COMPLETE);
+    const bool need_producer = source.kind == SM_BUFFER_METAL && !(source.flags & SM_BUFFER_PRODUCER_COMPLETE);
     std::shared_ptr<AsyncSync> exported_sync;
     if (need_producer && source.retain == export_retain && source.release == export_release) {
         const auto& src_alloc = static_cast<const ExportOwner*>(source.owner)->allocation;
@@ -474,10 +474,10 @@ std::shared_ptr<Allocation> admitted_source(ms_context* context, const ms_buffer
     }
     if (existing) {
         if (!same_backing(*existing, source, identity))
-            throw Error(MS_EINVAL, "allocation identity collides with different backing");
+            throw Error(SM_EINVAL, "allocation identity collides with different backing");
         if (need_producer) {
             std::lock_guard sync_lock(existing->sync_mutex);
-            if (!ms::detail::metal_event_complete(source.completion_event, source.completion_value)) {
+            if (!sm::detail::metal_event_complete(source.completion_event, source.completion_value)) {
                 existing->producer_event = source.completion_event;
                 existing->producer_value = source.completion_value;
                 if (exported_sync) existing->producer_sync = std::move(exported_sync);
@@ -494,10 +494,10 @@ std::shared_ptr<Allocation> admitted_source(ms_context* context, const ms_buffer
     candidate->host = source.host_base;
     candidate->metal = source.metal_buffer;
     candidate->identity = identity;
-    candidate->host_readable = (source.flags & MS_BUFFER_HOST_READABLE) != 0;
+    candidate->host_readable = (source.flags & SM_BUFFER_HOST_READABLE) != 0;
     candidate->foreign = std::make_unique<ForeignHold>(source);
     if (need_producer) {
-        if (!ms::detail::metal_event_complete(source.completion_event, source.completion_value)) {
+        if (!sm::detail::metal_event_complete(source.completion_event, source.completion_value)) {
             candidate->producer_event = source.completion_event;
             candidate->producer_value = source.completion_value;
             if (exported_sync) candidate->producer_sync = std::move(exported_sync);
@@ -511,7 +511,7 @@ std::shared_ptr<Allocation> admitted_source(ms_context* context, const ms_buffer
         if (entry != state->allocations.end()) result = entry->second.allocation.lock();
         if (result) {
             if (!same_backing(*result, source, identity))
-                throw Error(MS_EINVAL, "allocation identity collides with different backing");
+                throw Error(SM_EINVAL, "allocation identity collides with different backing");
         } else {
             state->admit(source.capacity);
             state->allocations.insert_or_assign(key, Entry{candidate, candidate->generation});
@@ -525,7 +525,7 @@ std::shared_ptr<Allocation> admitted_source(ms_context* context, const ms_buffer
     }
     if (result != candidate && need_producer) {
         std::lock_guard sync_lock(result->sync_mutex);
-        if (!ms::detail::metal_event_complete(source.completion_event, source.completion_value)) {
+        if (!sm::detail::metal_event_complete(source.completion_event, source.completion_value)) {
             result->producer_event = source.completion_event;
             result->producer_value = source.completion_value;
             if (exported_sync) result->producer_sync = std::move(exported_sync);
@@ -536,7 +536,7 @@ std::shared_ptr<Allocation> admitted_source(ms_context* context, const ms_buffer
 }
 } // namespace
 
-namespace ms::detail {
+namespace sm::detail {
 struct Reservation::Impl {
     std::shared_ptr<State> state;
     uint64_t remaining;
@@ -561,31 +561,31 @@ Reservation& Reservation::operator=(Reservation&& other) noexcept {
     }
     return *this;
 }
-void check_context(ms_context* context) {
-    if (!context) throw Error(MS_EINVAL, "null context");
-    if (context->pid != getpid()) throw Error(MS_ESTATE, "inherited context is unusable after fork");
+void check_context(sm_context* context) {
+    if (!context) throw Error(SM_EINVAL, "null context");
+    if (context->pid != getpid()) throw Error(SM_ESTATE, "inherited context is unusable after fork");
 }
-void set_error(ms_context* context, ms_status, const char* message) noexcept {
+void set_error(sm_context* context, sm_status, const char* message) noexcept {
     if (context && context->pid == getpid()) state_error(context->state, message);
 }
-uint64_t padded_capacity(uint64_t logical, ms_context* context) {
+uint64_t padded_capacity(uint64_t logical, sm_context* context) {
     uint64_t alignment = 64;
     if (context) {
         check_context(context);
-        if (context->state->kind == MS_BUFFER_METAL) {
+        if (context->state->kind == SM_BUFFER_METAL) {
             const long page_size = sysconf(_SC_PAGESIZE);
             if (page_size < 64 || (page_size & (page_size - 1)))
-                throw Error(MS_EBACKEND, "unsupported host page size for Metal admission");
+                throw Error(SM_EBACKEND, "unsupported host page size for Metal admission");
             alignment = static_cast<uint64_t>(page_size);
         }
     }
     const uint64_t size = checked_add(logical, 64);
     const uint64_t capacity = checked_add(size, alignment - 1) & ~(alignment - 1);
     if (capacity > std::numeric_limits<size_t>::max())
-        throw Error(MS_EOVERFLOW, "buffer exceeds host address range");
+        throw Error(SM_EOVERFLOW, "buffer exceeds host address range");
     return capacity;
 }
-Reservation reserve(ms_context* context, uint64_t bytes) {
+Reservation reserve(sm_context* context, uint64_t bytes) {
     check_context(context);
     auto reservation = std::make_unique<Reservation::Impl>(context->state, bytes);
     {
@@ -609,10 +609,10 @@ struct Held {
     }
 };
 RawAllocation native_allocation(State& state, uint64_t capacity) {
-    if (state.kind == MS_BUFFER_CPU) {
+    if (state.kind == SM_BUFFER_CPU) {
         void* pointer = nullptr;
         if (posix_memalign(&pointer, 64, static_cast<size_t>(capacity)))
-            throw Error(MS_EOOM, "aligned CPU allocation failed");
+            throw Error(SM_EOOM, "aligned CPU allocation failed");
         RawAllocation raw;
         raw.owner = std::shared_ptr<void>(pointer, std::free);
         raw.host = pointer;
@@ -622,7 +622,7 @@ RawAllocation native_allocation(State& state, uint64_t capacity) {
     try {
         return allocate_metal(capacity);
     } catch (const Error& error) {
-        if (error.status != MS_EOOM) throw;
+        if (error.status != SM_EOOM) throw;
         // The device, not the budget, refused: free idle storage and retry once.
         std::list<CacheEntry> evicted;
         {
@@ -646,7 +646,7 @@ RawAllocation native_allocation(State& state, uint64_t capacity) {
 void register_native(State& state, const std::shared_ptr<Allocation>& allocation, uint64_t device_id) {
     for (;;) {
         const uint64_t id = next_id.fetch_add(1, std::memory_order_relaxed);
-        if (!id) throw Error(MS_EOVERFLOW, "allocation ID space exhausted");
+        if (!id) throw Error(SM_EOVERFLOW, "allocation ID space exhausted");
         allocation->key = {state.kind, device_id, id};
         auto entry = state.allocations.find(allocation->key);
         if (entry == state.allocations.end() || entry->second.allocation.expired()) break;
@@ -655,9 +655,9 @@ void register_native(State& state, const std::shared_ptr<Allocation>& allocation
     insert_live_metal(state, allocation->metal, allocation.get());
 }
 
-void setup_allocation_fill(State& state, ms_context* context, Allocation& allocation, uint64_t offset,
+void setup_allocation_fill(State& state, sm_context* context, Allocation& allocation, uint64_t offset,
                            uint64_t logical, uint64_t fill_capacity, Fill fill) {
-    const bool defer = state.kind == MS_BUFFER_METAL &&
+    const bool defer = state.kind == SM_BUFFER_METAL &&
                        (fill == Fill::device_zero || fill == Fill::device_unfilled);
     if (defer) {
         if (!allocation.arena_slab && allocation.raw.in_flight_event && allocation.raw.in_flight_value &&
@@ -681,15 +681,15 @@ void setup_allocation_fill(State& state, ms_context* context, Allocation& alloca
 }
 } // namespace
 
-BufferPtr allocate_reserved(ms_context* context, Reservation& reservation, uint64_t logical, Fill fill) {
+BufferPtr allocate_reserved(sm_context* context, Reservation& reservation, uint64_t logical, Fill fill) {
     check_context(context);
     if (!reservation.impl_ || reservation.impl_->pid != getpid())
-        throw Error(MS_ESTATE, "missing or inherited reservation");
+        throw Error(SM_ESTATE, "missing or inherited reservation");
     if (reservation.impl_->state != context->state)
-        throw Error(MS_EINVAL, "reservation belongs to another context");
+        throw Error(SM_EINVAL, "reservation belongs to another context");
     const uint64_t capacity = padded_capacity(logical, context);
     if (capacity > reservation.impl_->remaining)
-        throw Error(MS_EINVAL, "allocation exceeds reservation");
+        throw Error(SM_EINVAL, "allocation exceeds reservation");
     auto& state = *context->state;
     Held held{context->state}; // declared first: storage is freed before its bytes are released
     auto allocation = std::make_shared<Allocation>();
@@ -698,7 +698,7 @@ BufferPtr allocate_reserved(ms_context* context, Reservation& reservation, uint6
     allocation->owned_logical_bytes = logical;
     allocation->logical_capacity = capacity;
     allocation->capacity = capacity;
-    if (state.kind == MS_BUFFER_METAL) {
+    if (state.kind == SM_BUFFER_METAL) {
         // Reuse the most recently cached buffer of this capacity, or for >= 1 MiB
         // allocations fall back to a bounded over-fit cached buffer up to 1.5x.
         std::lock_guard lock(state.mutex);
@@ -728,20 +728,20 @@ BufferPtr allocate_reserved(ms_context* context, Reservation& reservation, uint6
     // frees the uncharged raw allocation before Held releases its pending charge.
     // Initialization below restores the same fill and padding contract as new storage.
     if (reused) {
-        const bool defer = state.kind == MS_BUFFER_METAL &&
+        const bool defer = state.kind == SM_BUFFER_METAL &&
                            (fill == Fill::device_zero || fill == Fill::device_unfilled);
         if (!defer) wait_raw_in_flight(allocation->raw, context);
         prepare_cached_metal(allocation->raw);
     }
     if (!allocation->raw.owner || !allocation->raw.host || allocation->raw.capacity != physical ||
         (reinterpret_cast<uintptr_t>(allocation->raw.host) & 63u) ||
-        (state.kind == MS_BUFFER_METAL && (!allocation->raw.metal || !allocation->raw.device_id)))
-        throw Error(MS_EBACKEND, "storage backend returned invalid allocation");
+        (state.kind == SM_BUFFER_METAL && (!allocation->raw.metal || !allocation->raw.device_id)))
+        throw Error(SM_EBACKEND, "storage backend returned invalid allocation");
     allocation->host = allocation->raw.host;
     allocation->metal = allocation->raw.metal;
     allocation->identity = {allocation.get(), export_retain, export_release};
     setup_allocation_fill(state, context, *allocation, 0, logical, physical, fill);
-    BufferPtr buffer(new ms_buffer(allocation, 0, logical));
+    BufferPtr buffer(new sm_buffer(allocation, 0, logical));
     {
         std::lock_guard lock(state.mutex);
         register_native(state, allocation, allocation->raw.device_id);
@@ -758,12 +758,12 @@ BufferPtr allocate_reserved(ms_context* context, Reservation& reservation, uint6
     return buffer;
 }
 
-BufferPtr allocate_scratch(ms_context* context, uint64_t logical, Fill fill) {
+BufferPtr allocate_scratch(sm_context* context, uint64_t logical, Fill fill) {
     check_context(context);
     auto& state = *context->state;
     const uint64_t padded = checked_add(logical, 64);
     const uint64_t slice_bytes = checked_add(padded, arena_slice_alignment - 1) & ~(arena_slice_alignment - 1);
-    if (state.kind != MS_BUFFER_METAL || logical > arena_max_logical || slice_bytes > arena_slab_bytes) {
+    if (state.kind != SM_BUFFER_METAL || logical > arena_max_logical || slice_bytes > arena_slab_bytes) {
         auto reservation = reserve(context, padded_capacity(logical, context));
         return allocate_reserved(context, reservation, logical, fill);
     }
@@ -914,7 +914,7 @@ BufferPtr allocate_scratch(ms_context* context, uint64_t logical, Fill fill) {
             RawAllocation raw = native_allocation(state, arena_slab_bytes);
             if (!raw.owner || !raw.host || raw.capacity != arena_slab_bytes ||
                 (reinterpret_cast<uintptr_t>(raw.host) & 63u) || !raw.metal || !raw.device_id)
-                throw Error(MS_EBACKEND, "storage backend returned invalid arena slab");
+                throw Error(SM_EBACKEND, "storage backend returned invalid arena slab");
             auto fresh = std::make_shared<ArenaSlab>();
             fresh->raw = std::move(raw);
             fresh->bump = slice_bytes;
@@ -950,7 +950,7 @@ BufferPtr allocate_scratch(ms_context* context, uint64_t logical, Fill fill) {
         allocation->prior_value = slice_prior_value;
     }
     setup_allocation_fill(state, context, *allocation, slice_offset, logical, slice_bytes, fill);
-    BufferPtr buffer(new ms_buffer(allocation, slice_offset, logical));
+    BufferPtr buffer(new sm_buffer(allocation, slice_offset, logical));
     {
         std::lock_guard lock(state.mutex);
         if (waited_prior_event && chosen->prior_event == waited_prior_event &&
@@ -967,18 +967,18 @@ BufferPtr allocate_scratch(ms_context* context, uint64_t logical, Fill fill) {
     return buffer;
 }
 
-bool is_scratch_slice(const ms_buffer* buffer) {
+bool is_scratch_slice(const sm_buffer* buffer) {
     check_buffer(buffer);
     return buffer->allocation->arena_slab != nullptr;
 }
 
-BufferPtr wrap_immutable(ms_context* context, const void* bytes, uint64_t length, const void* owner_base,
+BufferPtr wrap_immutable(sm_context* context, const void* bytes, uint64_t length, const void* owner_base,
                          uint64_t owner_size, std::shared_ptr<void> producer) {
-    if (storage_kind(context) != MS_BUFFER_METAL || !bytes || !length || !owner_base || !producer)
-        throw Error(MS_ENOTSUP, "no-copy import requires Metal and an immutable buffer owner");
+    if (storage_kind(context) != SM_BUFFER_METAL || !bytes || !length || !owner_base || !producer)
+        throw Error(SM_ENOTSUP, "no-copy import requires Metal and an immutable buffer owner");
     const auto page_size = sysconf(_SC_PAGESIZE);
     if (page_size < 64 || (page_size & (page_size - 1)))
-        throw Error(MS_EBACKEND, "unsupported host page size for Metal import");
+        throw Error(SM_EBACKEND, "unsupported host page size for Metal import");
     const auto mask = static_cast<uint64_t>(page_size - 1);
     const auto first = reinterpret_cast<uintptr_t>(bytes);
     const auto base = first & ~mask;
@@ -986,7 +986,7 @@ BufferPtr wrap_immutable(ms_context* context, const void* bytes, uint64_t length
     const auto capacity = end - base;
     const auto witness = reinterpret_cast<uintptr_t>(owner_base);
     if (base < witness || end > checked_add(witness, owner_size))
-        throw Error(MS_ENOTSUP, "page-rounded buffer lies outside its immutable owner");
+        throw Error(SM_ENOTSUP, "page-rounded buffer lies outside its immutable owner");
 
     auto reservation = reserve(context, capacity);
     auto allocation = std::make_shared<Allocation>();
@@ -997,7 +997,7 @@ BufferPtr wrap_immutable(ms_context* context, const void* bytes, uint64_t length
     allocation->host = allocation->raw.host;
     allocation->metal = allocation->raw.metal;
     allocation->identity = {allocation.get(), export_retain, export_release};
-    BufferPtr buffer(new ms_buffer(allocation, first - base, length));
+    BufferPtr buffer(new sm_buffer(allocation, first - base, length));
     auto& state = *context->state;
     {
         std::lock_guard lock(state.mutex);
@@ -1010,47 +1010,47 @@ BufferPtr wrap_immutable(ms_context* context, const void* bytes, uint64_t length
     }
     return buffer;
 }
-ReadView read(const ms_buffer* buffer, ms_context* expected) {
+ReadView read(const sm_buffer* buffer, sm_context* expected) {
     check_buffer_context(buffer, expected);
     if (!buffer->allocation->host_readable)
-        throw Error(MS_ENOTSUP, "buffer is not host-readable");
+        throw Error(SM_ENOTSUP, "buffer is not host-readable");
     ensure_host_ready(*buffer->allocation, expected);
     const auto* base = static_cast<const uint8_t*>(buffer->allocation->host);
     if (!base && buffer->size)
-        throw Error(MS_ENOTSUP, "buffer has no host-readable mapping");
+        throw Error(SM_ENOTSUP, "buffer has no host-readable mapping");
     return {base ? base + buffer->offset : nullptr, buffer->size};
 }
-uint64_t buffer_size(const ms_buffer* buffer, ms_context* expected) {
+uint64_t buffer_size(const sm_buffer* buffer, sm_context* expected) {
     check_buffer_context(buffer, expected);
     return buffer->size;
 }
-uint64_t owned_capacity(const ms_buffer* buffer) {
+uint64_t owned_capacity(const sm_buffer* buffer) {
     check_buffer(buffer);
     return buffer->allocation->owned ? buffer->allocation->logical_capacity : 0;
 }
-bool whole_owned_buffer(const ms_buffer* buffer, uint64_t logical_bytes) {
+bool whole_owned_buffer(const sm_buffer* buffer, uint64_t logical_bytes) {
     check_buffer(buffer);
     return buffer->allocation->owned && !buffer->allocation->arena_slab &&
            buffer->offset == 0 && buffer->size == logical_bytes &&
            buffer->allocation->owned_logical_bytes == logical_bytes;
 }
-DeviceView device_view(const ms_buffer* buffer, ms_context* expected) {
+DeviceView device_view(const sm_buffer* buffer, sm_context* expected) {
     check_buffer_context(buffer, expected);
-    if (!buffer->allocation->metal) throw Error(MS_ENOTSUP, "buffer has no Metal resource");
+    if (!buffer->allocation->metal) throw Error(SM_ENOTSUP, "buffer has no Metal resource");
     return {buffer->allocation->metal, buffer->offset, buffer->size};
 }
-uint32_t storage_kind(ms_context* context) {
+uint32_t storage_kind(sm_context* context) {
     check_context(context);
     return context->state->kind;
 }
-uint64_t available_headroom_bytes(ms_context* context) noexcept {
+uint64_t available_headroom_bytes(sm_context* context) noexcept {
     if (!context || context->pid != getpid() || !context->state) return 0;
     auto& state = *context->state;
     std::lock_guard lock(state.mutex);
     const uint64_t committed = state.total() - state.cached;
     return state.limit > committed ? state.limit - committed : 0;
 }
-BufferResidency buffer_residency(const ms_buffer* buffer) noexcept {
+BufferResidency buffer_residency(const sm_buffer* buffer) noexcept {
     if (!buffer || buffer->pid != getpid() || !buffer->allocation) return {};
     const auto& alloc = *buffer->allocation;
     BufferResidency res;
@@ -1081,7 +1081,7 @@ void rollback_gpu_batch(const PreparedGpuBatch& prepared) noexcept {
     }
 }
 
-PreparedGpuBatch prepare_gpu_batch(ms_context* context, const std::vector<const ms_buffer*>& bound_buffers,
+PreparedGpuBatch prepare_gpu_batch(sm_context* context, const std::vector<const sm_buffer*>& bound_buffers,
                                    const std::vector<void*>& indirect_metal_buffers) {
     check_context(context);
     PreparedGpuBatch result;
@@ -1089,7 +1089,7 @@ PreparedGpuBatch prepare_gpu_batch(ms_context* context, const std::vector<const 
     auto& state = *context->state;
     std::vector<std::shared_ptr<Allocation>> matched;
     matched.reserve(bound_buffers.size() + indirect_metal_buffers.size());
-    for (const ms_buffer* buf : bound_buffers) {
+    for (const sm_buffer* buf : bound_buffers) {
         if (buf && buf->allocation) matched.push_back(buf->allocation);
     }
     if (!indirect_metal_buffers.empty()) {
@@ -1160,7 +1160,7 @@ PreparedGpuBatch prepare_gpu_batch(ms_context* context, const std::vector<const 
     return result;
 }
 
-void complete_sync_gpu_batch(ms_context* context, const PreparedGpuBatch& prepared) noexcept {
+void complete_sync_gpu_batch(sm_context* context, const PreparedGpuBatch& prepared) noexcept {
     for (const auto& opaque : prepared.claimed) {
         auto& alloc = *static_cast<Allocation*>(opaque.get());
         std::lock_guard sync_lock(alloc.sync_mutex);
@@ -1198,7 +1198,7 @@ void complete_sync_gpu_batch(ms_context* context, const PreparedGpuBatch& prepar
 }
 
 std::vector<std::shared_ptr<void>> borrowed_pins_for_async(const PreparedGpuBatch& prepared,
-                                                           const ms_buffer* const* outputs, size_t output_count) {
+                                                           const sm_buffer* const* outputs, size_t output_count) {
     std::vector<std::shared_ptr<void>> pins;
     for (const auto& opaque : prepared.touched) {
         const auto& alloc = *static_cast<const Allocation*>(opaque.get());
@@ -1218,12 +1218,12 @@ std::vector<std::shared_ptr<void>> borrowed_pins_for_async(const PreparedGpuBatc
     return pins;
 }
 
-std::shared_ptr<void> context_state_handle(ms_context* context) {
+std::shared_ptr<void> context_state_handle(sm_context* context) {
     check_context(context);
     return context->state;
 }
 
-void attach_async_gpu_batch(ms_context* context, const PreparedGpuBatch& prepared, const ms_buffer* const* outputs,
+void attach_async_gpu_batch(sm_context* context, const PreparedGpuBatch& prepared, const sm_buffer* const* outputs,
                             size_t output_count, void* event, uint64_t ticket,
                             const std::shared_ptr<AsyncSync>& sync) {
     if (context && context->state && !prepared.touched.empty()) {
@@ -1268,7 +1268,7 @@ void attach_async_gpu_batch(ms_context* context, const PreparedGpuBatch& prepare
     }
 }
 
-void register_async_gpu_submission(ms_context* context, const std::shared_ptr<AsyncSync>& sync) {
+void register_async_gpu_submission(sm_context* context, const std::shared_ptr<AsyncSync>& sync) {
     auto& state = *context->state;
     std::lock_guard lock(state.async_mutex);
     state.async_submissions.erase(
@@ -1278,7 +1278,7 @@ void register_async_gpu_submission(ms_context* context, const std::shared_ptr<As
     state.async_submissions.push_back(sync);
 }
 
-void retire_async_gpu(const std::shared_ptr<void>& state_handle, ms_context* waiter,
+void retire_async_gpu(const std::shared_ptr<void>& state_handle, sm_context* waiter,
                       uint64_t gpu_ns, uint64_t wait_ns) noexcept {
     if (state_handle) {
         auto& origin = *static_cast<State*>(state_handle.get());
@@ -1292,7 +1292,7 @@ void retire_async_gpu(const std::shared_ptr<void>& state_handle, ms_context* wai
         waiter->state->host_wait_ns.fetch_add(wait_ns, std::memory_order_relaxed);
 }
 
-void flush_async_gpu(ms_context* context) {
+void flush_async_gpu(sm_context* context) {
     check_context(context);
     std::vector<std::shared_ptr<AsyncSync>> pending;
     {
@@ -1311,15 +1311,15 @@ void flush_async_gpu(ms_context* context) {
     if (first_error) std::rethrow_exception(first_error);
 }
 
-void record_host_wait(ms_context* context, uint64_t nanoseconds) noexcept {
+void record_host_wait(sm_context* context, uint64_t nanoseconds) noexcept {
     if (!context || context->pid != getpid()) return;
     context->state->host_wait_ns.fetch_add(nanoseconds, std::memory_order_relaxed);
 }
 namespace {
-thread_local const ms_context* active_gpu_op_context = nullptr;
+thread_local const sm_context* active_gpu_op_context = nullptr;
 } // namespace
 
-void record_gpu(ms_context* context, uint64_t operations, uint64_t command_buffers, uint64_t dispatches,
+void record_gpu(sm_context* context, uint64_t operations, uint64_t command_buffers, uint64_t dispatches,
                 uint64_t gpu_ns) noexcept {
     if (!context || context->pid != getpid()) return;
     if (active_gpu_op_context == context) operations = 0;
@@ -1329,7 +1329,7 @@ void record_gpu(ms_context* context, uint64_t operations, uint64_t command_buffe
     state.gpu_dispatches.fetch_add(dispatches, std::memory_order_relaxed);
     state.gpu_ns.fetch_add(gpu_ns, std::memory_order_relaxed);
 }
-GpuOperationScope::GpuOperationScope(ms_context* context, bool active) noexcept {
+GpuOperationScope::GpuOperationScope(sm_context* context, bool active) noexcept {
     if (active && context && active_gpu_op_context != context) {
         context_ = context;
         outermost_ = true;
@@ -1346,44 +1346,44 @@ void GpuOperationScope::complete() noexcept {
         record_gpu(context_, 1, 0, 0, 0);
     }
 }
-uint8_t* mutable_data(ms_buffer* buffer) {
+uint8_t* mutable_data(sm_buffer* buffer) {
     check_buffer(buffer);
-    if (!buffer->allocation->owned) throw Error(MS_ESTATE, "borrowed buffers are immutable");
+    if (!buffer->allocation->owned) throw Error(SM_ESTATE, "borrowed buffers are immutable");
     ensure_host_ready(*buffer->allocation, nullptr);
     return static_cast<uint8_t*>(buffer->allocation->host) + buffer->offset;
 }
-} // namespace ms::detail
+} // namespace sm::detail
 
 extern "C" {
-ms_status ms_context_create(const ms_context_options* options, ms_context** out) {
+sm_status sm_context_create(const sm_context_options* options, sm_context** out) {
     try {
         if (!options || !out || options->struct_size < sizeof(*options) ||
-            options->abi_version != MS_RUNTIME_ABI_VERSION || (options->flags & ~MS_CONTEXT_POISON_UNWRITTEN) ||
+            options->abi_version != SM_RUNTIME_ABI_VERSION || (options->flags & ~SM_CONTEXT_POISON_UNWRITTEN) ||
             options->reserved[0] || options->reserved[1] ||
-            (options->storage_kind != MS_BUFFER_CPU && options->storage_kind != MS_BUFFER_METAL) ||
+            (options->storage_kind != SM_BUFFER_CPU && options->storage_kind != SM_BUFFER_METAL) ||
             !options->memory_limit_bytes || options->external_reservation_bytes > options->memory_limit_bytes)
-            return MS_EINVAL;
+            return SM_EINVAL;
         auto state = std::make_shared<State>(*options);
-        auto context = std::make_unique<ms_context>(std::move(state));
+        auto context = std::make_unique<sm_context>(std::move(state));
         *out = context.release();
-        return MS_OK;
-    } catch (const std::bad_alloc&) { return MS_EOOM; }
-    catch (...) { return MS_EBACKEND; }
+        return SM_OK;
+    } catch (const std::bad_alloc&) { return SM_EOOM; }
+    catch (...) { return SM_EBACKEND; }
 }
-void ms_context_retain(ms_context* context) {
+void sm_context_retain(sm_context* context) {
     if (context && context->pid == getpid()) context->refs.fetch_add(1, std::memory_order_relaxed);
 }
-void ms_context_release(ms_context* context) {
+void sm_context_release(sm_context* context) {
     if (context && context->pid == getpid() && context->refs.fetch_sub(1, std::memory_order_acq_rel) == 1)
         delete context;
 }
-ms_status ms_context_memory_info(ms_context* context, ms_memory_info* out) {
-    return ms::detail::api(context, [&] {
-        if (!out || out->struct_size < sizeof(*out) || out->abi_version != MS_RUNTIME_ABI_VERSION)
-            throw Error(MS_EINVAL, "memory info requires initialized size and version");
-        ms_memory_info result{};
+sm_status sm_context_memory_info(sm_context* context, sm_memory_info* out) {
+    return sm::detail::api(context, [&] {
+        if (!out || out->struct_size < sizeof(*out) || out->abi_version != SM_RUNTIME_ABI_VERSION)
+            throw Error(SM_EINVAL, "memory info requires initialized size and version");
+        sm_memory_info result{};
         result.struct_size = sizeof(result);
-        result.abi_version = MS_RUNTIME_ABI_VERSION;
+        result.abi_version = SM_RUNTIME_ABI_VERSION;
         {
             std::lock_guard lock(context->state->mutex);
             result.limit_bytes = context->state->limit;
@@ -1399,15 +1399,15 @@ ms_status ms_context_memory_info(ms_context* context, ms_memory_info* out) {
         *out = result;
     });
 }
-ms_status ms_context_execution_info(ms_context* context, ms_execution_info* out) {
-    return ms::detail::api(context, [&] {
-        if (!out || out->struct_size < sizeof(*out) || out->abi_version != MS_RUNTIME_ABI_VERSION)
-            throw Error(MS_EINVAL, "execution info requires initialized size and version");
-        ms::detail::flush_async_gpu(context);
+sm_status sm_context_execution_info(sm_context* context, sm_execution_info* out) {
+    return sm::detail::api(context, [&] {
+        if (!out || out->struct_size < sizeof(*out) || out->abi_version != SM_RUNTIME_ABI_VERSION)
+            throw Error(SM_EINVAL, "execution info requires initialized size and version");
+        sm::detail::flush_async_gpu(context);
         const auto& state = *context->state;
-        ms_execution_info result{};
+        sm_execution_info result{};
         result.struct_size = sizeof(result);
-        result.abi_version = MS_RUNTIME_ABI_VERSION;
+        result.abi_version = SM_RUNTIME_ABI_VERSION;
         result.gpu_operations = state.gpu_operations.load(std::memory_order_relaxed);
         result.gpu_command_buffers = state.gpu_command_buffers.load(std::memory_order_relaxed);
         result.gpu_dispatches = state.gpu_dispatches.load(std::memory_order_relaxed);
@@ -1419,17 +1419,17 @@ ms_status ms_context_execution_info(ms_context* context, ms_execution_info* out)
         *out = result;
     });
 }
-ms_status ms_context_cache_limit(ms_context* context, uint64_t* out) {
-    return ms::detail::api(context, [&] {
-        if (!out) throw Error(MS_EINVAL, "cache limit output pointer is null");
+sm_status sm_context_cache_limit(sm_context* context, uint64_t* out) {
+    return sm::detail::api(context, [&] {
+        if (!out) throw Error(SM_EINVAL, "cache limit output pointer is null");
         std::lock_guard lock(context->state->mutex);
         *out = context->state->cache_limit;
     });
 }
-ms_status ms_context_set_cache_limit(ms_context* context, uint64_t bytes) {
-    return ms::detail::api(context, [&] {
+sm_status sm_context_set_cache_limit(sm_context* context, uint64_t bytes) {
+    return sm::detail::api(context, [&] {
         auto& state = *context->state;
-        if (bytes && state.kind != MS_BUFFER_METAL) throw Error(MS_ENOTSUP, "only Metal storage caches buffers");
+        if (bytes && state.kind != SM_BUFFER_METAL) throw Error(SM_ENOTSUP, "only Metal storage caches buffers");
         std::list<CacheEntry> evicted;
         {
             std::lock_guard lock(state.mutex);
@@ -1455,8 +1455,8 @@ ms_status ms_context_set_cache_limit(ms_context* context, uint64_t bytes) {
         }
     });
 }
-ms_status ms_context_trim(ms_context* context) {
-    return ms::detail::api(context, [&] {
+sm_status sm_context_trim(sm_context* context) {
+    return sm::detail::api(context, [&] {
         std::list<CacheEntry> evicted;
         {
             std::lock_guard lock(context->state->mutex);
@@ -1470,108 +1470,108 @@ ms_status ms_context_trim(ms_context* context) {
         }
     });
 }
-ms_status ms_context_error_copy(ms_context* context, char* destination, uint64_t capacity) {
+sm_status sm_context_error_copy(sm_context* context, char* destination, uint64_t capacity) {
     try {
-        ms::detail::check_context(context);
-        if (!destination) return MS_EINVAL;
+        sm::detail::check_context(context);
+        if (!destination) return SM_EINVAL;
         if (tls_diagnostic.pid == getpid() && tls_diagnostic.state.lock() == context->state) {
             const size_t needed = std::strlen(tls_diagnostic.error) + 1;
-            if (capacity < needed) return MS_EINVAL;
+            if (capacity < needed) return SM_EINVAL;
             std::memcpy(destination, tls_diagnostic.error, needed);
-            return MS_OK;
+            return SM_OK;
         }
         std::lock_guard lock(context->state->mutex);
         const size_t needed = std::strlen(context->state->error) + 1;
-        if (capacity < needed) return MS_EINVAL;
+        if (capacity < needed) return SM_EINVAL;
         std::memcpy(destination, context->state->error, needed);
-        return MS_OK;
+        return SM_OK;
     } catch (const Error& error) { return error.status; }
-    catch (...) { return MS_EBACKEND; }
+    catch (...) { return SM_EBACKEND; }
 }
-const char* ms_status_message(ms_status status) {
+const char* sm_status_message(sm_status status) {
     switch (status) {
-        case MS_OK: return "success";
-        case MS_EINVAL: return "invalid argument";
-        case MS_ENOTSUP: return "unsupported operation";
-        case MS_EOVERFLOW: return "integer overflow";
-        case MS_EOOM: return "memory admission or allocation failed";
-        case MS_ETIMEOUT: return "operation timed out";
-        case MS_EBACKEND: return "backend failure";
-        case MS_ESTATE: return "invalid process or object state";
+        case SM_OK: return "success";
+        case SM_EINVAL: return "invalid argument";
+        case SM_ENOTSUP: return "unsupported operation";
+        case SM_EOVERFLOW: return "integer overflow";
+        case SM_EOOM: return "memory admission or allocation failed";
+        case SM_ETIMEOUT: return "operation timed out";
+        case SM_EBACKEND: return "backend failure";
+        case SM_ESTATE: return "invalid process or object state";
         default: return "unknown status";
     }
 }
-ms_status ms_buffer_zeros(ms_context* context, uint64_t bytes, ms_buffer** out) {
-    return ms::detail::api(context, [&] {
-        if (!out) throw Error(MS_EINVAL, "null output");
-        auto reservation = ms::detail::reserve(context, ms::detail::padded_capacity(bytes, context));
-        auto buffer = ms::detail::allocate_reserved(context, reservation, bytes);
+sm_status sm_buffer_zeros(sm_context* context, uint64_t bytes, sm_buffer** out) {
+    return sm::detail::api(context, [&] {
+        if (!out) throw Error(SM_EINVAL, "null output");
+        auto reservation = sm::detail::reserve(context, sm::detail::padded_capacity(bytes, context));
+        auto buffer = sm::detail::allocate_reserved(context, reservation, bytes);
         *out = buffer.release();
     });
 }
-ms_status ms_buffer_copy_from_host(ms_context* context, const void* source, uint64_t bytes, ms_buffer** out) {
-    return ms::detail::api(context, [&] {
-        if (!out || (!source && bytes)) throw Error(MS_EINVAL, "null source or output");
-        auto reservation = ms::detail::reserve(context, ms::detail::padded_capacity(bytes, context));
-        auto buffer = ms::detail::allocate_reserved(context, reservation, bytes, ms::detail::Fill::unfilled);
-        if (bytes) std::memcpy(ms::detail::mutable_data(buffer.get()), source, static_cast<size_t>(bytes));
+sm_status sm_buffer_copy_from_host(sm_context* context, const void* source, uint64_t bytes, sm_buffer** out) {
+    return sm::detail::api(context, [&] {
+        if (!out || (!source && bytes)) throw Error(SM_EINVAL, "null source or output");
+        auto reservation = sm::detail::reserve(context, sm::detail::padded_capacity(bytes, context));
+        auto buffer = sm::detail::allocate_reserved(context, reservation, bytes, sm::detail::Fill::unfilled);
+        if (bytes) std::memcpy(sm::detail::mutable_data(buffer.get()), source, static_cast<size_t>(bytes));
         *out = buffer.release();
     });
 }
-void ms_buffer_retain(ms_buffer* buffer) {
+void sm_buffer_retain(sm_buffer* buffer) {
     if (buffer && buffer->pid == getpid()) buffer->refs.fetch_add(1, std::memory_order_relaxed);
 }
-void ms_buffer_release(ms_buffer* buffer) {
+void sm_buffer_release(sm_buffer* buffer) {
     if (buffer && buffer->pid == getpid() && buffer->refs.fetch_sub(1, std::memory_order_acq_rel) == 1)
         delete buffer;
 }
-ms_status ms_buffer_data(const ms_buffer* buffer, const void** data, uint64_t* bytes) {
+sm_status sm_buffer_data(const sm_buffer* buffer, const void** data, uint64_t* bytes) {
     return buffer_api(buffer, [&] {
-        if (!data || !bytes) throw Error(MS_EINVAL, "null data output");
-        const auto result = ms::detail::read(buffer);
+        if (!data || !bytes) throw Error(SM_EINVAL, "null data output");
+        const auto result = sm::detail::read(buffer);
         *data = result.data;
         *bytes = result.size;
     });
 }
-ms_status ms_buffer_slice(const ms_buffer* buffer, uint64_t offset, uint64_t length, ms_buffer** out) {
+sm_status sm_buffer_slice(const sm_buffer* buffer, uint64_t offset, uint64_t length, sm_buffer** out) {
     return buffer_api(buffer, [&] {
-        if (!out) throw Error(MS_EINVAL, "null slice output");
-        if (checked_add(offset, length) > buffer->size) throw Error(MS_EINVAL, "slice exceeds logical bounds");
-        auto result = std::make_unique<ms_buffer>(buffer->allocation, checked_add(buffer->offset, offset), length);
+        if (!out) throw Error(SM_EINVAL, "null slice output");
+        if (checked_add(offset, length) > buffer->size) throw Error(SM_EINVAL, "slice exceeds logical bounds");
+        auto result = std::make_unique<sm_buffer>(buffer->allocation, checked_add(buffer->offset, offset), length);
         *out = result.release();
     });
 }
-ms_status ms_buffer_import(ms_context* context, const ms_buffer_view* source, ms_copy_policy policy, ms_import_result* out) {
-    return ms::detail::api(context, [&] {
-        if (!source || !out || (policy != MS_COPY_AUTO && policy != MS_COPY_NEVER && policy != MS_COPY_ALWAYS))
-            throw Error(MS_EINVAL, "invalid import arguments");
-        const ms_status valid = ms_buffer_validate(source, 1);
-        if (valid != MS_OK) throw Error(valid, "invalid import descriptor");
-        const ms_buffer_view descriptor = *source;
-        if (descriptor.kind != MS_BUFFER_CPU && descriptor.kind != MS_BUFFER_METAL)
-            throw Error(MS_ENOTSUP, "unsupported import buffer kind");
-        if (descriptor.kind == MS_BUFFER_METAL)
-            ms::detail::verify_metal_import(descriptor);
-        const bool eligible = (descriptor.flags & MS_BUFFER_IMMUTABLE) &&
+sm_status sm_buffer_import(sm_context* context, const sm_buffer_view* source, sm_copy_policy policy, sm_import_result* out) {
+    return sm::detail::api(context, [&] {
+        if (!source || !out || (policy != SM_COPY_AUTO && policy != SM_COPY_NEVER && policy != SM_COPY_ALWAYS))
+            throw Error(SM_EINVAL, "invalid import arguments");
+        const sm_status valid = sm_buffer_validate(source, 1);
+        if (valid != SM_OK) throw Error(valid, "invalid import descriptor");
+        const sm_buffer_view descriptor = *source;
+        if (descriptor.kind != SM_BUFFER_CPU && descriptor.kind != SM_BUFFER_METAL)
+            throw Error(SM_ENOTSUP, "unsupported import buffer kind");
+        if (descriptor.kind == SM_BUFFER_METAL)
+            sm::detail::verify_metal_import(descriptor);
+        const bool eligible = (descriptor.flags & SM_BUFFER_IMMUTABLE) &&
                               descriptor.kind == context->state->kind;
-        if (policy == MS_COPY_NEVER && !eligible)
-            throw Error(MS_ENOTSUP, "never-copy requires immutable source matching destination storage");
-        if ((!eligible || policy == MS_COPY_ALWAYS) && !(descriptor.flags & MS_BUFFER_HOST_READABLE))
-            throw Error(MS_ENOTSUP, "snapshot import requires host-readable source");
+        if (policy == SM_COPY_NEVER && !eligible)
+            throw Error(SM_ENOTSUP, "never-copy requires immutable source matching destination storage");
+        if ((!eligible || policy == SM_COPY_ALWAYS) && !(descriptor.flags & SM_BUFFER_HOST_READABLE))
+            throw Error(SM_ENOTSUP, "snapshot import requires host-readable source");
         auto input = admitted_source(context, descriptor);
-        ms_import_result result{};
-        if (eligible && policy != MS_COPY_ALWAYS) {
-            auto buffer = std::make_unique<ms_buffer>(input, descriptor.byte_offset, descriptor.byte_length);
+        sm_import_result result{};
+        if (eligible && policy != SM_COPY_ALWAYS) {
+            auto buffer = std::make_unique<sm_buffer>(input, descriptor.byte_offset, descriptor.byte_length);
             result.buffer = buffer.release();
             result.borrowed_bytes = descriptor.capacity;
         } else {
             ensure_host_ready(*input, context);
-            auto reservation = ms::detail::reserve(context, ms::detail::padded_capacity(descriptor.byte_length, context));
-            auto buffer = ms::detail::allocate_reserved(context, reservation, descriptor.byte_length,
-                                                        ms::detail::Fill::unfilled);
+            auto reservation = sm::detail::reserve(context, sm::detail::padded_capacity(descriptor.byte_length, context));
+            auto buffer = sm::detail::allocate_reserved(context, reservation, descriptor.byte_length,
+                                                        sm::detail::Fill::unfilled);
             if (descriptor.byte_length) {
                 const auto* data = static_cast<const uint8_t*>(input->host) + descriptor.byte_offset;
-                std::memcpy(ms::detail::mutable_data(buffer.get()), data, static_cast<size_t>(descriptor.byte_length));
+                std::memcpy(sm::detail::mutable_data(buffer.get()), data, static_cast<size_t>(descriptor.byte_length));
             }
             result.buffer = buffer.release();
             result.copied_bytes = descriptor.byte_length;
@@ -1579,9 +1579,9 @@ ms_status ms_buffer_import(ms_context* context, const ms_buffer_view* source, ms
         *out = result;
     });
 }
-ms_status ms_buffer_export(const ms_buffer* buffer, ms_buffer_view* out) {
+sm_status sm_buffer_export(const sm_buffer* buffer, sm_buffer_view* out) {
     return buffer_api(buffer, [&] {
-        if (!out) throw Error(MS_EINVAL, "null export output");
+        if (!out) throw Error(SM_EINVAL, "null export output");
         const auto& allocation = buffer->allocation;
         void* completion_event = nullptr;
         uint64_t completion_value = 0;
@@ -1594,7 +1594,7 @@ ms_status ms_buffer_export(const ms_buffer* buffer, ms_buffer_view* out) {
                 sync_lock.unlock();
                 ensure_host_ready(*allocation, nullptr);
             } else if (allocation->producer_event && allocation->producer_value) {
-                if (ms::detail::metal_event_complete(allocation->producer_event, allocation->producer_value)) {
+                if (sm::detail::metal_event_complete(allocation->producer_event, allocation->producer_value)) {
                     completed_sync = std::move(allocation->producer_sync);
                     allocation->producer_event = nullptr;
                     allocation->producer_value = 0;
@@ -1608,12 +1608,12 @@ ms_status ms_buffer_export(const ms_buffer* buffer, ms_buffer_view* out) {
         }
         if (completed_sync) completed_sync->wait(nullptr);
         auto owner = std::make_unique<ExportOwner>(allocation);
-        ms_buffer_view result{};
+        sm_buffer_view result{};
         result.struct_size = sizeof(result);
-        result.abi_version = MS_BUFFER_ABI_VERSION;
+        result.abi_version = SM_BUFFER_ABI_VERSION;
         result.kind = allocation->key.kind;
-        result.flags = (allocation->host_readable ? MS_BUFFER_HOST_READABLE : 0u) | MS_BUFFER_IMMUTABLE |
-                       (producer_complete ? MS_BUFFER_PRODUCER_COMPLETE : 0u);
+        result.flags = (allocation->host_readable ? SM_BUFFER_HOST_READABLE : 0u) | SM_BUFFER_IMMUTABLE |
+                       (producer_complete ? SM_BUFFER_PRODUCER_COMPLETE : 0u);
         result.allocation_id = allocation->key.id;
         result.device_id = allocation->key.device;
         result.host_base = allocation->host;

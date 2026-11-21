@@ -1,7 +1,7 @@
-"""metal_sci.ndimage's separable filters against scipy.ndimage.
+"""scimetal.ndimage's separable filters against scipy.ndimage.
 
 What "agrees with SciPy" means depends on the engine that ran, which every
-check reads from ``metal_sci.last_route()``:
+check reads from ``scimetal.last_route()``:
 
 CPU engine (strict precision; any policy on a forced-CPU device; small arrays):
     bit-identical to this SciPy wheel (1.18.1, arm64) for float32 and float64,
@@ -50,15 +50,15 @@ import scipy.ndimage as sn
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-import metal_sci
-import metal_sci.ndimage as mn
+import scimetal
+import scimetal.ndimage as mn
 
 # Nothing to test where no native filter can run: a library built without the
 # ndimage family, or one whose context cannot allocate (the route then says why).
-with metal_sci.precision("strict"), metal_sci.device("cpu"):
+with scimetal.precision("strict"), scimetal.device("cpu"):
     mn.correlate1d(np.zeros(4), [1.0])
-    if metal_sci.last_route().engine != "cpu":
-        pytest.skip(f"no native ndimage filters: {metal_sci.last_route().reason}", allow_module_level=True)
+    if scimetal.last_route().engine != "cpu":
+        pytest.skip(f"no native ndimage filters: {scimetal.last_route().reason}", allow_module_level=True)
 
 UNIT = 2.0 ** -24
 FUNCTIONS = ("correlate1d", "convolve1d", "gaussian_filter1d", "gaussian_filter", "uniform_filter1d",
@@ -216,7 +216,7 @@ def check(call, a, expect_engine):
     """Run `call` both ways and compare according to the engine that ran. Returns error / bound."""
     reference = call.scipy(a)
     ours = call.ours(a)
-    route = metal_sci.last_route()
+    route = scimetal.last_route()
     assert route.function == f"ndimage.{call.function}"
     assert route.engine == expect_engine, f"{call}: ran on {route}"
     if route.engine == "gpu":
@@ -236,10 +236,10 @@ def check(call, a, expect_engine):
 @pytest.fixture(scope="module")
 def gpu():
     """Skip GPU-engine tests when the native library was built without Metal."""
-    with metal_sci.device("gpu"), metal_sci.precision("fast"):
+    with scimetal.device("gpu"), scimetal.precision("fast"):
         mn.correlate1d(np.zeros(8, dtype=np.float32), [1.0])
-        if metal_sci.last_route().engine != "gpu":
-            pytest.skip(f"no GPU engine: {metal_sci.last_route().reason}")
+        if scimetal.last_route().engine != "gpu":
+            pytest.skip(f"no GPU engine: {scimetal.last_route().reason}")
 
 
 # ---- the CPU engine is SciPy, bit for bit ---------------------------------------------------
@@ -250,12 +250,12 @@ def gpu():
                                             ("refined", "cpu"), ("fast", "auto"), ("refined", "auto")])
 def test_cpu_engine_is_bit_identical_to_scipy(function, dtype, policy, device):
     # Under 'auto' these arrays are far below the GPU crossover, whatever the policy.
-    with metal_sci.precision(policy), metal_sci.device(device):
+    with scimetal.precision(policy), scimetal.device(device):
         for ndim, shape in SHAPES.items():
             a = array(shape, dtype, seed=ndim)
             for call in calls_for(ndim, function):
                 check(call, a, "cpu")
-                route = metal_sci.last_route()
+                route = scimetal.last_route()
                 assert route.policy == policy
                 assert route.compute_dtype == ("float64" if call.windows else dtype.__name__)
 
@@ -265,7 +265,7 @@ def test_cpu_engine_awkward_shapes(dtype):
     """Length-1 axes, windows longer than the axis, lines and tiles, several lanes."""
     shapes = [(1,), (2,), (1, 1), (1, 9), (9, 1), (3, 2, 1, 4), (2, 3, 300), (300, 3, 2), (700, 520), (5, 64, 70),
               (100003,), (4, 30011)]
-    with metal_sci.precision("strict"):
+    with scimetal.precision("strict"):
         for seed, shape in enumerate(shapes):
             a = array(shape, dtype, seed)
             for axis in range(a.ndim):
@@ -291,7 +291,7 @@ def test_every_window_length_matches_scipys_summation(dtype):
     eight unfused, the remainder fused), so sweep the lengths across those boundaries."""
     a = array((64, 37), dtype, seed=3)
     rng = np.random.default_rng(5)
-    with metal_sci.precision("strict"):
+    with scimetal.precision("strict"):
         for pairs in range(0, 70):
             half = rng.standard_normal(pairs + 1)
             symmetric = np.concatenate([half[:0:-1], half])
@@ -310,7 +310,7 @@ def test_weights_symmetric_only_to_rounding_follow_scipy():
         nearly[-3] += scale * np.finfo(float).eps  # 0.25 eps rounds away; 1 eps is "symmetric"; 4 eps is not
         nearly_anti = np.concatenate([-base[:8], [0.0], base[:8][::-1]])
         nearly_anti[-2] += scale * np.finfo(float).eps
-        with metal_sci.precision("strict"):
+        with scimetal.precision("strict"):
             for weights in (nearly, nearly_anti):
                 for axis in (0, 1):
                     check(Call("correlate1d", (weights, axis), {}, [weights]), a, "cpu")
@@ -321,7 +321,7 @@ def test_non_contiguous_inputs_are_filtered_natively():
     base = array((40, 30, 12), np.float64, seed=6)
     views = {"strided": base[::2, 1::3], "fortran": np.asfortranarray(base), "transposed": base.T,
              "reversed": base[::-1, :, ::-1], "offset": base[3:, 2:, 1:]}
-    with metal_sci.precision("strict"):
+    with scimetal.precision("strict"):
         for name, view in views.items():
             assert name == "offset" or not view.flags.c_contiguous
             for call in (Call("gaussian_filter", (1.5,), {}), Call("uniform_filter", (4,), dict(mode="wrap")),
@@ -333,12 +333,12 @@ def test_non_contiguous_inputs_are_filtered_natively():
 def test_special_values_propagate_like_scipy():
     a = array((60, 50), np.float64, seed=7)
     a[5, 7], a[20, 3], a[33, 40], a[40, 10] = np.inf, -np.inf, np.nan, -0.0
-    with metal_sci.precision("strict"), np.errstate(invalid="ignore"):
+    with scimetal.precision("strict"), np.errstate(invalid="ignore"):
         for call in (Call("gaussian_filter", (2.0,), {}), Call("uniform_filter", (5,), dict(mode="constant", cval=np.inf)),
                      Call("correlate1d", ([0.0, 1.0, 0.0],), {}), Call("uniform_filter1d", (1,), {}),
                      Call("gaussian_filter", (1.0,), dict(mode="constant", cval=np.nan))):
             reference, ours = call.scipy(a), call.ours(a)
-            assert metal_sci.last_route().engine == "cpu"
+            assert scimetal.last_route().engine == "cpu"
             np.testing.assert_array_equal(np.isnan(ours), np.isnan(reference))
             finite = ~np.isnan(reference)
             assert ours[finite].tobytes() == reference[finite].tobytes()  # includes the signs of zeros
@@ -351,7 +351,7 @@ def test_special_values_propagate_like_scipy():
                                            (np.float32, "refined"), (np.float32, "strict")])
 def test_gpu_engine_stays_within_the_float32_bound(gpu, function, dtype, policy):
     worst = 0.0
-    with metal_sci.precision(policy), metal_sci.device("gpu"):
+    with scimetal.precision(policy), scimetal.device("gpu"):
         for ndim, shape in SHAPES.items():
             a = array(shape, dtype, seed=10 + ndim)
             for call in calls_for(ndim, function):
@@ -366,7 +366,7 @@ def test_gpu_engine_awkward_shapes(gpu, dtype):
     """Shapes that are not multiples of any threadgroup, length-1 axes, windows longer than the axis."""
     shapes = [(1,), (2,), (1, 1), (1, 9), (9, 1), (3, 2, 1, 4), (2, 3, 300), (300, 3, 2), (257, 1031), (33, 65, 17),
               (100003,), (4, 30011)]
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         for seed, shape in enumerate(shapes):
             a = array(shape, dtype, seed)
             for axis in range(a.ndim):
@@ -392,7 +392,7 @@ def test_gpu_float64_results_are_exactly_widened_float32_results(gpu):
     """The last pass stores float64 directly: same value as the float32 result, another representation."""
     a32 = array((123, 211), np.float32, seed=8)
     a64 = a32.astype(np.float64)
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         for call in (Call("gaussian_filter", (2.0,), {}), Call("gaussian_filter1d", (3.0, 0), dict(order=1)),
                      Call("uniform_filter", (6,), dict(mode="constant", cval=0.5)), Call("sobel", (), {})):
             single, double = call.ours(a32), call.ours(a64)
@@ -408,12 +408,12 @@ def test_gpu_special_values(gpu):
     a = array((60, 50), np.float64, seed=7)
     a[5, 7], a[20, 3], a[33, 40] = np.inf, -np.inf, np.nan
     asymmetric = [0.5, 0.25, 0.125, 1.0]
-    with metal_sci.precision("fast"), metal_sci.device("gpu"), np.errstate(invalid="ignore"):
+    with scimetal.precision("fast"), scimetal.device("gpu"), np.errstate(invalid="ignore"):
         for call in (Call("gaussian_filter", (2.0,), {}, [gaussian_weights(2.0)] * 2),
                      Call("correlate1d", (asymmetric,), dict(mode="constant", cval=np.inf), [asymmetric]),
                      Call("sobel", (0,), dict(mode="wrap"), [[-1, 0, 1], [1, 2, 1]])):
             reference, ours = call.scipy(a), call.ours(a)
-            assert metal_sci.last_route().engine == "gpu"
+            assert scimetal.last_route().engine == "gpu"
             np.testing.assert_array_equal(np.isnan(ours), np.isnan(reference))
             np.testing.assert_array_equal(np.isinf(ours), np.isinf(reference))
             finite = np.isfinite(reference)
@@ -431,19 +431,19 @@ def test_gpu_special_values(gpu):
 def test_policy_and_device_matrix(gpu, dtype, policy, device):
     a = array((96, 120), dtype, seed=9)
     call = Call("gaussian_filter", (2.0,), dict(mode="mirror"), [gaussian_weights(2.0)] * 2)
-    with metal_sci.precision(policy), metal_sci.device(device):
+    with scimetal.precision(policy), scimetal.device(device):
         if device == "gpu" and policy == "strict" and dtype == np.float64:
             # Strict keeps float64 off the GPU and a forced GPU never falls back to the CPU
             # engine: the call is SciPy's, with the reason on record.
             assert_identical(call.ours(a), call.scipy(a))
-            route = metal_sci.last_route()
+            route = scimetal.last_route()
             assert route.engine == "scipy" and "strict" in route.reason
         elif device == "gpu":
             check(call, a, "gpu")
         else:
             check(call, a, "cpu")  # small: 'auto' keeps it on the CPU
-        assert metal_sci.last_route().policy == policy
-        assert "gaussian_filter" in metal_sci.explain()
+        assert scimetal.last_route().policy == policy
+        assert "gaussian_filter" in scimetal.explain()
 
 
 @pytest.mark.parametrize("dtype", [np.float64, np.float32])
@@ -455,17 +455,17 @@ def test_sizes_straddling_the_routing_threshold(gpu, dtype):
     engines = []
     for policy in ("fast", "refined"):
         engines.clear()
-        with metal_sci.precision(policy):
+        with scimetal.precision(policy):
             for side in sides:
                 a = array((side, side), dtype, seed=side)
                 call.ours(a)
-                engines.append(metal_sci.last_route().engine)
+                engines.append(scimetal.last_route().engine)
                 check(call, a, engines[-1])
         assert engines[0] == "cpu" and engines[-1] == "gpu", engines
         switch = engines.index("gpu")
         assert engines == ["cpu"] * switch + ["gpu"] * (len(sides) - switch), engines
     # Strict stays on the CPU, bit-identical, at every size and for both dtypes.
-    with metal_sci.precision("strict"):
+    with scimetal.precision("strict"):
         for side in (sides[0], sides[-1]):
             check(call, array((side, side), dtype, seed=side), "cpu")
 
@@ -473,26 +473,26 @@ def test_sizes_straddling_the_routing_threshold(gpu, dtype):
 def test_long_uniform_windows_stay_on_the_cpu(gpu):
     """The CPU's running sum costs the same for any window; the GPU's direct sum does not."""
     a = array((2048, 2048), np.float64, seed=11)
-    with metal_sci.precision("fast"):
+    with scimetal.precision("fast"):
         check(Call("uniform_filter", (9,), {}, [uniform_weights(9)] * 2), a, "gpu")
         check(Call("uniform_filter", (301,), {}, [uniform_weights(301)] * 2), a, "cpu")
 
 
 def test_explain_reports_the_route(gpu):
     a = array((64, 64), np.float64, seed=12)
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         mn.gaussian_filter(a, 1.0)
-        assert metal_sci.explain() == "ndimage.gaussian_filter: engine=gpu, computed in float32, policy=fast"
-    with metal_sci.precision("strict"):
+        assert scimetal.explain() == "ndimage.gaussian_filter: engine=gpu, computed in float32, policy=fast"
+    with scimetal.precision("strict"):
         mn.uniform_filter1d(a, 3)
-        assert metal_sci.explain() == "ndimage.uniform_filter1d: engine=cpu, computed in float64, policy=strict"
+        assert scimetal.explain() == "ndimage.uniform_filter1d: engine=cpu, computed in float64, policy=strict"
         mn.gaussian_filter(a, 0)
-        assert "copied" in metal_sci.explain() and metal_sci.last_route().engine == "cpu"
+        assert "copied" in scimetal.explain() and scimetal.last_route().engine == "cpu"
         mn.sobel(a.astype(np.int32))
-        route = metal_sci.last_route()
+        route = scimetal.last_route()
         assert route.engine == "cpu" and route.compute_dtype == "float64"
         mn.sobel(a.astype(np.complex128))
-        route = metal_sci.last_route()
+        route = scimetal.last_route()
         assert route.engine == "scipy" and "complex128" in route.reason
 
 
@@ -507,25 +507,25 @@ def test_output_argument(function, args, dtype):
     a = array((30, 40), dtype, seed=13)
     ours, theirs = getattr(mn, function), getattr(sn, function)
     reference = theirs(a, *args)
-    with metal_sci.precision("strict"):
+    with scimetal.precision("strict"):
         # A dtype equal to the input's, however it is spelled: a new array.
         for spelling in (dtype, np.dtype(dtype), np.dtype(dtype).name, np.dtype(dtype).char):
             assert_identical(ours(a, *args, output=spelling), reference)
-            assert metal_sci.last_route().engine == "cpu"
+            assert scimetal.last_route().engine == "cpu"
         # An array of the input's dtype is filled and returned.
         target = np.full_like(a, 7.0)
         returned = ours(a, *args, output=target)
-        assert returned is target and metal_sci.last_route().engine == "cpu"
+        assert returned is target and scimetal.last_route().engine == "cpu"
         assert_identical(target, reference)
         # A non-contiguous output array.
         wide = np.zeros((30, 80), dtype)
         returned = ours(a, *args, output=wide[:, ::2])
-        assert metal_sci.last_route().engine == "cpu"
+        assert scimetal.last_route().engine == "cpu"
         assert_identical(np.ascontiguousarray(returned), reference)
         # In place.
         work = a.copy()
         returned = ours(work, *args, output=work)
-        assert returned is work and metal_sci.last_route().engine == "cpu"
+        assert returned is work and scimetal.last_route().engine == "cpu"
         assert_identical(work, reference)
         # The other float dtype (float32 <-> float64) runs natively too, bit-identical in strict!
         other = np.float32 if dtype == np.float64 else np.float64
@@ -536,23 +536,23 @@ def test_output_argument(function, args, dtype):
             spellings.append(float)
         for spelling in spellings:
             assert_identical(ours(a, *args, output=spelling), ref_other)
-            assert metal_sci.last_route().engine == "cpu"
+            assert scimetal.last_route().engine == "cpu"
         target_other = np.full_like(a, 5.0, dtype=other)
         returned = ours(a, *args, output=target_other)
-        assert returned is target_other and metal_sci.last_route().engine == "cpu"
+        assert returned is target_other and scimetal.last_route().engine == "cpu"
         assert_identical(target_other, ref_other)
         wide_other = np.zeros((30, 80), other)
         returned = ours(a, *args, output=wide_other[:, ::2])
-        assert metal_sci.last_route().engine == "cpu"
+        assert scimetal.last_route().engine == "cpu"
         assert_identical(np.ascontiguousarray(returned), ref_other)
         # Integer and boolean output dtypes run natively on CPU in strict mode, bit-identical to SciPy.
         for int_dtype in (np.int32, np.uint8, bool):
             ref_int = theirs(a, *args, output=int_dtype)
             assert_identical(ours(a, *args, output=int_dtype), ref_int)
-            assert metal_sci.last_route().engine == "cpu"
+            assert scimetal.last_route().engine == "cpu"
             target_int = np.zeros(a.shape, int_dtype)
             returned_int = ours(a, *args, output=target_int)
-            assert returned_int is target_int and metal_sci.last_route().engine == "cpu"
+            assert returned_int is target_int and scimetal.last_route().engine == "cpu"
             assert_identical(target_int, ref_int)
         # Non-real output dtypes, another shape, and partial/cross-dtype overlap decline to SciPy.
         for bad_dtype in (np.float16, np.longdouble, np.complex64, np.dtype(">f4")):
@@ -563,11 +563,11 @@ def test_output_argument(function, args, dtype):
         view_f32 = raw[:, :40]
         ours(view_f64 if dtype == np.float64 else view_f32, *args,
              output=view_f32 if dtype == np.float64 else view_f64)
-        assert metal_sci.last_route().engine == "scipy" and "overlap" in metal_sci.last_route().reason
+        assert scimetal.last_route().engine == "scipy" and "overlap" in scimetal.last_route().reason
         buffer = np.zeros((31, 40), dtype)
         buffer[:30] = a
         ours(buffer[:30], *args, output=buffer[1:])
-        assert metal_sci.last_route().engine == "scipy" and "overlap" in metal_sci.last_route().reason
+        assert scimetal.last_route().engine == "scipy" and "overlap" in scimetal.last_route().reason
         with pytest.raises(RuntimeError, match="output shape not correct"):
             ours(a, *args, output=np.zeros((30, 41), dtype))
 
@@ -584,7 +584,7 @@ def scipy_outcome(function, *args, **kwargs):
 def assert_declined_like_scipy(function, *args, **kwargs):
     """The call is handed to SciPy: same result or same exception, and the route says so."""
     expected, error = scipy_outcome(function, *args, **kwargs)
-    before = list(metal_sci._dispatch.counters[f"ndimage.{function}"])
+    before = list(scimetal._dispatch.counters[f"ndimage.{function}"])
     if error is None:
         result = getattr(mn, function)(*args, **kwargs)
         assert type(result) is type(expected)
@@ -594,8 +594,8 @@ def assert_declined_like_scipy(function, *args, **kwargs):
         with pytest.raises(type(error)) as raised:
             getattr(mn, function)(*args, **kwargs)
         assert str(raised.value) == str(error)
-    assert metal_sci.last_route().engine == "scipy"
-    after = metal_sci._dispatch.counters[f"ndimage.{function}"]
+    assert scimetal.last_route().engine == "scipy"
+    after = scimetal._dispatch.counters[f"ndimage.{function}"]
     assert after == [before[0], before[1] + 1]
 
 
@@ -674,7 +674,7 @@ def test_invalid_arguments_raise_scipys_exceptions():
     ]:
         assert_declined_like_scipy(function, a, *args, **kwargs)
     # Arguments SciPy accepts although they look odd are accepted natively too.
-    with metal_sci.precision("strict"):
+    with scimetal.precision("strict"):
         for call in (Call("gaussian_filter", (1.0,), dict(axes=())), Call("gaussian_filter", ((),), dict(axes=[])),
                      Call("uniform_filter", (2.5,), {}), Call("uniform_filter", (0,), {}), Call("uniform_filter", (-4,), {}),
                      Call("gaussian_filter1d", (True,), {}), Call("gaussian_filter1d", (np.float32(1.3),), {}),
@@ -689,7 +689,7 @@ def test_invalid_arguments_raise_scipys_exceptions():
 def test_wrappers_keep_scipys_signatures_and_are_registered():
     for name in FUNCTIONS:
         ours, theirs = getattr(mn, name), getattr(sn, name)
-        assert ours is not theirs and callable(ours.__metal_sci_native__)
+        assert ours is not theirs and callable(ours.__scimetal_native__)
         assert inspect.signature(ours) == inspect.signature(theirs)
         assert ours.__doc__ == theirs.__doc__ and ours.__name__ == name
         assert name in dir(mn)
@@ -737,7 +737,7 @@ def random_call(draw):
 @given(random_call(), st.integers(0, 2 ** 31))
 def test_random_calls_cpu_engine_is_bit_identical(drawn, seed):
     shape, dtype, call = drawn
-    with metal_sci.precision("strict"), metal_sci.device("cpu"):
+    with scimetal.precision("strict"), scimetal.device("cpu"):
         check(call, array(shape, dtype, seed), "cpu")
 
 
@@ -745,7 +745,7 @@ def test_random_calls_cpu_engine_is_bit_identical(drawn, seed):
 @given(random_call(), st.integers(0, 2 ** 31))
 def test_random_calls_gpu_engine_within_bound(gpu, drawn, seed):
     shape, dtype, call = drawn
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         check(call, array(shape, dtype, seed), "gpu")
 
 
@@ -759,10 +759,10 @@ def test_concurrent_calls_from_threads(gpu):
 
     def work(device):
         try:
-            with metal_sci.precision("fast"), metal_sci.device(device):
+            with scimetal.precision("fast"), scimetal.device(device):
                 for _ in range(20):
                     result = mn.gaussian_filter(a, 2.0)
-                    assert metal_sci.last_route().engine == device
+                    assert scimetal.last_route().engine == device
                     if device == "cpu":
                         assert result.tobytes() == reference.tobytes()
                     else:
@@ -782,19 +782,19 @@ def test_small_inputs_go_to_scipy_by_default():
     """Below the break-even size a call is SciPy's, unless small inputs are kept native (as conftest does)."""
     rng = np.random.default_rng(7)
     small, large = rng.standard_normal((8, 8)), rng.standard_normal((128, 128))
-    metal_sci.set_small_inputs("scipy")
+    scimetal.set_small_inputs("scipy")
     try:
         out = mn.gaussian_filter(small, 1.0)
-        route = metal_sci.last_route()
+        route = scimetal.last_route()
         assert route.engine == "scipy" and "below" in route.reason
         np.testing.assert_array_equal(out, sn.gaussian_filter(small, 1.0))
-        with metal_sci.precision("strict"):
+        with scimetal.precision("strict"):
             mn.gaussian_filter(large, 1.0)
-        assert metal_sci.last_route().engine == "cpu"
+        assert scimetal.last_route().engine == "cpu"
     finally:
-        metal_sci.set_small_inputs("native")
+        scimetal.set_small_inputs("native")
     mn.gaussian_filter(small, 1.0)
-    assert metal_sci.last_route().engine in ("cpu", "gpu")
+    assert scimetal.last_route().engine in ("cpu", "gpu")
 
 
 # ---- A3: dense & composite filters ------------------------------------------------------------
@@ -830,7 +830,7 @@ def _ggm_deriv_scipy(inp, axis, output, mode, cval, sigma=1.2):
 def test_a3_wrappers_keep_scipys_signatures_and_are_registered():
     for name in A3_FUNCTIONS:
         ours, theirs = getattr(mn, name), getattr(sn, name)
-        assert ours is not theirs and callable(ours.__metal_sci_native__)
+        assert ours is not theirs and callable(ours.__scimetal_native__)
         assert inspect.signature(ours) == inspect.signature(theirs)
         assert ours.__doc__ == theirs.__doc__ and ours.__name__ == name
         assert name in dir(mn)
@@ -840,7 +840,7 @@ def test_a3_wrappers_keep_scipys_signatures_and_are_registered():
 @pytest.mark.parametrize("policy, device", [("strict", "auto"), ("strict", "cpu"), ("fast", "cpu")])
 def test_a3_cpu_engine_is_bit_identical_to_scipy(dtype, policy, device):
     rng = np.random.default_rng(100)
-    with metal_sci.precision(policy), metal_sci.device(device):
+    with scimetal.precision(policy), scimetal.device(device):
         for ndim, shape in SHAPES.items():
             a = array(shape, dtype, seed=20 + ndim)
             w_shape = (3,) * ndim if ndim <= 3 else (3, 2, 3, 2)
@@ -852,24 +852,24 @@ def test_a3_cpu_engine_is_bit_identical_to_scipy(dtype, policy, device):
                     for origin in (0, -1):
                         ours = getattr(mn, fn)(a, w, mode=mode, cval=CVAL, origin=origin)
                         ref = getattr(sn, fn)(a, w, mode=mode, cval=CVAL, origin=origin)
-                        assert metal_sci.last_route().engine == "cpu"
+                        assert scimetal.last_route().engine == "cpu"
                         assert_identical(ours, ref, f"{fn} {shape} {mode} {origin}")
             if ndim >= 2:
                 w1 = rng.standard_normal((2,))
                 ours = mn.correlate(a, w1, mode="wrap", axes=0)
                 ref = sn.correlate(a, w1, mode="wrap", axes=0)
-                assert metal_sci.last_route().engine == "cpu"
+                assert scimetal.last_route().engine == "cpu"
                 assert_identical(ours, ref, f"correlate axes=0 {shape}")
 
             for mode in ("reflect", "constant", "wrap", "mirror", "nearest"):
                 assert_identical(mn.laplace(a, mode=mode, cval=CVAL), sn.laplace(a, mode=mode, cval=CVAL))
-                assert metal_sci.last_route().engine == "cpu"
+                assert scimetal.last_route().engine == "cpu"
                 assert_identical(mn.gaussian_laplace(a, 1.3, mode=mode, cval=CVAL),
                                  sn.gaussian_laplace(a, 1.3, mode=mode, cval=CVAL))
-                assert metal_sci.last_route().engine == "cpu"
+                assert scimetal.last_route().engine == "cpu"
                 assert_identical(mn.gaussian_gradient_magnitude(a, 1.3, mode=mode, cval=CVAL),
                                  sn.gaussian_gradient_magnitude(a, 1.3, mode=mode, cval=CVAL))
-                assert metal_sci.last_route().engine == "cpu"
+                assert scimetal.last_route().engine == "cpu"
 
             # Zero-padded sigma in gaussian_laplace vs direct sigma in gaussian_gradient_magnitude.
             if ndim >= 2:
@@ -884,16 +884,16 @@ def test_a3_cpu_engine_is_bit_identical_to_scipy(dtype, policy, device):
 
             assert_identical(mn.generic_laplace(a, _gl_deriv2, extra_arguments=(1.2,)),
                              sn.generic_laplace(a, _gl_deriv2_scipy, extra_arguments=(1.2,)))
-            assert metal_sci.last_route().engine == "cpu"
+            assert scimetal.last_route().engine == "cpu"
             assert_identical(mn.generic_gradient_magnitude(a, _ggm_deriv, extra_arguments=(1.2,)),
                              sn.generic_gradient_magnitude(a, _ggm_deriv_scipy, extra_arguments=(1.2,)))
-            assert metal_sci.last_route().engine == "cpu"
+            assert scimetal.last_route().engine == "cpu"
 
 
 @pytest.mark.parametrize("dtype", [np.float64, np.float32])
 def test_a3_gpu_engine_and_rank1_separable(gpu, dtype):
     rng = np.random.default_rng(200)
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         for ndim in (1, 2, 3):
             a = array(SHAPES[ndim], dtype, seed=30 + ndim)
             scale = max(float(np.abs(a).max()), 1.0)
@@ -902,7 +902,7 @@ def test_a3_gpu_engine_and_rank1_separable(gpu, dtype):
                 for mode in ("reflect", "constant", "wrap", "mirror", "nearest"):
                     ours = getattr(mn, fn)(a, w, mode=mode, cval=CVAL)
                     ref = getattr(sn, fn)(a, w, mode=mode, cval=CVAL)
-                    assert metal_sci.last_route().engine == "gpu"
+                    assert scimetal.last_route().engine == "gpu"
                     assert np.abs(ours - ref).max() <= 1e-4 * scale
 
             # Rank-1 separable kernel with non-unit sums and constant cval != 0.
@@ -914,7 +914,7 @@ def test_a3_gpu_engine_and_rank1_separable(gpu, dtype):
                 for fn in ("correlate", "convolve"):
                     ours = getattr(mn, fn)(a, w_sep, mode="constant", cval=2.5)
                     ref = getattr(sn, fn)(a, w_sep, mode="constant", cval=2.5)
-                    assert metal_sci.last_route().engine == "gpu"
+                    assert scimetal.last_route().engine == "gpu"
                     assert np.abs(ours - ref).max() <= 1e-3 * scale
 
             for fn, args in [("laplace", ()), ("gaussian_laplace", (1.2,)),
@@ -922,19 +922,19 @@ def test_a3_gpu_engine_and_rank1_separable(gpu, dtype):
                 for mode in ("reflect", "constant", "wrap"):
                     ours = getattr(mn, fn)(a, *args, mode=mode, cval=CVAL)
                     ref = getattr(sn, fn)(a, *args, mode=mode, cval=CVAL)
-                    assert metal_sci.last_route().engine == "gpu"
+                    assert scimetal.last_route().engine == "gpu"
                     assert np.abs(ours - ref).max() <= 5e-4 * scale
 
             assert np.abs(mn.generic_laplace(a, _gl_deriv2) - sn.generic_laplace(a, _gl_deriv2_scipy)).max() <= 5e-4 * scale
-            assert metal_sci.last_route().engine == "gpu"
+            assert scimetal.last_route().engine == "gpu"
             assert np.abs(mn.generic_gradient_magnitude(a, _ggm_deriv) -
                           sn.generic_gradient_magnitude(a, _ggm_deriv_scipy)).max() <= 5e-4 * scale
-            assert metal_sci.last_route().engine == "gpu"
+            assert scimetal.last_route().engine == "gpu"
 
 
 def test_a3_generic_callbacks_and_fallbacks():
     a = array((15, 20), np.float64, seed=41)
-    with metal_sci.precision("strict"):
+    with scimetal.precision("strict"):
         # Void in-place callback on first axis + chained calls.
         def void_first_deriv(inp, axis, output, mode, cval):
             t = mn.gaussian_filter1d(inp, 1.0, axis=axis, mode=mode, cval=cval)
@@ -952,7 +952,7 @@ def test_a3_generic_callbacks_and_fallbacks():
 
         assert_identical(mn.generic_laplace(a, void_first_deriv),
                          sn.generic_laplace(a, void_first_deriv_scipy))
-        assert metal_sci.last_route().engine == "cpu"
+        assert scimetal.last_route().engine == "cpu"
 
         # Callback using prewitt / sobel natively.
         def sobel_deriv(inp, axis, output, mode, cval):
@@ -963,21 +963,21 @@ def test_a3_generic_callbacks_and_fallbacks():
 
         assert_identical(mn.generic_gradient_magnitude(a, sobel_deriv),
                          sn.generic_gradient_magnitude(a, sobel_deriv_scipy))
-        assert metal_sci.last_route().engine == "cpu"
+        assert scimetal.last_route().engine == "cpu"
 
         # Non-traceable callbacks must fall back cleanly to SciPy!
         def non_native(inp, axis, output, mode, cval):
             return sn.maximum_filter1d(inp, 3, axis=axis, output=output, mode=mode, cval=cval)
 
         out = mn.generic_laplace(a, non_native)
-        assert metal_sci.last_route().engine == "scipy"
+        assert scimetal.last_route().engine == "scipy"
         assert_identical(out, sn.generic_laplace(a, non_native))
 
         def custom_math(inp, axis, output, mode, cval):
             return sn.correlate1d(inp, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval) * 2.0
 
         out2 = mn.generic_gradient_magnitude(a, custom_math)
-        assert metal_sci.last_route().engine == "scipy"
+        assert scimetal.last_route().engine == "scipy"
         assert_identical(out2, sn.generic_gradient_magnitude(a, custom_math))
 
 
@@ -1003,13 +1003,13 @@ def test_a3_declines_and_errors():
     assert_declined_like_scipy("gaussian_gradient_magnitude", a.astype(np.float16), 1.0)
 
     # In-place and output= target array work on A3 routes.
-    with metal_sci.precision("strict"):
+    with scimetal.precision("strict"):
         for fn, args in [("correlate", (np.ones((3, 3)),)), ("convolve", (np.ones((2, 2)),))]:
             work = a.copy()
             ref_work = a.copy()
             getattr(sn, fn)(ref_work, *args, output=ref_work)
             ret = getattr(mn, fn)(work, *args, output=work)
-            assert ret is work and metal_sci.last_route().engine == "cpu"
+            assert ret is work and scimetal.last_route().engine == "cpu"
             assert_identical(work, ref_work)
 
         # Out-of-place output= target array runs natively on composite filters, while
@@ -1018,14 +1018,14 @@ def test_a3_declines_and_errors():
             dest = np.empty_like(a)
             ref = getattr(sn, fn)(a, *args)
             ret = getattr(mn, fn)(a, *args, output=dest)
-            assert ret is dest and metal_sci.last_route().engine == "cpu"
+            assert ret is dest and scimetal.last_route().engine == "cpu"
             assert_identical(dest, ref)
 
             work = a.copy()
             ref_work = a.copy()
             getattr(sn, fn)(ref_work, *args, output=ref_work)
             ret = getattr(mn, fn)(work, *args, output=work)
-            assert ret is work and metal_sci.last_route().engine == "scipy"
+            assert ret is work and scimetal.last_route().engine == "scipy"
             assert_identical(work, ref_work)
 
 
@@ -1059,13 +1059,13 @@ def test_random_a3_calls_cpu_and_gpu(gpu, drawn, seed):
     shape, dtype, fn, args, kwargs = drawn
     a = array(shape, dtype, seed)
     ref = getattr(sn, fn)(a, *args, **kwargs)
-    with metal_sci.precision("strict"), metal_sci.device("cpu"):
+    with scimetal.precision("strict"), scimetal.device("cpu"):
         ours_cpu = getattr(mn, fn)(a, *args, **kwargs)
-        assert metal_sci.last_route().engine == "cpu"
+        assert scimetal.last_route().engine == "cpu"
         assert_identical(ours_cpu, ref, f"{fn} {shape}")
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         ours_gpu = getattr(mn, fn)(a, *args, **kwargs)
-        assert metal_sci.last_route().engine == "gpu"
+        assert scimetal.last_route().engine == "gpu"
         scale = max(float(np.abs(a).max()), abs(float(kwargs.get("cval", 0.0))), 1.0)
         assert np.abs(ours_gpu - ref).max() <= 5e-3 * scale
 
@@ -1082,9 +1082,9 @@ def test_a3_gradient_magnitude_single_axis_multipass_gpu(gpu, dtype):
         ref_fn = sn.gaussian_gradient_magnitude if fn == "gaussian_gradient_magnitude" else sn.generic_gradient_magnitude
         ref_args = (3.0,) if fn == "gaussian_gradient_magnitude" else (_ggm_deriv_scipy,)
         ref = ref_fn(a, *ref_args, axes=(0,))
-        with metal_sci.precision("fast"), metal_sci.device("auto"):
+        with scimetal.precision("fast"), scimetal.device("auto"):
             got1 = getattr(mn, fn)(a, *args, axes=(0,))
-            assert metal_sci.last_route().engine == "gpu"
+            assert scimetal.last_route().engine == "gpu"
             got2 = getattr(mn, fn)(a, *args, axes=(0,))
         assert np.array_equal(got1, got2)
         assert np.abs(got1 - ref).max() <= 1e-4 * max(float(np.abs(ref).max()), 1.0)
@@ -1098,9 +1098,9 @@ def test_a3_rank1_dynamic_range_and_zero_tap_nan(gpu):
     w5[2, 1:] = 1.0
     x = np.zeros((4096, 4096), dtype=np.float32)
     x[2000, 2000] = 42.0
-    with metal_sci.precision("fast"), metal_sci.device("auto"):
+    with scimetal.precision("fast"), scimetal.device("auto"):
         out = mn.correlate(x, w5, mode="constant", cval=0.0)
-        assert metal_sci.last_route().engine == "gpu"
+        assert scimetal.last_route().engine == "gpu"
     ref = sn.correlate(x, w5, mode="constant", cval=0.0)
     assert np.isclose(out[2000, 2000], ref[2000, 2000])
 
@@ -1111,9 +1111,9 @@ def test_a3_rank1_dynamic_range_and_zero_tap_nan(gpu):
         w_delta = np.array([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]])
         w_sobel = np.outer([-1.0, 0.0, 1.0], [1.0, 2.0, 1.0])
         for w in (w_delta, w_sobel):
-            with metal_sci.precision("fast"), metal_sci.device("gpu"), np.errstate(invalid="ignore"):
+            with scimetal.precision("fast"), scimetal.device("gpu"), np.errstate(invalid="ignore"):
                 ours = mn.correlate(arr, w, mode="constant", cval=0.0)
-                assert metal_sci.last_route().engine == "gpu"
+                assert scimetal.last_route().engine == "gpu"
                 theirs = sn.correlate(arr, w, mode="constant", cval=0.0)
             np.testing.assert_array_equal(np.isnan(ours), np.isnan(theirs))
             finite = np.isfinite(theirs)
@@ -1127,10 +1127,10 @@ def test_a3_generic_axis0_without_output_write_declines():
     def ignore_output_deriv(inp, axis, output, mode, cval):
         return mn.sobel(inp, axis=axis, mode=mode, cval=cval)
 
-    before = list(metal_sci._dispatch.counters["ndimage.generic_gradient_magnitude"])
-    with metal_sci.precision("strict"):
+    before = list(scimetal._dispatch.counters["ndimage.generic_gradient_magnitude"])
+    with scimetal.precision("strict"):
         out = mn.generic_gradient_magnitude(a, ignore_output_deriv)
-    after = metal_sci._dispatch.counters["ndimage.generic_gradient_magnitude"]
+    after = scimetal._dispatch.counters["ndimage.generic_gradient_magnitude"]
     assert after == [before[0], before[1] + 1]
     assert out.shape == a.shape and out.dtype == a.dtype
 
@@ -1157,7 +1157,7 @@ def test_a4_cross_float_output_all_routes_and_guard_rails(gpu):
             ("generic_laplace", (_gl_deriv2,), dict(extra_arguments=(1.2,))),
             ("generic_gradient_magnitude", (_ggm_deriv,), dict(extra_arguments=(1.2,))),
         ]
-        with metal_sci.precision("strict"), metal_sci.device("cpu"):
+        with scimetal.precision("strict"), scimetal.device("cpu"):
             for fn, args, kw in calls:
                 ref_fn = getattr(sn, fn)
                 ref_args = args
@@ -1167,7 +1167,7 @@ def test_a4_cross_float_output_all_routes_and_guard_rails(gpu):
                     ref_args = (_ggm_deriv_scipy,)
                 ref = ref_fn(a, *ref_args, output=out_dtype, **kw)
                 ours = getattr(mn, fn)(a, *args, output=out_dtype, **kw)
-                assert metal_sci.last_route().engine == "cpu"
+                assert scimetal.last_route().engine == "cpu"
                 assert_identical(ours, ref, f"strict {fn} {in_dtype}->{out_dtype}")
 
                 target = np.empty_like(a, dtype=out_dtype)
@@ -1175,7 +1175,7 @@ def test_a4_cross_float_output_all_routes_and_guard_rails(gpu):
                 assert ret is target
                 assert_identical(target, ref, f"strict array {fn} {in_dtype}->{out_dtype}")
 
-        with metal_sci.precision("fast"), metal_sci.device("gpu"):
+        with scimetal.precision("fast"), scimetal.device("gpu"):
             for fn, args, kw in calls:
                 ref_fn = getattr(sn, fn)
                 ref_args = args
@@ -1189,8 +1189,8 @@ def test_a4_cross_float_output_all_routes_and_guard_rails(gpu):
                 if fn in ("laplace", "gaussian_filter", "uniform_filter") and (args == (0.0,) or args == (1,) or kw.get("axes") == ()):
                     assert_identical(ours, ref)
                 else:
-                    assert metal_sci.last_route().engine == "gpu"
-                    assert metal_sci.last_route().compute_dtype == "float32"
+                    assert scimetal.last_route().engine == "gpu"
+                    assert scimetal.last_route().compute_dtype == "float32"
                     assert np.abs(ours.astype(np.float64) - ref.astype(np.float64)).max() <= 5e-3 * scale
 
     # Multi-step trace with intermediate output=None and outer cross-float output= must decline cleanly to SciPy.
@@ -1201,10 +1201,10 @@ def test_a4_cross_float_output_all_routes_and_guard_rails(gpu):
     def two_step_cb_scipy(inp, axis, output, mode, cval):
         t = sn.gaussian_filter1d(inp, 1.0, axis=axis, mode=mode, cval=cval)
         return sn.correlate1d(t, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
-    before_gl = list(metal_sci._dispatch.counters["ndimage.generic_laplace"])
-    with metal_sci.precision("strict"):
+    before_gl = list(scimetal._dispatch.counters["ndimage.generic_laplace"])
+    with scimetal.precision("strict"):
         got = mn.generic_laplace(a64, two_step_cb, output=np.float32)
-        after_gl = metal_sci._dispatch.counters["ndimage.generic_laplace"]
+        after_gl = scimetal._dispatch.counters["ndimage.generic_laplace"]
         assert after_gl == [before_gl[0], before_gl[1] + 1]
         assert_identical(got, sn.generic_laplace(a64, two_step_cb_scipy, output=np.float32))
 
@@ -1212,35 +1212,35 @@ def test_a4_cross_float_output_all_routes_and_guard_rails(gpu):
     big = np.ones((1536, 2048), dtype=np.float64)
     big[0, 0] = 1e39
     with warnings.catch_warnings(record=True) as w_list:
-        warnings.simplefilter("always", metal_sci.PrecisionWarning)
-        with metal_sci.precision("fast"), metal_sci.device("auto"):
+        warnings.simplefilter("always", scimetal.PrecisionWarning)
+        with scimetal.precision("fast"), scimetal.device("auto"):
             res = mn.gaussian_filter(big, 3.0, output=np.float32)
-            route = metal_sci.last_route()
+            route = scimetal.last_route()
             assert route.engine == "cpu" and route.compute_dtype == "float64"
-            assert "overflow" in route.reason and "overflow" in metal_sci.explain()
+            assert "overflow" in route.reason and "overflow" in scimetal.explain()
             assert np.all(np.isfinite(res)) and res.dtype == np.float32
-        assert not [w for w in w_list if issubclass(w.category, metal_sci.PrecisionWarning)]
+        assert not [w for w in w_list if issubclass(w.category, scimetal.PrecisionWarning)]
 
     normal64 = array((1536, 2048), np.float64, seed=403)
     with warnings.catch_warnings(record=True) as w_list:
-        warnings.simplefilter("always", metal_sci.PrecisionWarning)
-        with metal_sci.precision("fast"), metal_sci.device("auto"):
+        warnings.simplefilter("always", scimetal.PrecisionWarning)
+        with scimetal.precision("fast"), scimetal.device("auto"):
             res = mn.gaussian_filter(normal64, 3.0, output=np.float32)
             assert res.dtype == np.float32
-            assert metal_sci.last_route().engine == "gpu"
-            assert metal_sci.last_route().compute_dtype == "float32"
-        pw = [w for w in w_list if issubclass(w.category, metal_sci.PrecisionWarning)]
+            assert scimetal.last_route().engine == "gpu"
+            assert scimetal.last_route().compute_dtype == "float32"
+        pw = [w for w in w_list if issubclass(w.category, scimetal.PrecisionWarning)]
         assert len(pw) == 1 and "set_precision('strict')" in str(pw[0].message)
 
     normal32 = array((1536, 2048), np.float32, seed=404)
     with warnings.catch_warnings(record=True) as w_list:
-        warnings.simplefilter("always", metal_sci.PrecisionWarning)
-        with metal_sci.precision("fast"), metal_sci.device("auto"):
+        warnings.simplefilter("always", scimetal.PrecisionWarning)
+        with scimetal.precision("fast"), scimetal.device("auto"):
             res = mn.gaussian_filter(normal32, 3.0, output=np.float64)
             assert res.dtype == np.float64
-            assert metal_sci.last_route().engine == "gpu"
-            assert metal_sci.last_route().compute_dtype == "float32"
-        assert not [w for w in w_list if issubclass(w.category, metal_sci.PrecisionWarning)]
+            assert scimetal.last_route().engine == "gpu"
+            assert scimetal.last_route().compute_dtype == "float32"
+        assert not [w for w in w_list if issubclass(w.category, scimetal.PrecisionWarning)]
 
 
 def test_a4_trace_nopass_intermediate_cast_and_single_step_native(gpu):
@@ -1270,10 +1270,10 @@ def test_a4_trace_nopass_intermediate_cast_and_single_step_native(gpu):
             cb_scipy = make_cb(sn, nopass_kind)
             for arr in (small_eps, overflow_arr):
                 for outer_out in (None, np.float32):
-                    with metal_sci.precision("strict"), np.errstate(invalid="ignore", over="ignore"):
-                        before = list(metal_sci._dispatch.counters[outer_fn])
+                    with scimetal.precision("strict"), np.errstate(invalid="ignore", over="ignore"):
+                        before = list(scimetal._dispatch.counters[outer_fn])
                         got = mn_fn(arr, cb_ours, output=outer_out)
-                        after = metal_sci._dispatch.counters[outer_fn]
+                        after = scimetal._dispatch.counters[outer_fn]
                         assert after == [before[0], before[1] + 1], f"{outer_fn} {nopass_kind} {outer_out}"
                         ref = sn_fn(arr, cb_scipy, output=outer_out)
                         assert got.dtype == ref.dtype and got.shape == ref.shape
@@ -1298,10 +1298,10 @@ def test_a4_trace_nopass_intermediate_cast_and_single_step_native(gpu):
             t = sn.gaussian_filter(inp, 0.0, output=output)
             return sn.correlate1d(t, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
 
-        with metal_sci.precision("strict"):
-            before = list(metal_sci._dispatch.counters[outer_fn])
+        with scimetal.precision("strict"):
+            before = list(scimetal._dispatch.counters[outer_fn])
             got = mn_fn(small_eps, reuse_out_ours, output=np.float32)
-            after = metal_sci._dispatch.counters[outer_fn]
+            after = scimetal._dispatch.counters[outer_fn]
             assert after == [before[0], before[1] + 1]
             assert_identical(got, sn_fn(small_eps, reuse_out_scipy, output=np.float32))
 
@@ -1316,13 +1316,13 @@ def test_a4_trace_nopass_intermediate_cast_and_single_step_native(gpu):
         a64 = array((15, 20), np.float64, seed=405)
         scale64 = max(float(np.abs(a64).max()), 1.0)
         for outer_out in (None, np.float32):
-            with metal_sci.precision("strict"), metal_sci.device("cpu"):
+            with scimetal.precision("strict"), scimetal.device("cpu"):
                 got_cpu = mn_fn(a64, single_nopass_ours, output=outer_out)
-                assert metal_sci.last_route().engine == "cpu"
+                assert scimetal.last_route().engine == "cpu"
                 assert_identical(got_cpu, sn_fn(a64, single_nopass_scipy, output=outer_out))
-            with metal_sci.precision("fast"), metal_sci.device("gpu"):
+            with scimetal.precision("fast"), scimetal.device("gpu"):
                 got_gpu = mn_fn(a64, single_nopass_ours, output=outer_out)
-                assert metal_sci.last_route().engine == "gpu"
+                assert scimetal.last_route().engine == "gpu"
                 ref_gpu = sn_fn(a64, single_nopass_scipy, output=outer_out)
                 assert np.abs(got_gpu.astype(np.float64) - ref_gpu.astype(np.float64)).max() <= 1e-4 * scale64
 
@@ -1355,10 +1355,10 @@ def test_a4_trace_axis1_return_dtype_mismatch_and_unwritten_output(gpu):
             for arr in (small_eps, overflow_arr, rand64):
                 for outer_out in (None, np.float64):
                     for policy, device in (("strict", "cpu"), ("fast", "auto")):
-                        with metal_sci.precision(policy), metal_sci.device(device), np.errstate(invalid="ignore", over="ignore"):
-                            before = list(metal_sci._dispatch.counters[outer_fn])
+                        with scimetal.precision(policy), scimetal.device(device), np.errstate(invalid="ignore", over="ignore"):
+                            before = list(scimetal._dispatch.counters[outer_fn])
                             got = mn_fn(arr, cb_ours, output=outer_out)
-                            after = metal_sci._dispatch.counters[outer_fn]
+                            after = scimetal._dispatch.counters[outer_fn]
                             assert after == [before[0], before[1] + 1], f"{outer_fn} {kind} {outer_out} {policy}/{device}"
                             ref = sn_fn(arr, cb_scipy, output=outer_out)
                             assert got.dtype == ref.dtype and got.shape == ref.shape
@@ -1381,10 +1381,10 @@ def test_a4_trace_axis1_return_dtype_mismatch_and_unwritten_output(gpu):
             cb_ours = make_cb_f64(mn, kind)
             cb_scipy = make_cb_f64(sn, kind)
             for arr in (small_eps, overflow_arr, rand64):
-                with metal_sci.precision("strict"), np.errstate(invalid="ignore", over="ignore"):
-                    before = list(metal_sci._dispatch.counters[outer_fn])
+                with scimetal.precision("strict"), np.errstate(invalid="ignore", over="ignore"):
+                    before = list(scimetal._dispatch.counters[outer_fn])
                     got = mn_fn(arr.copy(), cb_ours, output=np.float32)
-                    after = metal_sci._dispatch.counters[outer_fn]
+                    after = scimetal._dispatch.counters[outer_fn]
                     assert after == [before[0], before[1] + 1], f"{outer_fn} {kind}"
                     ref = sn_fn(arr.copy(), cb_scipy, output=np.float32)
                     assert got.dtype == ref.dtype and got.shape == ref.shape
@@ -1417,10 +1417,10 @@ def test_a4_trace_axis1_return_dtype_mismatch_and_unwritten_output(gpu):
             (read_unwritten_inplace_ours, read_unwritten_inplace_scipy),
             (read_unwritten_new_ours, read_unwritten_new_scipy),
         ):
-            with metal_sci.precision("strict"):
-                before = list(metal_sci._dispatch.counters[outer_fn])
+            with scimetal.precision("strict"):
+                before = list(scimetal._dispatch.counters[outer_fn])
                 got = mn_fn(rand64, cb_ours)
-                after = metal_sci._dispatch.counters[outer_fn]
+                after = scimetal._dispatch.counters[outer_fn]
                 assert after == [before[0], before[1] + 1], f"{outer_fn} unwritten"
                 assert_identical(got, sn_fn(rand64, cb_scipy))
 
@@ -1448,10 +1448,10 @@ def test_a4_trace_axis1_return_input_and_cross_axis_output_reuse(gpu):
                 ref = sn_fn(a3.copy(), cb_scipy, output=outer_out)
                 scale = max(float(np.abs(ref).max()), 1.0)
                 for policy, device in (("strict", "cpu"), ("fast", "gpu")):
-                    with metal_sci.precision(policy), metal_sci.device(device):
-                        before = list(metal_sci._dispatch.counters[outer_fn])
+                    with scimetal.precision(policy), scimetal.device(device):
+                        before = list(scimetal._dispatch.counters[outer_fn])
                         got = mn_fn(a3.copy(), cb_ours, output=outer_out)
-                        after = metal_sci._dispatch.counters[outer_fn]
+                        after = scimetal._dispatch.counters[outer_fn]
                         assert after == [before[0], before[1] + 1], f"{outer_fn} ret_inp {dtype} {outer_out}"
                     assert got.dtype == ref.dtype and got.shape == ref.shape
                     if policy == "strict":
@@ -1487,10 +1487,10 @@ def test_a4_trace_axis1_return_input_and_cross_axis_output_reuse(gpu):
                     ref = sn_fn(arr.copy(), make_cross_out0(sn, kind), output=outer_out)
                     scale = max(float(np.abs(ref).max()), 1.0)
                     for policy, device in (("strict", "cpu"), ("fast", "gpu")):
-                        with metal_sci.precision(policy), metal_sci.device(device):
-                            before = list(metal_sci._dispatch.counters[outer_fn])
+                        with scimetal.precision(policy), scimetal.device(device):
+                            before = list(scimetal._dispatch.counters[outer_fn])
                             got = mn_fn(arr.copy(), make_cross_out0(mn, kind), output=outer_out)
-                            after = metal_sci._dispatch.counters[outer_fn]
+                            after = scimetal._dispatch.counters[outer_fn]
                             assert after == [before[0], before[1] + 1], f"{outer_fn} {kind} {arr.shape} {outer_out}"
                         assert got.dtype == ref.dtype and got.shape == ref.shape
                         if policy == "strict":
@@ -1552,10 +1552,10 @@ def test_a4_trace_cross_axis_derived_token_reuse(gpu):
                     ref = sn_fn(a3.copy(), make_cb(sn, kind, second_axis), output=outer_out, axes=axes)
                     scale = max(float(np.abs(ref).max()), 1.0)
                     for policy, device in (("strict", "cpu"), ("fast", "gpu")):
-                        with metal_sci.precision(policy), metal_sci.device(device):
-                            before = list(metal_sci._dispatch.counters[outer_fn])
+                        with scimetal.precision(policy), scimetal.device(device):
+                            before = list(scimetal._dispatch.counters[outer_fn])
                             got = mn_fn(a3.copy(), make_cb(mn, kind, second_axis), output=outer_out, axes=axes)
-                            after = metal_sci._dispatch.counters[outer_fn]
+                            after = scimetal._dispatch.counters[outer_fn]
                             assert after == [before[0], before[1] + 1], (
                                 f"{outer_fn} {kind} axes={axes} {dtype} {outer_out} {policy}/{device}"
                             )
@@ -1567,7 +1567,7 @@ def test_a4_trace_cross_axis_derived_token_reuse(gpu):
 
 
 def test_a4_uniform_neon_and_tiles_bit_identical():
-    with metal_sci.precision("strict"), metal_sci.device("cpu"):
+    with scimetal.precision("strict"), scimetal.device("cpu"):
         for dtype in (np.float64, np.float32):
             for out_dtype in (np.float64, np.float32):
                 # Stride == 1 across line counts 1..17 (4-line NEON bundles + 0..3 remainder lines).
@@ -1577,14 +1577,14 @@ def test_a4_uniform_neon_and_tiles_bit_identical():
                         for mode in MODES[:5]:
                             ours = mn.uniform_filter1d(a, sz, axis=1, output=out_dtype, mode=mode, cval=CVAL)
                             ref = sn.uniform_filter1d(a, sz, axis=1, output=out_dtype, mode=mode, cval=CVAL)
-                            assert metal_sci.last_route().engine == "cpu"
+                            assert scimetal.last_route().engine == "cpu"
                             assert_identical(ours, ref, f"uniform1d {lines}x67 sz={sz} {mode}")
                 # Wide inner axis (uniform_tiles scaling across all lanes).
                 wide = array((25, 4096), dtype, seed=555)
                 for sz in (3, 9):
                     ours = mn.uniform_filter(wide, sz, output=out_dtype)
                     ref = sn.uniform_filter(wide, sz, output=out_dtype)
-                    assert metal_sci.last_route().engine == "cpu"
+                    assert scimetal.last_route().engine == "cpu"
                     assert_identical(ours, ref, f"uniform wide {sz}")
 
 
@@ -1605,13 +1605,13 @@ def test_a4_overhanging_windows_cpu_and_gpu(gpu):
                         for mode in MODES:
                             for origin in sorted({-(taps // 2), 0, (taps - 1) // 2}):
                                 ref = sn.correlate1d(a, w, axis=axis, mode=mode, cval=CVAL, origin=origin)
-                                with metal_sci.precision("strict"), metal_sci.device("cpu"):
+                                with scimetal.precision("strict"), scimetal.device("cpu"):
                                     ours_cpu = mn.correlate1d(a, w, axis=axis, mode=mode, cval=CVAL, origin=origin)
-                                    assert metal_sci.last_route().engine == "cpu"
+                                    assert scimetal.last_route().engine == "cpu"
                                     assert_identical(ours_cpu, ref)
-                                with metal_sci.precision("fast"), metal_sci.device("gpu"):
+                                with scimetal.precision("fast"), scimetal.device("gpu"):
                                     ours_gpu = mn.correlate1d(a, w, axis=axis, mode=mode, cval=CVAL, origin=origin)
-                                    assert metal_sci.last_route().engine == "gpu"
+                                    assert scimetal.last_route().engine == "gpu"
                                     bound = float(np.abs(w).sum()) * (taps + 6) * UNIT * scale * 2.0
                                     assert np.abs(ours_gpu - ref).max() <= bound
 
@@ -1662,17 +1662,17 @@ def test_a4_random_cross_float_output_and_overhanging(gpu, drawn, seed):
     shape, in_dtype, out_dtype, fn, args, kwargs, windows = drawn
     a = array(shape, in_dtype, seed)
     ref = getattr(sn, fn)(a, *args, output=out_dtype, **kwargs)
-    with metal_sci.precision("strict"), metal_sci.device("cpu"):
+    with scimetal.precision("strict"), scimetal.device("cpu"):
         ours_cpu = getattr(mn, fn)(a, *args, output=out_dtype, **kwargs)
-        assert metal_sci.last_route().engine == "cpu"
+        assert scimetal.last_route().engine == "cpu"
         assert_identical(ours_cpu, ref, f"cpu {fn} {shape} {in_dtype}->{out_dtype}")
-    with metal_sci.precision("fast"), metal_sci.device("gpu"):
+    with scimetal.precision("fast"), scimetal.device("gpu"):
         ours_gpu = getattr(mn, fn)(a, *args, output=out_dtype, **kwargs)
         assert ours_gpu.dtype == np.dtype(out_dtype) and ours_gpu.shape == shape
         if not windows:
             assert_identical(ours_gpu, ref)
         else:
-            assert metal_sci.last_route().engine == "gpu"
+            assert scimetal.last_route().engine == "gpu"
             scale = max(float(np.abs(a).max()), abs(float(kwargs.get("cval", 0.0))), 1.0)
             gain = 1.0
             for w in windows:
@@ -1682,35 +1682,35 @@ def test_a4_random_cross_float_output_and_overhanging(gpu, drawn, seed):
 
 def test_mixed_precision_float32_to_float64_overflow_guard(gpu):
     """float32 inputs with output=float64 whose gain/sum/cval overflows float32 must re-route under auto and decline under gpu."""
-    with metal_sci.precision("fast"):
+    with scimetal.precision("fast"):
         # 1. Rank-1 separable correlate with 1e38 float32 input and 5x5 * 10.0 float64 weights.
         a_1e38 = np.full((2500, 2500), 1e38, dtype=np.float32)
         w10 = np.full((5, 5), 10.0, dtype=np.float64)
         ref1 = sn.correlate(a_1e38, w10, mode="reflect", output=np.float64)
-        with metal_sci.device("auto"):
+        with scimetal.device("auto"):
             got1 = mn.correlate(a_1e38, w10, mode="reflect", output=np.float64)
-            r1 = metal_sci.last_route()
+            r1 = scimetal.last_route()
             assert r1.engine == "cpu" and r1.compute_dtype == "float64" and r1.reason
             assert np.all(np.isfinite(got1))
             assert got1.tobytes() == ref1.tobytes()
-        with metal_sci.device("gpu"):
+        with scimetal.device("gpu"):
             got1_g = mn.correlate(a_1e38[:32, :32], w10, mode="reflect", output=np.float64)
-            assert metal_sci.last_route().engine == "scipy"
+            assert scimetal.last_route().engine == "scipy"
             assert got1_g.tobytes() == sn.correlate(a_1e38[:32, :32], w10, mode="reflect", output=np.float64).tobytes()
 
         # 2. Rank-1 separable correlate with constant cval=1e38 overflowing on pass 1 (cval_1 = 2.5e38 * 5).
         ones_f32 = np.ones((2500, 2500), dtype=np.float32)
         w05 = np.full((5, 5), 0.5, dtype=np.float64)
         ref2 = sn.correlate(ones_f32, w05, mode="constant", cval=1e38, output=np.float64)
-        with metal_sci.device("auto"):
+        with scimetal.device("auto"):
             got2 = mn.correlate(ones_f32, w05, mode="constant", cval=1e38, output=np.float64)
-            r2 = metal_sci.last_route()
+            r2 = scimetal.last_route()
             assert r2.engine == "cpu" and r2.compute_dtype == "float64" and r2.reason
             assert np.all(np.isfinite(got2))
             assert got2.tobytes() == ref2.tobytes()
-        with metal_sci.device("gpu"):
+        with scimetal.device("gpu"):
             got2_g = mn.correlate(ones_f32[:32, :32], w05, mode="constant", cval=1e38, output=np.float64)
-            assert metal_sci.last_route().engine == "scipy"
+            assert scimetal.last_route().engine == "scipy"
             assert got2_g.tobytes() == sn.correlate(ones_f32[:32, :32], w05, mode="constant", cval=1e38, output=np.float64).tobytes()
 
         # 3. Composite filter (laplace) with alternating +-1e38 float32 input and output=float64.
@@ -1718,15 +1718,15 @@ def test_mixed_precision_float32_to_float64_overflow_guard(gpu):
         alt[::2, 1::2] = -1e38
         alt[1::2, ::2] = -1e38
         ref3 = sn.laplace(alt, mode="reflect", output=np.float64)
-        with metal_sci.device("auto"):
+        with scimetal.device("auto"):
             got3 = mn.laplace(alt, mode="reflect", output=np.float64)
-            r3 = metal_sci.last_route()
+            r3 = scimetal.last_route()
             assert r3.engine == "cpu" and r3.compute_dtype == "float64" and r3.reason
             assert np.all(np.isfinite(got3))
             assert got3.tobytes() == ref3.tobytes()
-        with metal_sci.device("gpu"):
+        with scimetal.device("gpu"):
             got3_g = mn.laplace(alt[:32, :32], mode="reflect", output=np.float64)
-            assert metal_sci.last_route().engine == "scipy"
+            assert scimetal.last_route().engine == "scipy"
             assert got3_g.tobytes() == sn.laplace(alt[:32, :32], mode="reflect", output=np.float64).tobytes()
 
         # 4. Other separable & composite filters near float32 threshold with output=float64.
@@ -1741,25 +1741,25 @@ def test_mixed_precision_float32_to_float64_overflow_guard(gpu):
             ("gaussian_gradient_magnitude", a_1e20, (1.0,), dict(mode="reflect")),
         ):
             ref = getattr(sn, fn)(arr, *args, output=np.float64, **kw)
-            with metal_sci.device("auto"):
+            with scimetal.device("auto"):
                 got = getattr(mn, fn)(arr, *args, output=np.float64, **kw)
-                rt = metal_sci.last_route()
+                rt = scimetal.last_route()
                 assert rt.engine == "cpu" and rt.compute_dtype == "float64" and rt.reason, f"{fn}: {rt}"
                 assert np.all(np.isfinite(got))
                 assert got.tobytes() == ref.tobytes()
-            with metal_sci.device("gpu"):
+            with scimetal.device("gpu"):
                 sub = arr[:32, :32]
                 got_g = getattr(mn, fn)(sub, *args, output=np.float64, **kw)
-                assert metal_sci.last_route().engine == "scipy", f"{fn} gpu did not decline"
+                assert scimetal.last_route().engine == "scipy", f"{fn} gpu did not decline"
                 assert got_g.tobytes() == getattr(sn, fn)(sub, *args, output=np.float64, **kw).tobytes()
 
         # 5. Intentional NaN/Inf in float32 input with output=float64 stays on GPU and propagates.
         sp = np.ones((64, 64), dtype=np.float32)
         sp[5, 5] = np.inf
         sp[10, 10] = np.nan
-        with metal_sci.device("gpu"), np.errstate(invalid="ignore"):
+        with scimetal.device("gpu"), np.errstate(invalid="ignore"):
             got_sp = mn.correlate(sp, np.full((3, 3), 0.25, np.float64), mode="reflect", output=np.float64)
-            assert metal_sci.last_route().engine == "gpu"
+            assert scimetal.last_route().engine == "gpu"
             ref_sp = sn.correlate(sp, np.full((3, 3), 0.25, np.float64), mode="reflect", output=np.float64)
             np.testing.assert_array_equal(np.isnan(got_sp), np.isnan(ref_sp))
             np.testing.assert_array_equal(np.isinf(got_sp), np.isinf(ref_sp))
@@ -1806,10 +1806,10 @@ def test_a6_all_15_filters_integer_bool_strict_bit_identical(dtype):
         ("generic_laplace", (_gl_deriv2,), dict(extra_arguments=(1.2,))),
         ("generic_gradient_magnitude", (_ggm_deriv,), dict(extra_arguments=(1.2,))),
     )
-    with metal_sci.precision("strict"), metal_sci.device("auto"):
+    with scimetal.precision("strict"), scimetal.device("auto"):
         for fn, args, kw in calls:
             ours = getattr(mn, fn)(a, *args, **kw)
-            assert metal_sci.last_route().engine == "cpu", f"{fn} {dtype}: {metal_sci.last_route()}"
+            assert scimetal.last_route().engine == "cpu", f"{fn} {dtype}: {scimetal.last_route()}"
             if fn == "generic_laplace":
                 ref = sn.generic_laplace(a, _gl_deriv2_scipy, **kw)
             elif fn == "generic_gradient_magnitude":
@@ -1823,7 +1823,7 @@ def test_a6_bool_raw_bytes_and_cross_dtype_outputs():
     # Multi-byte raw bool view (values 0, 2, 5) matches SciPy's raw-byte NI_ArrayToLineBuffer semantics.
     raw = np.arange(15 * 19, dtype=np.uint8).reshape(15, 19) % 5
     b_raw = raw.view(np.bool_)
-    with metal_sci.precision("strict"), metal_sci.device("cpu"):
+    with scimetal.precision("strict"), scimetal.device("cpu"):
         for fn, args in (("correlate1d", (np.array([0.25, 0.5, 0.25]),)),
                          ("correlate", (np.array([[1.0, -1.0], [0.5, 0.5]]),)),
                          ("gaussian_filter", (1.0,)),
@@ -1831,7 +1831,7 @@ def test_a6_bool_raw_bytes_and_cross_dtype_outputs():
                          ("uniform_filter", (3,))):
             ours = getattr(mn, fn)(b_raw, *args)
             ref = getattr(sn, fn)(b_raw, *args)
-            assert metal_sci.last_route().engine == "cpu"
+            assert scimetal.last_route().engine == "cpu"
             assert_identical(ours, ref, f"raw bool {fn}")
 
     # Cross-dtype output= combinations across separable, dense, and composite filters.
@@ -1845,7 +1845,7 @@ def test_a6_bool_raw_bytes_and_cross_dtype_outputs():
     w2d = np.array([[0.25, -0.5], [1.0, 0.25]], dtype=np.float64)
     for in_dt, out_dt in combos:
         a = _int_bool_array((17, 21), in_dt, seed=55) if in_dt in _INT_BOOL_DTYPES else array((17, 21), in_dt, seed=55)
-        with metal_sci.precision("strict"), metal_sci.device("cpu"):
+        with scimetal.precision("strict"), scimetal.device("cpu"):
             for fn, args, ref_fn in (
                 ("correlate1d", (np.array([0.25, 0.5, 0.25]),), sn.correlate1d),
                 ("gaussian_filter", (1.1,), sn.gaussian_filter),
@@ -1861,7 +1861,7 @@ def test_a6_bool_raw_bytes_and_cross_dtype_outputs():
                 ("generic_gradient_magnitude", (_ggm_deriv,), None),
             ):
                 ours = getattr(mn, fn)(a, *args, output=out_dt)
-                assert metal_sci.last_route().engine == "cpu"
+                assert scimetal.last_route().engine == "cpu"
                 if fn == "generic_laplace":
                     ref = sn.generic_laplace(a, _gl_deriv2_scipy, output=out_dt)
                 elif fn == "generic_gradient_magnitude":
@@ -1875,19 +1875,19 @@ def test_a6_gpu_fast_uint8_int16_and_large_int_guard(gpu):
     # GPU fast mode runs uint8 and int16 accurately.
     for dt in (np.uint8, np.int16):
         a = _int_bool_array((128, 128), dt, seed=77)
-        with metal_sci.precision("fast"), metal_sci.device("gpu"):
+        with scimetal.precision("fast"), scimetal.device("gpu"):
             for fn, args in (("gaussian_filter", (1.5,)),
                              ("uniform_filter", (5,)),
                              ("correlate", (np.full((3, 3), 1.0 / 9.0),))):
                 ours = getattr(mn, fn)(a, *args)
-                rt = metal_sci.last_route()
+                rt = scimetal.last_route()
                 assert rt.engine == "gpu" and rt.compute_dtype == "float32"
                 ref = getattr(sn, fn)(a, *args)
                 assert np.abs(ours.astype(np.float64) - ref.astype(np.float64)).max() <= 1.0
             if dt is np.int16:
                 for fn, args in (("laplace", ()), ("gaussian_laplace", (1.2,)), ("gaussian_gradient_magnitude", (1.2,))):
                     ours = getattr(mn, fn)(a, *args)
-                    rt = metal_sci.last_route()
+                    rt = scimetal.last_route()
                     assert rt.engine == "gpu" and rt.compute_dtype == "float32"
                     ref = getattr(sn, fn)(a, *args)
                     ref_f64 = np.trunc(getattr(sn, fn)(a.astype(np.float64), *args)).astype(dt)
@@ -1898,35 +1898,35 @@ def test_a6_gpu_fast_uint8_int16_and_large_int_guard(gpu):
     shape = (2048, 2048)
     for dt in (np.int32, np.uint32, np.int64, np.uint64):
         arr = np.full(shape, 7, dtype=dt)
-        with metal_sci.precision("fast"):
+        with scimetal.precision("fast"):
             if dt is np.int32:
                 arr[0, 0] = (1 << 24) - 1
-                with metal_sci.device("auto"):
+                with scimetal.device("auto"):
                     mn.gaussian_filter(arr, 1.0)
-                    rt_ok = metal_sci.last_route()
+                    rt_ok = scimetal.last_route()
                     assert rt_ok.engine == "gpu" and rt_ok.compute_dtype == "float32"
 
             bad_values = (1 << 24, -(1 << 24)) if np.issubdtype(dt, np.signedinteger) else (1 << 24,)
             for bad in bad_values:
                 arr[10, 20] = bad
                 ref = sn.gaussian_filter(arr, 1.0)
-                with metal_sci.device("auto"):
+                with scimetal.device("auto"):
                     got = mn.gaussian_filter(arr, 1.0)
-                    rt = metal_sci.last_route()
+                    rt = scimetal.last_route()
                     assert rt.engine == "cpu" and rt.compute_dtype == "float64" and rt.reason
-                    assert "cpu" in metal_sci.explain().lower() and rt.reason in metal_sci.explain()
+                    assert "cpu" in scimetal.explain().lower() and rt.reason in scimetal.explain()
                     assert_identical(got, ref, f"auto guard {dt} {bad}")
-                with metal_sci.device("gpu"):
+                with scimetal.device("gpu"):
                     sub = arr[:64, :64]
                     got_g = mn.gaussian_filter(sub, 1.0)
-                    assert metal_sci.last_route().engine == "scipy"
+                    assert scimetal.last_route().engine == "scipy"
                     assert_identical(got_g, sn.gaussian_filter(sub, 1.0), f"gpu guard {dt} {bad}")
 
 
 def test_review_regressions():
     a = array((10, 12), np.float64, seed=123)
 
-    # 1. _TraceToken handed to non-separable metal_sci.ndimage routes declines cleanly to SciPy.
+    # 1. _TraceToken handed to non-separable scimetal.ndimage routes declines cleanly to SciPy.
     def dense_deriv(inp, axis, output, mode, cval):
         w = np.ones((3, 3), dtype=np.float64) / 9.0
         return mn.correlate(inp, w, output=output, mode=mode, cval=cval)
@@ -1935,7 +1935,7 @@ def test_review_regressions():
         w = np.ones((3, 3), dtype=np.float64) / 9.0
         return sn.correlate(inp, w, output=output, mode=mode, cval=cval)
 
-    from metal_sci._dispatch import counters
+    from scimetal._dispatch import counters
 
     before_gl_fall = counters["ndimage.generic_laplace"][1]
     got_gl = mn.generic_laplace(a, dense_deriv)
@@ -1943,10 +1943,10 @@ def test_review_regressions():
     assert_identical(got_gl, sn.generic_laplace(a, dense_deriv_scipy))
 
     # 2. Negative and out-of-range scalar axes in gaussian_laplace / gaussian_gradient_magnitude.
-    with metal_sci.precision("strict"), metal_sci.device("cpu"):
+    with scimetal.precision("strict"), scimetal.device("cpu"):
         for fn in ("gaussian_laplace", "gaussian_gradient_magnitude"):
             got = getattr(mn, fn)(a, 1.0, axes=-1)
-            assert metal_sci.last_route().engine == "cpu"
+            assert scimetal.last_route().engine == "cpu"
             assert_identical(got, getattr(sn, fn)(a, 1.0, axes=-1))
             assert_declined_like_scipy(fn, a, 1.0, axes=5)
             assert_declined_like_scipy(fn, a, 1.0, axes=-5)
@@ -1960,7 +1960,7 @@ def test_review_regressions():
     base_ref = np.zeros(20, dtype=np.float64)
     overlap_ref = np.lib.stride_tricks.as_strided(base_ref, shape=(10, 12), strides=(8, 0))
     mn.gaussian_filter(a, 1.0, output=overlap)
-    assert metal_sci.last_route().engine == "scipy"
+    assert scimetal.last_route().engine == "scipy"
     sn.gaussian_filter(a, 1.0, output=overlap_ref)
     assert_identical(base, base_ref)
 
@@ -1987,11 +1987,11 @@ def test_review_regressions():
     unaligned_w2 = np.frombuffer(raw_w, dtype=np.float64, count=9, offset=1).reshape(3, 3)
     unaligned_w2[:] = 1.0 / 9.0
     assert not unaligned_w2.flags.aligned
-    with metal_sci.precision("strict"), metal_sci.device("cpu"):
+    with scimetal.precision("strict"), scimetal.device("cpu"):
         assert_identical(mn.correlate1d(a, unaligned_w1), sn.correlate1d(a, unaligned_w1))
-        assert metal_sci.last_route().engine == "cpu"
+        assert scimetal.last_route().engine == "cpu"
         assert_identical(mn.correlate(a, unaligned_w2), sn.correlate(a, unaligned_w2))
-        assert metal_sci.last_route().engine == "cpu"
+        assert scimetal.last_route().engine == "cpu"
 
 
 

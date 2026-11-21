@@ -2,7 +2,7 @@
   "benchmark": "ndimage_filters",
   "numpy": "2.5.5",
   "scipy": "1.18.1",
-  "metal_sci": "0.1.0.dev0",
+  "scimetal": "0.1.0.dev0",
   "machine": "arm64",
   "macos": "26.5.1",
   "calibration": [

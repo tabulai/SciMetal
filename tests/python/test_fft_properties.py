@@ -9,9 +9,9 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-import metal_sci
-import metal_sci.fft as mfft
-from metal_sci import _native
+import scimetal
+import scimetal.fft as mfft
+from scimetal import _native
 
 TOLERANCE = 5e-6
 # Stockham, Rader, Bluestein, four-step and strided-chain lengths.
@@ -28,7 +28,7 @@ cases = settings(max_examples=60, deadline=None)
 def gpu():
     if not _native.has_metal():
         pytest.skip("requires Metal GPU build")
-    with metal_sci.device("gpu"), metal_sci.precision("fast"):
+    with scimetal.device("gpu"), scimetal.precision("fast"):
         yield
 
 
@@ -44,7 +44,7 @@ def close(a, b, factor=1.0):
 
 
 def on_gpu():
-    assert metal_sci.last_route().engine == "gpu", str(metal_sci.last_route())
+    assert scimetal.last_route().engine == "gpu", str(scimetal.last_route())
 
 
 shapes = st.tuples(st.integers(1, 6), st.sampled_from(LENGTHS))

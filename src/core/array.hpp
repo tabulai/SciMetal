@@ -2,8 +2,8 @@
 // Shared plumbing for array operations: descriptor checks, pooled output
 // storage, precision conversion on the performance cores, and result/route
 // publishing. Every family (ndimage, fft, ...) builds on these.
-#include "ms_array.h"
-#include "ms/detail/storage.hpp"
+#include "sm_array.h"
+#include "sm/detail/storage.hpp"
 
 #include <climits>
 #include <cmath>
@@ -11,37 +11,37 @@
 #include <limits>
 #include <type_traits>
 
-namespace ms::detail::array {
+namespace sm::detail::array {
 struct Shape {
     uint32_t ndim = 0;
-    uint64_t dims[MS_MAX_NDIM] = {};
+    uint64_t dims[SM_MAX_NDIM] = {};
     uint64_t elements = 0;
 };
 
-// Bytes per element; MS_EINVAL for an unknown dtype.
+// Bytes per element; SM_EINVAL for an unknown dtype.
 uint64_t dtype_size(uint32_t dtype);
 // Minimum natural scalar alignment (bytes) required for typed access.
 uint64_t scalar_alignment(uint32_t dtype);
-bool is_double(uint32_t dtype);       // MS_FLOAT64 or MS_COMPLEX128
-bool is_complex(uint32_t dtype);      // MS_COMPLEX64 or MS_COMPLEX128
-bool is_float(uint32_t dtype);        // MS_FLOAT32 or MS_FLOAT64
-bool is_bool(uint32_t dtype);         // MS_BOOL
-bool is_integer(uint32_t dtype);      // MS_INT8..MS_UINT64
-bool is_signed_int(uint32_t dtype);   // MS_INT8..MS_INT64
-bool is_unsigned_int(uint32_t dtype); // MS_UINT8..MS_UINT64
-bool is_int_or_bool(uint32_t dtype);  // MS_BOOL or MS_INT8..MS_UINT64
+bool is_double(uint32_t dtype);       // SM_FLOAT64 or SM_COMPLEX128
+bool is_complex(uint32_t dtype);      // SM_COMPLEX64 or SM_COMPLEX128
+bool is_float(uint32_t dtype);        // SM_FLOAT32 or SM_FLOAT64
+bool is_bool(uint32_t dtype);         // SM_BOOL
+bool is_integer(uint32_t dtype);      // SM_INT8..SM_UINT64
+bool is_signed_int(uint32_t dtype);   // SM_INT8..SM_INT64
+bool is_unsigned_int(uint32_t dtype); // SM_UINT8..SM_UINT64
+bool is_int_or_bool(uint32_t dtype);  // SM_BOOL or SM_INT8..SM_UINT64
 bool is_real(uint32_t dtype);         // any valid non-complex dtype
-// The single-precision counterpart (MS_COMPLEX64 for complex; MS_FLOAT32 for all real dtypes).
+// The single-precision counterpart (SM_COMPLEX64 for complex; SM_FLOAT32 for all real dtypes).
 uint32_t single_of(uint32_t dtype);
 
 // Validates a descriptor (sizes, version, dtype, rank, overflow, data pointer)
 // and returns its shape. Zero-length arrays are valid.
-Shape checked_shape(const ms_array* array);
-void check_options(const ms_route_options* options);
+Shape checked_shape(const sm_array* array);
+void check_options(const sm_route_options* options);
 
 // Owned storage whose bytes the caller writes completely before publishing.
 // Comes from the context's buffer cache when a buffer of that capacity is idle.
-BufferPtr allocate(ms_context*, uint64_t bytes);
+BufferPtr allocate(sm_context*, uint64_t bytes);
 
 struct ConvertReport {
     bool overflowed = false;     // finite double magnitude >= 0x1.ffffffp127 (rounded to +-inf in float32)
@@ -122,12 +122,12 @@ void convert(const void* src, uint32_t src_dtype, void* dst, uint32_t dst_dtype,
 void ndimage_cast_from_float(const float* src, uint32_t dst_dtype, void* dst, uint64_t elements, bool dense_safe);
 
 // A single-precision copy of a host array in owned (device-visible) storage.
-// When `raw_bool` is true, MS_BOOL inputs are read as raw uint8_t bytes (matching
+// When `raw_bool` is true, SM_BOOL inputs are read as raw uint8_t bytes (matching
 // SciPy's ndimage filter input conversion rather than NumPy's normalized bool astype).
-BufferPtr load_single(ms_context*, const ms_array& array, const Shape& shape, ConvertReport* report = nullptr,
+BufferPtr load_single(sm_context*, const sm_array& array, const Shape& shape, ConvertReport* report = nullptr,
                       bool raw_bool = false);
 
-void check_route_info(const ms_route_info* info);
-void publish(ms_array_result* out, BufferPtr buffer, uint32_t dtype, const Shape& shape) noexcept;
-void report(ms_route_info* info, uint32_t engine, uint32_t compute_dtype, const char* reason = "") noexcept;
-} // namespace ms::detail::array
+void check_route_info(const sm_route_info* info);
+void publish(sm_array_result* out, BufferPtr buffer, uint32_t dtype, const Shape& shape) noexcept;
+void report(sm_route_info* info, uint32_t engine, uint32_t compute_dtype, const char* reason = "") noexcept;
+} // namespace sm::detail::array

@@ -1,4 +1,4 @@
-"""ctypes prototypes and calls for the signal family (include/ms_signal.h)."""
+"""ctypes prototypes and calls for the signal family (include/sm_signal.h)."""
 from __future__ import annotations
 
 import ctypes
@@ -8,7 +8,7 @@ import numpy as np
 
 from .. import _native
 
-MS_SIGNAL_ABI_VERSION = 1
+SM_SIGNAL_ABI_VERSION = 1
 
 FULL, SAME, VALID = 0, 1, 2
 METHOD_AUTO, METHOD_DIRECT, METHOD_FFT = 0, 1, 2
@@ -54,7 +54,7 @@ class FftConvOptions(ctypes.Structure):
         ("correlate", ctypes.c_uint32),
         ("overlap_add", ctypes.c_uint32),
         ("axis_count", ctypes.c_uint32),
-        ("axes", ctypes.c_uint32 * _native.MS_MAX_NDIM),
+        ("axes", ctypes.c_uint32 * _native.SM_MAX_NDIM),
         ("host_threads", ctypes.c_uint32),
         ("reserved0", ctypes.c_uint32),
         ("reserved", ctypes.c_uint64 * 2),
@@ -72,9 +72,9 @@ def library() -> ctypes.CDLL:
     if not _declared:
         with _lock:
             if not _declared:
-                if not hasattr(lib, "ms_signal_convolve"):
+                if not hasattr(lib, "sm_signal_convolve"):
                     raise _native.NotAccelerated("the native library was built without the signal family")
-                lib.ms_signal_convolve.argtypes = [
+                lib.sm_signal_convolve.argtypes = [
                     ctypes.c_void_p,
                     ctypes.POINTER(_native.Array),
                     ctypes.POINTER(_native.Array),
@@ -83,7 +83,7 @@ def library() -> ctypes.CDLL:
                     ctypes.POINTER(_native.ArrayResult),
                     ctypes.POINTER(_native.RouteInfo),
                 ]
-                lib.ms_signal_fftconvolve.argtypes = [
+                lib.sm_signal_fftconvolve.argtypes = [
                     ctypes.c_void_p,
                     ctypes.POINTER(_native.Array),
                     ctypes.POINTER(_native.Array),
@@ -92,7 +92,7 @@ def library() -> ctypes.CDLL:
                     ctypes.POINTER(_native.ArrayResult),
                     ctypes.POINTER(_native.RouteInfo),
                 ]
-                lib.ms_signal_choose_conv_method.argtypes = [
+                lib.sm_signal_choose_conv_method.argtypes = [
                     ctypes.c_void_p,
                     ctypes.c_uint32,
                     ctypes.c_uint32,
@@ -122,7 +122,7 @@ def convolve(function: str, in1: np.ndarray, in2: np.ndarray, mode: int, method:
     d2, h2 = _native.as_native(in2)
     opts = ConvOptions(
         struct_size=ctypes.sizeof(ConvOptions),
-        abi_version=MS_SIGNAL_ABI_VERSION,
+        abi_version=SM_SIGNAL_ABI_VERSION,
         mode=mode,
         method=method,
         correlate=1 if correlate else 0,
@@ -136,7 +136,7 @@ def convolve(function: str, in1: np.ndarray, in2: np.ndarray, mode: int, method:
     info = _native.new_route_info()
     result = _native.ArrayResult()
     try:
-        _native.check(lib.ms_signal_convolve(
+        _native.check(lib.sm_signal_convolve(
             _native.context(), ctypes.byref(d1), ctypes.byref(d2), ctypes.byref(opts),
             ctypes.byref(route), ctypes.byref(result), ctypes.byref(info)))
     except (ValueError, MemoryError) as refusal:
@@ -157,7 +157,7 @@ def fftconvolve(function: str, in1: np.ndarray, in2: np.ndarray, mode: int,
     d2, h2 = _native.as_native(in2)
     opts = FftConvOptions(
         struct_size=ctypes.sizeof(FftConvOptions),
-        abi_version=MS_SIGNAL_ABI_VERSION,
+        abi_version=SM_SIGNAL_ABI_VERSION,
         mode=mode,
         correlate=1 if correlate else 0,
         overlap_add=1 if overlap_add else 0,
@@ -171,7 +171,7 @@ def fftconvolve(function: str, in1: np.ndarray, in2: np.ndarray, mode: int,
     info = _native.new_route_info()
     result = _native.ArrayResult()
     try:
-        _native.check(lib.ms_signal_fftconvolve(
+        _native.check(lib.sm_signal_fftconvolve(
             _native.context(), ctypes.byref(d1), ctypes.byref(d2), ctypes.byref(opts),
             ctypes.byref(route), ctypes.byref(result), ctypes.byref(info)))
     except (ValueError, MemoryError) as refusal:
@@ -187,7 +187,7 @@ def choose_conv_method(dtype1, shape1, dtype2, shape2, mode: int, host_threads: 
     lib = library()
     c1 = _native.native_dtype(dtype1)
     c2 = _native.native_dtype(dtype2)
-    if c1 is None or c2 is None or len(shape1) != len(shape2) or not 1 <= len(shape1) <= _native.MS_MAX_NDIM:
+    if c1 is None or c2 is None or len(shape1) != len(shape2) or not 1 <= len(shape1) <= _native.SM_MAX_NDIM:
         raise _native.NotAccelerated("unsupported dtype or rank for native choose_conv_method")
     if any(d < 0 or d >= (1 << 64) for d in shape1) or any(d < 0 or d >= (1 << 64) for d in shape2):
         raise _native.NotAccelerated("shape exceeds uint64 extent bounds")
@@ -196,7 +196,7 @@ def choose_conv_method(dtype1, shape1, dtype2, shape2, mode: int, host_threads: 
     route = _native.route_options()
     out_method = ctypes.c_uint32()
     try:
-        _native.check(lib.ms_signal_choose_conv_method(
+        _native.check(lib.sm_signal_choose_conv_method(
             _native.context(), c1, len(shape1), s1_arr, c2, len(shape2), s2_arr,
             mode, _clamp_threads(host_threads), ctypes.byref(route), ctypes.byref(out_method)))
     except (ValueError, MemoryError) as refusal:

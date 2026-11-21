@@ -13,7 +13,7 @@
 #include <mutex>
 #include <unordered_map>
 
-namespace ms::detail::fft {
+namespace sm::detail::fft {
 namespace {
 gpu::Specialization specialization(const Constants& constants) {
     gpu::Specialization result;
@@ -31,7 +31,7 @@ gpu::Specialization specialization(const Constants& constants) {
 }
 
 // Scratch slices live inside a shared slab: bind them at their own offset.
-gpu::Binding bind(const ms_buffer* buffer, ms_context* context) {
+gpu::Binding bind(const sm_buffer* buffer, sm_context* context) {
     gpu::Binding binding = gpu::bind(buffer, context);
     binding.offset = device_view(buffer, context).offset;
     return binding;
@@ -86,23 +86,23 @@ std::shared_ptr<const ResolvedPlan> resolve_plan(const Plan& plan) {
 }
 
 MTL::ComputePipelineState* scale_pipeline() {
-    static MTL::ComputePipelineState* const state = gpu::resolve_pipeline("ms_fft_scale");
+    static MTL::ComputePipelineState* const state = gpu::resolve_pipeline("sm_fft_scale");
     return state;
 }
 
 MTL::ComputePipelineState* c2r_hermitian_pipeline() {
-    static MTL::ComputePipelineState* const state = gpu::resolve_pipeline("ms_fft_c2r_hermitian_fix");
+    static MTL::ComputePipelineState* const state = gpu::resolve_pipeline("sm_fft_c2r_hermitian_fix");
     return state;
 }
 
 uint64_t checked_slot_bytes(uint64_t slot_scalars, uint64_t count, uint64_t tail_scalars = 0) {
     uint64_t scalars = 0;
-    if (ms_checked_mul(slot_scalars, count, &scalars) != MS_OK ||
-        ms_checked_add(scalars, tail_scalars, &scalars) != MS_OK)
-        throw Error(MS_EOVERFLOW, "FFT device buffer byte size overflows");
+    if (sm_checked_mul(slot_scalars, count, &scalars) != SM_OK ||
+        sm_checked_add(scalars, tail_scalars, &scalars) != SM_OK)
+        throw Error(SM_EOVERFLOW, "FFT device buffer byte size overflows");
     uint64_t bytes = 0;
-    if (ms_checked_mul(scalars, scalar_bytes, &bytes) != MS_OK)
-        throw Error(MS_EOVERFLOW, "FFT device buffer byte size overflows");
+    if (sm_checked_mul(scalars, scalar_bytes, &bytes) != SM_OK)
+        throw Error(SM_EOVERFLOW, "FFT device buffer byte size overflows");
     return bytes;
 }
 } // namespace
@@ -143,12 +143,12 @@ bool refused(std::vector<Stage>& stages, Refusal& refusal) {
     return false;
 }
 
-Scratch::Scratch(ms_context* context) : context_(context) {}
+Scratch::Scratch(sm_context* context) : context_(context) {}
 
-ms_buffer* Scratch::acquire(uint64_t bytes) {
+sm_buffer* Scratch::acquire(uint64_t bytes) {
     for (size_t i = 0; i < idle_.size(); ++i) {
         if (buffer_size(idle_[i]) == bytes) {
-            ms_buffer* buffer = idle_[i];
+            sm_buffer* buffer = idle_[i];
             idle_.erase(idle_.begin() + static_cast<ptrdiff_t>(i));
             return buffer;
         }
@@ -157,12 +157,12 @@ ms_buffer* Scratch::acquire(uint64_t bytes) {
     return owned_.back().get();
 }
 
-ms_buffer* Scratch::adopt(BufferPtr buffer) {
+sm_buffer* Scratch::adopt(BufferPtr buffer) {
     owned_.push_back(std::move(buffer));
     return owned_.back().get();
 }
 
-void Scratch::release(ms_buffer* buffer) {
+void Scratch::release(sm_buffer* buffer) {
     if (!buffer) return;
     bool is_owned = false;
     for (const BufferPtr& owned : owned_) {
@@ -175,7 +175,7 @@ void Scratch::release(ms_buffer* buffer) {
     if (std::find(idle_.begin(), idle_.end(), buffer) == idle_.end()) idle_.push_back(buffer);
 }
 
-BufferPtr Scratch::take(ms_buffer* buffer) {
+BufferPtr Scratch::take(sm_buffer* buffer) {
     auto it = std::find(idle_.begin(), idle_.end(), buffer);
     if (it != idle_.end()) idle_.erase(it);
     for (size_t i = 0; i < owned_.size(); ++i) {
@@ -185,7 +185,7 @@ BufferPtr Scratch::take(ms_buffer* buffer) {
             return out;
         }
     }
-    throw Error(MS_EBACKEND, "FFT result buffer is not owned by its run");
+    throw Error(SM_EBACKEND, "FFT result buffer is not owned by its run");
 }
 
 void Scratch::clear() {
@@ -193,16 +193,16 @@ void Scratch::clear() {
     owned_.clear();
 }
 
-ms_buffer* encode(ms_context* context, gpu::Batch& batch, Scratch& scratch,
-                  const std::vector<Stage>& stages, ms_buffer* input, float scale,
+sm_buffer* encode(sm_context* context, gpu::Batch& batch, Scratch& scratch,
+                  const std::vector<Stage>& stages, sm_buffer* input, float scale,
                   Profile* profile) {
-    if (stages.empty() || !input) throw Error(MS_EINVAL, "an FFT run needs a stage and an input buffer");
+    if (stages.empty() || !input) throw Error(SM_EINVAL, "an FFT run needs a stage and an input buffer");
     using Clock = std::chrono::steady_clock;
     const auto elapsed_ns = [](Clock::time_point start, Clock::time_point end) -> uint64_t {
         return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
     };
 
-    ms_buffer* carried = input;
+    sm_buffer* carried = input;
 
     // A plan whose last pass is ours applies the factor there for free; the
     // last such stage does it — except never fuse scale > 1.0f ahead of a later
@@ -221,8 +221,8 @@ ms_buffer* encode(ms_context* context, gpu::Batch& batch, Scratch& scratch,
     }
 
     std::vector<Dispatch> dispatches;
-    std::vector<ms_buffer*> slots;
-    std::vector<ms_buffer*> tables;
+    std::vector<sm_buffer*> slots;
+    std::vector<sm_buffer*> tables;
     for (size_t index = 0; index < stages.size(); ++index) {
         Clock::time_point t_alloc;
         if (profile) t_alloc = Clock::now();
@@ -231,15 +231,15 @@ ms_buffer* encode(ms_context* context, gpu::Batch& batch, Scratch& scratch,
             stages[index].resolved ? std::static_pointer_cast<const ResolvedPlan>(stages[index].resolved)
                                    : resolve_plan(plan);
         if (resolved->is_refused || resolved->pipelines.size() != plan.steps.size())
-            throw Error(MS_ENOTSUP, "this Metal device's threadgroup capacity is too small for the kernel");
+            throw Error(SM_ENOTSUP, "this Metal device's threadgroup capacity is too small for the kernel");
 
         const uint64_t count = stages[index].count;
         std::string reason;
-        if (!instantiate(plan, count, dispatches, reason)) throw Error(MS_ENOTSUP, reason);
+        if (!instantiate(plan, count, dispatches, reason)) throw Error(SM_ENOTSUP, reason);
 
         slots.assign(plan.slots.size(), nullptr);
         if (buffer_size(carried, context) < checked_slot_bytes(plan.slots[0], count, plan.input_tail_scalars))
-            throw Error(MS_EBACKEND, "FFT input buffer is smaller than its plan's input slot");
+            throw Error(SM_EBACKEND, "FFT input buffer is smaller than its plan's input slot");
         slots[0] = carried;
         for (size_t slot = 1; slot < plan.slots.size(); ++slot)
             slots[slot] = scratch.acquire(checked_slot_bytes(plan.slots[slot], count));
@@ -257,10 +257,10 @@ ms_buffer* encode(ms_context* context, gpu::Batch& batch, Scratch& scratch,
 
         if (index > 0 && plan.clear_hermitian_imag) {
             MSFFTC2RHermitianParams hparams{};
-            hparams.rows = static_cast<ms_u32>(count);
-            hparams.row_stride = static_cast<ms_u32>(plan.slots[0] / 2);
-            hparams.nyquist = (plan.request.n % 2 == 0) ? static_cast<ms_u32>(plan.request.n / 2) : 0u;
-            const uint64_t groups = (count + MS_GPU_THREADS - 1) / MS_GPU_THREADS;
+            hparams.rows = static_cast<sm_u32>(count);
+            hparams.row_stride = static_cast<sm_u32>(plan.slots[0] / 2);
+            hparams.nyquist = (plan.request.n % 2 == 0) ? static_cast<sm_u32>(plan.request.n / 2) : 0u;
+            const uint64_t groups = (count + SM_GPU_THREADS - 1) / SM_GPU_THREADS;
             batch.dispatch(c2r_hermitian_pipeline(), hparams, {bind(slots[0], context)}, groups);
         }
 
@@ -278,7 +278,7 @@ ms_buffer* encode(ms_context* context, gpu::Batch& batch, Scratch& scratch,
             bound[bound_count++] = {1, bind(slots[step.target], context)};
             uint32_t next = 2;
             for (const int32_t table : step.tables) {
-                if (bound_count >= bound.size()) throw Error(MS_EBACKEND, "GPU dispatch binds too many buffers");
+                if (bound_count >= bound.size()) throw Error(SM_EBACKEND, "GPU dispatch binds too many buffers");
                 bound[bound_count++] = {next++, bind(tables[static_cast<size_t>(table)], context)};
             }
             std::array<gpu::IndexedBytes, gpu::max_bound_buffers + 1> bytes;
@@ -295,7 +295,7 @@ ms_buffer* encode(ms_context* context, gpu::Batch& batch, Scratch& scratch,
                 bytes[bytes_count++] = {next, &params, sizeof(params)};
             } else {
                 for (const int32_t& value : dispatch.values) {
-                    if (bytes_count >= bytes.size()) throw Error(MS_EBACKEND, "GPU dispatch has too many arguments");
+                    if (bytes_count >= bytes.size()) throw Error(SM_EBACKEND, "GPU dispatch has too many arguments");
                     bytes[bytes_count++] = {next++, &value, sizeof(value)};
                 }
             }
@@ -304,7 +304,7 @@ ms_buffer* encode(ms_context* context, gpu::Batch& batch, Scratch& scratch,
         if (profile) profile->encode_ns += elapsed_ns(t_enc, Clock::now());
 
         carried = slots[plan.result_slot];
-        for (ms_buffer* slot : slots) {
+        for (sm_buffer* slot : slots) {
             if (slot != carried) scratch.release(slot);
         }
     }
@@ -315,20 +315,20 @@ ms_buffer* encode(ms_context* context, gpu::Batch& batch, Scratch& scratch,
         MSFFTScaleParams params{};
         params.count = buffer_size(carried, context) / scalar_bytes;
         params.scale = scale;
-        const uint64_t per_group = uint64_t{MS_GPU_THREADS} * MS_FFT_SCALE_CHUNK;
+        const uint64_t per_group = uint64_t{SM_GPU_THREADS} * SM_FFT_SCALE_CHUNK;
         batch.dispatch(scale_pipeline(), params, {bind(carried, context)}, (params.count + per_group - 1) / per_group);
         if (profile) profile->encode_ns += elapsed_ns(t_scale, Clock::now());
     }
     return carried;
 }
 
-BufferPtr run(ms_context* context, const std::vector<Stage>& stages, BufferPtr input, float scale,
+BufferPtr run(sm_context* context, const std::vector<Stage>& stages, BufferPtr input, float scale,
               Profile* profile) {
-    if (stages.empty() || !input) throw Error(MS_EINVAL, "an FFT run needs a stage and an input buffer");
+    if (stages.empty() || !input) throw Error(SM_EINVAL, "an FFT run needs a stage and an input buffer");
     Scratch scratch(context);
     gpu::Batch batch(context);
-    ms_buffer* input_buf = scratch.adopt(std::move(input));
-    ms_buffer* carried = encode(context, batch, scratch, stages, input_buf, scale, profile);
+    sm_buffer* input_buf = scratch.adopt(std::move(input));
+    sm_buffer* carried = encode(context, batch, scratch, stages, input_buf, scale, profile);
     gpu::Batch::Timing timing;
     batch.commit_and_wait(profile ? &timing : nullptr);
     if (profile) {
@@ -339,4 +339,4 @@ BufferPtr run(ms_context* context, const std::vector<Stage>& stages, BufferPtr i
     }
     return scratch.take(carried);
 }
-} // namespace ms::detail::fft
+} // namespace sm::detail::fft

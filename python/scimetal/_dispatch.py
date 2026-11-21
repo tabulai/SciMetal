@@ -29,10 +29,10 @@ class PrecisionWarning(UserWarning):
 warnings.filterwarnings("once", category=PrecisionWarning, append=True)
 
 _PRECISION_WARNING_MESSAGE = (
-    "metal-sci computed a double-precision input in single precision. "
-    "Use metal_sci.set_precision('strict') for exact double-precision results, "
+    "SciMetal computed a double-precision input in single precision. "
+    "Use scimetal.set_precision('strict') for exact double-precision results, "
     "or silence this warning with "
-    "warnings.filterwarnings('ignore', category=metal_sci.PrecisionWarning)."
+    "warnings.filterwarnings('ignore', category=scimetal.PrecisionWarning)."
 )
 
 
@@ -44,7 +44,7 @@ def _caller_stacklevel() -> int:
     level = 1
     while frame is not None:
         name = frame.f_globals.get("__name__") or ""
-        if (name != "metal_sci" and not name.startswith("metal_sci.")
+        if (name != "scimetal" and not name.startswith("scimetal.")
                 and not name.startswith("scipy._lib") and not name.startswith("scipy.fft")):
             return level
         frame = frame.f_back
@@ -86,7 +86,7 @@ class Route:
         return f"{text} ({self.reason})" if self.reason else text
 
 
-_last = contextvars.ContextVar("metal_sci_last_route", default=None)
+_last = contextvars.ContextVar("scimetal_last_route", default=None)
 # namespace -> names with a native route, e.g. {'ndimage': {'gaussian_filter'}}
 registry: dict[str, set[str]] = {}
 # 'ndimage.gaussian_filter' -> [calls that ran natively, calls handed to SciPy]
@@ -148,8 +148,8 @@ def accelerated(qualified_name: str):
         # functools.wraps copied SciPy's module and qualified name; under those
         # pickle would find SciPy's own function, not this wrapper, and refuse it
         # (multiprocessing pickles the functions it is handed).
-        wrapper.__module__, wrapper.__qualname__ = f"metal_sci.{namespace}", name
-        wrapper.__metal_sci_native__ = impl
+        wrapper.__module__, wrapper.__qualname__ = f"scimetal.{namespace}", name
+        wrapper.__scimetal_native__ = impl
         registry.setdefault(namespace, set()).add(name)
         return wrapper
 

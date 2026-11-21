@@ -2,7 +2,7 @@
 
 The FFT kernels of Apple's [MLX](https://github.com/ml-explore/mlx), vendored
 byte for byte with MLX's directory layout so that their own `#include` lines
-resolve with `-I third_party/mlx-kernels`. They are compiled into metal-sci's
+resolve with `-I third_party/mlx-kernels`. They are compiled into SciMetal's
 embedded metallib by `src/fft/fft_kernels.metal`; the native core does not
 link libmlx.
 
@@ -32,7 +32,7 @@ link libmlx.
 - Not used: MLX's own large-size plan. Its four-step stops at 2^20; MLX 0.31.1
   raises at 2^21–2^22 and returns wrong results at 2^23–2^24
   (`probes/README.md`, E5).
-- Ours, in `src/fft/` (not part of MLX): the strided pass `ms_fft_strided`
+- Ours, in `src/fft/` (not part of MLX): the strided pass `sm_fft_strided`
   (built on MLX's `perform_fft`), which the planner chains for long and
   non-power-of-two lengths and for transforms along other axes; the planner
   itself; and the engine. `src/fft/plan.cpp` contains a port of the planning
@@ -40,7 +40,7 @@ link libmlx.
   thread-layout heuristics, Rader and Bluestein constants) and carries the MIT
   notice for it.
 
-The build compiles these kernels with metal-sci's flags (`-std=metal3.1 -O2
+The build compiles these kernels with SciMetal's flags (`-std=metal3.1 -O2
 -fno-fast-math -ffp-contract=off`), where MLX's own build leaves contraction
 on, so results can differ from MLX's in the last bit.
 
@@ -52,4 +52,4 @@ on, so results can differ from MLX's in the last bit.
    `src/fft/plan.cpp`: kernel names, argument order, function-constant indices
    and the thread-layout heuristics must match the kernels.
 4. Run the FFT tests, including the exhaustive length sweep
-   (`METAL_SCI_FFT_EXHAUSTIVE=1 pytest tests/python/test_fft_sizes.py`).
+   (`SCIMETAL_FFT_EXHAUSTIVE=1 pytest tests/python/test_fft_sizes.py`).

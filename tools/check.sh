@@ -44,35 +44,35 @@ cmake --build --preset cpu-only
 ctest --preset cpu-only --output-on-failure
 
 echo "==> 3/4: Python suite (Metal build)"
-env -u METAL_SCI_LIBRARY "$PYTHON" -m pytest tests/python -q -p no:warnings
+env -u SCIMETAL_LIBRARY "$PYTHON" -m pytest tests/python -q -p no:warnings
 
 echo "==> 4/4: Python suite (CPU-only build)"
-METAL_SCI_LIBRARY="$ROOT/.build/cpu-only/libmetalsci.dylib" "$PYTHON" -m pytest tests/python -q -p no:warnings
+SCIMETAL_LIBRARY="$ROOT/.build/cpu-only/libscimetal.dylib" "$PYTHON" -m pytest tests/python -q -p no:warnings
 
 if [[ "$WITH_WHEEL" -eq 1 ]]; then
     echo "==> 5/5: Clean-venv wheel build and verification"
     TMP_WHEEL_ROOT="$(mktemp -d)"
     trap 'rm -rf "$TMP_WHEEL_ROOT"' EXIT
     MACOSX_DEPLOYMENT_TARGET=15.0 "$PYTHON" -m pip wheel . -w "$TMP_WHEEL_ROOT/dist" --no-deps --no-build-isolation
-    WHEEL_PATH="$(ls "$TMP_WHEEL_ROOT"/dist/metal_sci-*-macosx_15_0_arm64.whl)"
+    WHEEL_PATH="$(ls "$TMP_WHEEL_ROOT"/dist/scimetal-*-macosx_15_0_arm64.whl)"
     "$PYTHON" -m venv "$TMP_WHEEL_ROOT/venv"
     WHEEL_PY="$TMP_WHEEL_ROOT/venv/bin/python"
     "$WHEEL_PY" -m pip install -q "$WHEEL_PATH" numpy scipy pytest hypothesis
     (
         cd /tmp
-        unset METAL_SCI_LIBRARY
+        unset SCIMETAL_LIBRARY
         "$WHEEL_PY" -c "
-import pathlib, metal_sci
-from metal_sci import _native
+import pathlib, scimetal
+from scimetal import _native
 root = pathlib.Path('$TMP_WHEEL_ROOT/venv').resolve()
-pkg = pathlib.Path(metal_sci.__file__).resolve()
+pkg = pathlib.Path(scimetal.__file__).resolve()
 lib = pathlib.Path(_native._library_path()).resolve()
 assert root in pkg.parents, f'{pkg} not inside {root}'
-assert root in lib.parents and lib.name == 'libmetalsci.dylib', f'unexpected lib: {lib}'
+assert root in lib.parents and lib.name == 'libscimetal.dylib', f'unexpected lib: {lib}'
 print('verified installed package:', pkg)
 print('verified bundled library:', lib)
 "
-        METAL_SCI_TEST_INSTALLED=1 "$WHEEL_PY" -m pytest "$ROOT/tests/python" -q -p no:warnings
+        SCIMETAL_TEST_INSTALLED=1 "$WHEEL_PY" -m pytest "$ROOT/tests/python" -q -p no:warnings
     )
 fi
 

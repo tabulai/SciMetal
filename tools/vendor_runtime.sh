@@ -1,6 +1,6 @@
 #!/bin/bash
-# Re-vendors the generic runtime subset of metal-arrow into metal-sci, renaming
-# the `ma` prefix to `ms`. Files are copied verbatim apart from that rename;
+# Re-vendors the generic runtime subset of metal-arrow into SciMetal, renaming
+# the `ma` prefix to `sm`. Files are copied verbatim apart from that rename;
 # local changes on top are listed in src/runtime/PROVENANCE.md and must be
 # re-applied (or kept, by vendoring into a scratch dir and diffing) on re-sync.
 #
@@ -11,22 +11,22 @@ DST=${2:-$(cd "$(dirname "$0")/.." && pwd)}
 
 rename() { # <source file> <destination file>
   mkdir -p "$(dirname "$2")"
-  perl -pe 's/\bma_/ms_/g; s/\bMA_/MS_/g; s/\bma::/ms::/g; s/\bnamespace ma\b/namespace ms/g;
-            s#(["<])ma/#$1ms/#g; s/\bma\.h\b/ms.h/g; s/\bMA_H\b/MS_H/g;
-            s/\bmacore\b/mscore/g' "$1" > "$2"
+  perl -pe 's/\bma_/sm_/g; s/\bMA_/SM_/g; s/\bma::/sm::/g; s/\bnamespace ma\b/namespace sm/g;
+            s#(["<])ma/#$1sm/#g; s/\bma\.h\b/sm.h/g; s/\bMA_H\b/SM_H/g;
+            s/\bmacore\b/smcore/g' "$1" > "$2"
 }
 
 # Public descriptor contract and the storage/context part of the runtime ABI.
-rename "$SRC/include/ma.h" "$DST/include/ms.h"
-rename "$SRC/include/ma_runtime.h" "$DST/include/ms_runtime.h.full"
+rename "$SRC/include/ma.h" "$DST/include/sm.h"
+rename "$SRC/include/ma_runtime.h" "$DST/include/sm_runtime.h.full"
 # Keep the context/buffer API only: everything up to the Arrow/primitive section.
 awk '/^\/\* Execution for the primitives and Arrow operations/ {exit} {print}' \
-  "$DST/include/ms_runtime.h.full" > "$DST/include/ms_runtime.h"
-printf '#ifdef __cplusplus\n}\n#endif\n#endif\n' >> "$DST/include/ms_runtime.h"
-rm "$DST/include/ms_runtime.h.full"
+  "$DST/include/sm_runtime.h.full" > "$DST/include/sm_runtime.h"
+printf '#ifdef __cplusplus\n}\n#endif\n#endif\n' >> "$DST/include/sm_runtime.h"
+rm "$DST/include/sm_runtime.h.full"
 
 for f in backend.hpp storage.hpp parallel.hpp; do
-  rename "$SRC/include/ma/detail/$f" "$DST/include/ms/detail/$f"
+  rename "$SRC/include/ma/detail/$f" "$DST/include/sm/detail/$f"
 done
 for f in storage.cpp metal_storage.cpp metal_device.hpp metal_cache_policy.hpp pipeline_cache.hpp \
          metal_compute.hpp metal_compute.cpp buffer_contract.cpp; do

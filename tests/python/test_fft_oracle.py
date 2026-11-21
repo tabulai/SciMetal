@@ -1,15 +1,15 @@
-"""SciPy's own scipy.fft test-suite, run against metal-sci's routes (the oracle).
+"""SciPy's own scipy.fft test-suite, run against SciMetal's routes (the oracle).
 
 Two roles:
 
 - As a test module it runs ``scipy.fft.tests.test_basic`` in a subprocess with
-  the oracle plugin (tests/oracle/metal_sci_oracle.py) in both configurations
+  the oracle plugin (tests/oracle/scimetal_oracle.py) in both configurations
   and checks the outcome: everything passes in the default strict mode, and
   with the GPU forced under the fast policy the only failures are SciPy tests
   that hold single-precision results to double-precision tolerances.
 
-    METAL_SCI_LIBRARY=... PYTHONPATH=python:tests/oracle:tests/python python -m pytest \
-        -p metal_sci_oracle --pyargs scipy.fft.tests.test_basic -q
+    SCIMETAL_LIBRARY=... PYTHONPATH=python:tests/oracle:tests/python python -m pytest \
+        -p scimetal_oracle --pyargs scipy.fft.tests.test_basic -q
 """
 import os
 import pathlib
@@ -19,7 +19,7 @@ import sys
 
 import pytest
 
-from metal_sci import _native
+from scimetal import _native
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 NAMES = ["fft", "fft2", "fftn", "ifft", "ifft2", "ifftn", "irfft", "irfft2", "irfftn", "rfft", "rfft2", "rfftn"]
@@ -27,15 +27,15 @@ NAMES = ["fft", "fft2", "fftn", "ifft", "ifft2", "ifftn", "irfft", "irfft2", "ir
 
 def run_oracle(**environment):
     env = dict(os.environ)
-    env.pop("METAL_SCI_PRECISION", None)
-    env.pop("METAL_SCI_DEVICE", None)
+    env.pop("SCIMETAL_PRECISION", None)
+    env.pop("SCIMETAL_DEVICE", None)
     env.update(environment)
-    paths = [str(ROOT / "tests" / "oracle")] if os.environ.get("METAL_SCI_TEST_INSTALLED") else [
+    paths = [str(ROOT / "tests" / "oracle")] if os.environ.get("SCIMETAL_TEST_INSTALLED") else [
         str(ROOT / "python"), str(ROOT / "tests" / "oracle")
     ]
     env["PYTHONPATH"] = os.pathsep.join(paths + [env["PYTHONPATH"]] if env.get("PYTHONPATH") else paths)
     completed = subprocess.run(
-        [sys.executable, "-m", "pytest", "-p", "metal_sci_oracle", "--pyargs",
+        [sys.executable, "-m", "pytest", "-p", "scimetal_oracle", "--pyargs",
          "scipy.fft.tests.test_basic", "-q", "-rf", "-p", "no:cacheprovider"],
         capture_output=True, text=True, env=env, cwd=str(ROOT), timeout=1800)
     output = completed.stdout + completed.stderr
@@ -71,8 +71,8 @@ def test_scipy_suite_with_the_gpu_forced_fails_only_on_double_precision_toleranc
     # a little: the suite draws unseeded random inputs). What this test pins
     # down is that nothing fails any other way: a wrong dtype, shape or
     # exception would not be a tolerance failure.
-    failed_count, passed, counters, failed, output = run_oracle(METAL_SCI_ORACLE_DEVICE="gpu",
-                                                               METAL_SCI_ORACLE_PRECISION="fast")
+    failed_count, passed, counters, failed, output = run_oracle(SCIMETAL_ORACLE_DEVICE="gpu",
+                                                               SCIMETAL_ORACLE_PRECISION="fast")
     assert passed > 120 and failed_count < 40, output[-3000:]
     assert sum(native for native, _ in counters.values()) > 500, counters
     blocks = re.findall(r"^_{5,} (.+?) _{5,}$\n(.*?)(?=^_{5,} .+? _{5,}$|^=+ )", output, re.MULTILINE | re.DOTALL)

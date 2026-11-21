@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""metal-sci probe E5: can MLX's GPU FFT kernels be vendored into our own
+"""SciMetal probe E5: can MLX's GPU FFT kernels be vendored into our own
 Metal runtime (no libmlx) and keep their speed?
 
 Re-run with:
@@ -53,7 +53,7 @@ T_START = time.perf_counter()
 # Probe-level planner for power-of-two c2c / rfft / irfft
 # ---------------------------------------------------------------------------
 def choose_plan(n):
-    """Returns (factors, coalesce) for a metal-sci multi-step plan, or None to
+    """Returns (factors, coalesce) for a SciMetal multi-step plan, or None to
     use MLX's own plan unchanged (bitwise-identical to mx.fft).
 
     n <= 2^20 : MLX's plan (1 kernel for n <= 4096, else 2-pass four-step).

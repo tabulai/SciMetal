@@ -11,11 +11,11 @@ Under ``strict`` precision, double-precision FFT convolution (and
 ``fftconvolve``/``oaconvolve``) declines to SciPy wrapped in
 ``scipy.fft.set_workers(performance_cores())`` for large calls (``>= 2^17``
 elements when ``scipy.fft.get_workers() == 1`` and
-``METAL_SCI_FFT_THREADED_FALLBACK != 0``). Note that multi-threaded pocketfft
+``SCIMETAL_FFT_THREADED_FALLBACK != 0``). Note that multi-threaded pocketfft
 can differ from single-worker SciPy in the last ulp. Under ``fast`` /
 ``refined`` precision, GPU FFT convolution runs in single precision (error
 typically ``O(u * max|output|)`` with ``u = 2^-24``) and emits
-``metal_sci.PrecisionWarning`` once by default on double-precision inputs.
+``scimetal.PrecisionWarning`` once by default on double-precision inputs.
 """
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ def _decline(reason: str, *, context=None):
 
 
 def _threaded_fft_context(in1, in2):
-    enabled = os.environ.get("METAL_SCI_FFT_THREADED_FALLBACK", "1").strip().lower() not in (
+    enabled = os.environ.get("SCIMETAL_FFT_THREADED_FALLBACK", "1").strip().lower() not in (
         "0", "false", "no", "off"
     )
     if not enabled or scipy.fft.get_workers() != 1:
@@ -82,8 +82,8 @@ def _check_arrays(in1, in2):
         _decline("input data is not aligned")
     if in1.ndim == 0 or in2.ndim == 0 or in1.ndim != in2.ndim:
         _decline("0-d or mismatched-rank inputs go to SciPy")
-    if in1.ndim > _native.MS_MAX_NDIM:
-        _decline(f"more than {_native.MS_MAX_NDIM} dimensions go to SciPy")
+    if in1.ndim > _native.SM_MAX_NDIM:
+        _decline(f"more than {_native.SM_MAX_NDIM} dimensions go to SciPy")
     if in1.size == 0 or in2.size == 0:
         _decline("empty inputs go to SciPy")
     return in1, in2

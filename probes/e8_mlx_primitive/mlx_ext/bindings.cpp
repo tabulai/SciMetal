@@ -196,7 +196,7 @@ nb::object wrap_external(
 } // namespace
 
 NB_MODULE(_e8_mlx, m) {
-  m.doc() = "E8 probe: MLX primitive encoding metal-sci's own metallib kernel";
+  m.doc() = "E8 probe: MLX primitive encoding SciMetal's own metallib kernel";
 
   const bool ok = e8::pybridge::init();
 

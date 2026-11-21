@@ -1,11 +1,11 @@
-#include "ms/detail/storage.hpp"
+#include "sm/detail/storage.hpp"
 #include "metal_cache_policy.hpp"
 
 #include <array>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#if defined(MS_TEST_METAL)
+#if defined(SM_TEST_METAL)
 #include <Metal/Metal.hpp>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
@@ -15,7 +15,7 @@
 #endif
 
 #define CHECK(x) do { if (!(x)) { std::fprintf(stderr, "failed line %d: %s\n", __LINE__, #x); std::abort(); } } while (0)
-using namespace ms::detail;
+using namespace sm::detail;
 
 namespace {
 void page_policy() {
@@ -60,32 +60,32 @@ void sample_geometry() {
     CHECK(!cached_metal_sample_offset(UINTPTR_MAX - 63, cached_metal_sample_min_capacity, 16384, 0));
 }
 
-template<class Function> void rejects(ms_status expected, Function function) {
+template<class Function> void rejects(sm_status expected, Function function) {
     bool rejected = false;
     try { function(); }
     catch (const Error& error) { rejected = error.status == expected; }
     CHECK(rejected);
 }
 
-#if defined(MS_TEST_METAL)
+#if defined(SM_TEST_METAL)
 void reset_guards_and_state() {
     const auto page = static_cast<uint64_t>(sysconf(_SC_PAGESIZE));
     auto raw = allocate_metal(page);
     auto* buffer = static_cast<MTL::Buffer*>(raw.metal);
     std::memset(raw.host, 0x5a, page);
     auto retained_owner = raw.owner;
-    rejects(MS_ESTATE, [&] { discard_cached_metal(raw); });
+    rejects(SM_ESTATE, [&] { discard_cached_metal(raw); });
     for (size_t index = 0; index < page; ++index) CHECK(static_cast<uint8_t*>(raw.host)[index] == 0x5a);
     retained_owner.reset();
     raw.capacity += page;
-    rejects(MS_EBACKEND, [&] { discard_cached_metal(raw); });
+    rejects(SM_EBACKEND, [&] { discard_cached_metal(raw); });
     raw.capacity -= page;
     const auto original_device = raw.device_id;
     raw.device_id = original_device == 1 ? 2 : 1;
-    rejects(MS_EBACKEND, [&] { discard_cached_metal(raw); });
+    rejects(SM_EBACKEND, [&] { discard_cached_metal(raw); });
     raw.device_id = original_device;
     CHECK(buffer->setPurgeableState(MTL::PurgeableStateEmpty) == MTL::PurgeableStateNonVolatile);
-    rejects(MS_EBACKEND, [&] { discard_cached_metal(raw); });
+    rejects(SM_EBACKEND, [&] { discard_cached_metal(raw); });
     CHECK(buffer->setPurgeableState(MTL::PurgeableStateNonVolatile) == MTL::PurgeableStateEmpty);
     discard_cached_metal(raw);
     CHECK(buffer->setPurgeableState(MTL::PurgeableStateKeepCurrent) == MTL::PurgeableStateNonVolatile);
@@ -98,7 +98,7 @@ void reset_guards_and_state() {
     CHECK(child >= 0);
     if (!child) {
         try { discard_cached_metal(raw); }
-        catch (const Error& error) { _exit(error.status == MS_ESTATE ? 0 : 1); }
+        catch (const Error& error) { _exit(error.status == SM_ESTATE ? 0 : 1); }
         _exit(2);
     }
     int status = -1;
@@ -109,7 +109,7 @@ void actual_owned_page_queries() {
     const auto page = static_cast<uint64_t>(sysconf(_SC_PAGESIZE));
     auto raw = allocate_metal(cached_metal_sample_min_capacity);
     auto retained_owner = raw.owner;
-    rejects(MS_ESTATE, [&] { prepare_cached_metal(raw); });
+    rejects(SM_ESTATE, [&] { prepare_cached_metal(raw); });
     retained_owner.reset();
     discard_cached_metal(raw);
     auto* buffer = static_cast<MTL::Buffer*>(raw.metal);
@@ -148,13 +148,13 @@ void actual_owned_page_queries() {
 int main() {
     page_policy();
     sample_geometry();
-#if defined(MS_TEST_METAL)
+#if defined(SM_TEST_METAL)
     reset_guards_and_state();
     actual_owned_page_queries();
 #else
     RawAllocation unavailable;
-    rejects(MS_ENOTSUP, [&] { prepare_cached_metal(unavailable); });
-    rejects(MS_ENOTSUP, [&] { discard_cached_metal(unavailable); });
+    rejects(SM_ENOTSUP, [&] { prepare_cached_metal(unavailable); });
+    rejects(SM_ENOTSUP, [&] { discard_cached_metal(unavailable); });
 #endif
     std::puts("Cached Metal page policy, geometry and backend guards passed");
 }

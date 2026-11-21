@@ -24,7 +24,7 @@ Re-run everything: `probes/run_all.sh` (about 3.5 minutes), or one probe:
 
 ## Headline numbers
 
-| Workload | Stock | metal-sci probe | Speed-up |
+| Workload | Stock | SciMetal probe | Speed-up |
 |---|---|---|---|
 | `gaussian_filter`, 4096², σ = 3, float64 in/out | SciPy 385 ms | fast 2.9 ms (4.1 ms into a plain NumPy array; 7.3 ms if every result is kept); strict 7.9 ms | 133× (93×; 53×); strict 49× |
 | `gaussian_filter`, 4096², σ = 10, float64 in/out | SciPy 738 ms | fast 5.3 ms; strict 18.2 ms | 140×; strict 41× |
@@ -84,6 +84,6 @@ Run alone on the same M1 Ultra host via `probes/run_all.sh a7_cpu_fft` (`uptime`
 
 - **Batches (`batch > 1`, 16 P-core threads vs `scipy.fft.fft(..., workers=16)`)**: end-to-end interleaved vDSP (`vDSP_ctoz[D]` + transform + `vDSP_ztoc[D]`) measures **0.27×–1.20×** across `(64, 256)`, `(256, 1024)`, `(64, 4096)`, `(256, 4096)`, `(1024, 4096)`, `(1024, 1024)`, `(256, 3072)`, and `(64, 15360)` in both `complex64` and `complex128` — never reaching the 1.5× gate (even split-only vDSP tops out at ~1.3–1.4×).
 - **Large 1-D (`≥ 2^17` `complex64`, `≥ 2^16` `complex128`)**: single-threaded vDSP trails 16-worker pocketfft (`0.14×–0.89×`), and Metal GPU already handles `complex64` cleanly in `fast`/`auto` above ~`2^17`.
-- **Small 1-D (`≤ 16384`)**: realistic Python call + output allocation + `metal-sci` ctypes hand-off (`~15–20 µs`, which is also why `auto_min_points = 12461`) erases raw C++ microsecond gains (`≤ 1.4×`, slower than SciPy at `≤ 4096`).
+- **Small 1-D (`≤ 16384`)**: realistic Python call + output allocation + `SciMetal` ctypes hand-off (`~15–20 µs`, which is also why `auto_min_points = 12461`) erases raw C++ microsecond gains (`≤ 1.4×`, slower than SciPy at `≤ 4096`).
 - **Narrow band**: only 1-D `complex64` `f·2^n` around `49152–65536` (`~0.14 ms` vs `0.25 ms`) hits ~1.7–1.8× end-to-end, while supporting only `f ∈ {1, 3, 5, 15}` and introducing ~1e-7 rounding differences that break `strict` bit-identity with SciPy.
 - **Decision**: Negative result for a native CPU FFT engine; keep the SciPy (`pocketfft`, threaded `workers=cores` under `fast`/`refined` where beneficial, single-worker under `strict`) fall-through.
