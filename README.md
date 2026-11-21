@@ -112,12 +112,14 @@ and setters (`set_precision`, `set_device`, `set_small_inputs`) scope per-thread
   exists; otherwise behaves as `fast`.
 - **`strict`** keeps double-precision work on the CPU. Native `ndimage` uses double
   accumulation. `signal.convolve2d` can use the native CPU engine for matching
-  `float32` or `float64` NumPy inputs. SciMetal verifies the FIR binary from the
-  official SciPy 1.18.1 CPython 3.14 macOS arm64 wheel before selecting this route.
+  `float32` or `float64` NumPy inputs. SciMetal recognizes the FIR binaries from
+  all 12 official SciPy 1.18.1 macOS arm64 wheels, including free-threaded
+  CPython builds. SciMetal requires macOS 15 or later.
   Unverified builds, unsupported arguments, nondefault floating-point settings,
   and nonfinite results go through SciPy. Double-precision FFTs delegate with the
   caller's worker settings.
   Large signal FFT convolutions can delegate to multithreaded SciPy.
+  [SciPy 1.18.1 release files](https://pypi.org/project/scipy/1.18.1/#files)
 - **Guard rails (`auto` re-routing / forced `gpu` decline)**:
   - Double-precision inputs and predicted filter gains outside the GPU's supported
     range can reroute to the native CPU engine or SciPy with a reason in `last_route()`.

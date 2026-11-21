@@ -162,7 +162,7 @@ def test_strict_convolve2d_matches_scipy_bits(dtype, mode, boundary):
 
 
 @pytest.mark.parametrize("dtype", [np.float32, np.float64])
-@pytest.mark.parametrize("width", [1, 3, 4, 5, 7, 8, 9, 12])
+@pytest.mark.parametrize("width", [1, 2, 3, 4, 5, 7, 8, 9, 12])
 def test_strict_native_convolve2d_groups_reset_per_row(dtype, width):
     if not _verified_scipy_fir():
         pytest.skip("requires the verified SciPy FIR build")
@@ -182,12 +182,14 @@ def test_strict_native_convolve2d_groups_reset_per_row(dtype, width):
                 assert got.tobytes() == expected.tobytes()
 
 
-def test_strict_native_convolve2d_signed_zeros_and_subnormals():
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+def test_strict_native_convolve2d_signed_zeros_and_subnormals(dtype):
     if not _verified_scipy_fir():
         pytest.skip("requires the verified SciPy FIR build")
-    tiny = np.nextafter(0.0, 1.0)
-    image = np.tile([tiny, -tiny, -0.0, 0.0], (12, 21))
-    for kernel in (np.array([[0.1]]), np.array([[0.1, -0.0, 1.5, -0.5, 0.2]])):
+    tiny = np.nextafter(dtype(0), dtype(1))
+    image = np.tile(np.array([tiny, -tiny, -0.0, 0.0], dtype=dtype), (12, 21))
+    for weights in ([[0.1]], [[0.1, -0.0, 1.5, -0.5, 0.2]]):
+        kernel = np.array(weights, dtype=dtype)
         with scimetal.precision("strict"):
             got = msig.convolve2d(image, kernel, mode="same", fillvalue=-0.0)
         assert scimetal.last_route().engine == "cpu"
@@ -212,13 +214,24 @@ def test_strict_convolve2d_falls_back_for_nonfinite_results(image_value, kernel_
     assert got.tobytes() == expected.tobytes()
 
 
-def test_strict_convolve2d_falls_back_for_unknown_scipy_fir(monkeypatch):
-    monkeypatch.setattr(msig._signaltools, "_verified_scipy_fir", lambda: False)
+@pytest.mark.parametrize("extension_exists", [True, False])
+def test_strict_convolve2d_falls_back_for_unknown_scipy_fir(monkeypatch, tmp_path, extension_exists):
+    from scipy.signal import _sigtools
+
+    extension = tmp_path / "_sigtools.so"
+    if extension_exists:
+        extension.write_bytes(b"an unverified _sigtools build")
     image = rand_arr((63, 65), np.float64)
     kernel = rand_arr((5, 5), np.float64, seed=4)
-    with scimetal.precision("strict"):
-        got = msig.convolve2d(image, kernel, mode="same")
+    _verified_scipy_fir.cache_clear()
+    try:
+        with monkeypatch.context() as patch, scimetal.precision("strict"), scimetal.device("auto"):
+            patch.setattr(_sigtools, "__file__", str(extension))
+            got = msig.convolve2d(image, kernel, mode="same")
+    finally:
+        _verified_scipy_fir.cache_clear()
     assert scimetal.last_route().engine == "scipy"
+    assert "verified SciPy FIR binary" in scimetal.last_route().reason
     assert got.tobytes() == ss.convolve2d(image, kernel, mode="same").tobytes()
 
 
