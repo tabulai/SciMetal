@@ -339,6 +339,32 @@ void test_next_fast_len() {
     CHECK(fft::next_fast_len(2049, true, true, reduced) == 4096);
 }
 
+void test_strict_correlate2d_swapped_valid() {
+#if defined(__APPLE__) && defined(__aarch64__)
+    const double small[] = {1, 2, 3, 4};
+    const double large[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12};
+    const auto in1 = describe({2, 2}, SM_FLOAT64, small);
+    const auto in2 = describe({3, 4}, SM_FLOAT64, large);
+    sm_signal_conv_options opts{};
+    opts.struct_size = sizeof(opts);
+    opts.abi_version = SM_SIGNAL_ABI_VERSION;
+    opts.mode = SM_SIGNAL_VALID;
+    opts.method = SM_SIGNAL_METHOD_DIRECT;
+    opts.correlate = 1;
+    opts.center = SM_SIGNAL_CENTER_2D_CORR;
+    const auto route = route_opts(SM_EXECUTION_AUTO, SM_PRECISION_STRICT);
+    auto info = new_info();
+    sm_array_result result{};
+    CHECK(sm_signal_convolve_scipy_fir(ctx, &in1, &in2, &opts, &route, &result, &info) == SM_OK);
+    CHECK(result.ndim == 2 && result.shape[0] == 2 && result.shape[1] == 3 && result.dtype == SM_FLOAT64);
+    CHECK(info.engine == SM_EXECUTION_CPU && info.compute_dtype == SM_FLOAT64);
+    // The C ABI stores both reversed axes in a contiguous buffer.
+    const double expected[] = {104, 94, 84, 64, 54, 44};
+    CHECK(std::memcmp(read(result.buffer, ctx).data, expected, sizeof(expected)) == 0);
+    sm_buffer_release(result.buffer);
+#endif
+}
+
 void test_direct_paths() {
     struct Case {
         std::vector<uint64_t> s1, s2;
@@ -1636,6 +1662,7 @@ int main() {
 
     test_next_fast_len();
     test_direct_paths();
+    test_strict_correlate2d_swapped_valid();
     test_mixed_real_complex_nan_semantics();
     test_fft_and_oa_gpu();
     test_2d_full_no_swap_and_overhang();

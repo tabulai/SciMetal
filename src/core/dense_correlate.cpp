@@ -86,7 +86,7 @@ inline float fma_step(float a, float b, float c) noexcept { return __builtin_fma
 void check_fir_fpcr() {
     uint64_t fpcr;
     __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
-    if (fpcr != 0) throw Error(SM_ENOTSUP, "strict convolution requires the default arm64 floating-point environment");
+    if (fpcr != 0) throw Error(SM_ENOTSUP, "strict FIR requires the default arm64 floating-point environment");
 }
 
 // The verified SciPy wheel rounds term 1, fuses terms 0, 2, and 3 into
@@ -99,17 +99,21 @@ inline T scipy_fir_four(const T* w, T x0, T x1, T x2, T x3) noexcept {
     return fma_step(w[3], x3, group);
 }
 
-template<class T>
+template<class T, bool Correlate>
 void run_scipy_fir_rows(const StencilSpec& spec, const T* input, T* output) {
+    // SciPy visits the original weights in increasing order for both
+    // operations. Only the direction of the corresponding samples changes.
+    constexpr int64_t step = Correlate ? 1 : -1;
     const int64_t in_height = static_cast<int64_t>(spec.in_shape.dims[0]);
     const int64_t in_width = static_cast<int64_t>(spec.in_shape.dims[1]);
     const int64_t out_width = static_cast<int64_t>(spec.out_shape.dims[1]);
     const int64_t kernel_height = spec.wshape[0];
     const int64_t kernel_width = spec.wshape[1];
-    const int64_t first_row = spec.start[0] + kernel_height - 1;
-    const int64_t first_col = spec.start[1] + kernel_width - 1;
+    const int64_t max_col_offset = spec.start[1] + kernel_width - 1;
+    const int64_t first_row = spec.start[0] + (Correlate ? 0 : kernel_height - 1);
+    const int64_t first_col = Correlate ? spec.start[1] : max_col_offset;
     const int64_t interior_begin = std::clamp(-spec.start[1], int64_t{0}, out_width);
-    const int64_t interior_end = std::clamp(in_width - first_col, interior_begin, out_width);
+    const int64_t interior_end = std::clamp(in_width - max_col_offset, interior_begin, out_width);
     const T* weights = static_cast<const T*>(spec.weights);
     const T fill = static_cast<T>(spec.cval_real);
     const unsigned lanes = lanes_for(spec.out_shape.elements, uint64_t{spec.wshape[0]} * spec.wshape[1]);
@@ -118,7 +122,7 @@ void run_scipy_fir_rows(const StencilSpec& spec, const T* input, T* output) {
         return std::vector<const T*>(kernel_height);
     }, [&](uint64_t out_row, auto& rows) {
         for (int64_t j = 0; j < kernel_height; ++j) {
-            const int64_t y = extend(static_cast<int64_t>(out_row) + first_row - j, in_height, spec.mode[0]);
+            const int64_t y = extend(static_cast<int64_t>(out_row) + first_row + step * j, in_height, spec.mode[0]);
             rows[j] = y >= 0 ? input + y * in_width : nullptr;
         }
 
@@ -130,7 +134,7 @@ void run_scipy_fir_rows(const StencilSpec& spec, const T* input, T* output) {
                     const T* row = rows[j];
                     const T* w = weights + j * kernel_width;
                     const auto pixel = [&](int64_t k) {
-                        const int64_t x = extend(c + first_col - k, in_width, spec.mode[1]);
+                        const int64_t x = extend(c + first_col + step * k, in_width, spec.mode[1]);
                         return row && x >= 0 ? row[x] : fill;
                     };
                     int64_t k = 0;
@@ -157,10 +161,10 @@ void run_scipy_fir_rows(const StencilSpec& spec, const T* input, T* output) {
                 int64_t k = 0;
                 for (; k + 4 <= kernel_width; k += 4) {
                     if (row) {
-                        const T* x = row + (first_col - k + begin);
+                        const T* x = row + (first_col + step * k + begin);
                         T* __restrict sums = dst + begin;
                         for (int64_t c = 0; c < end - begin; ++c) {
-                            sums[c] += scipy_fir_four(w + k, x[c], x[c - 1], x[c - 2], x[c - 3]);
+                            sums[c] += scipy_fir_four(w + k, x[c], x[c + step], x[c + 2 * step], x[c + 3 * step]);
                         }
                     } else {
                         const T group = scipy_fir_four(w + k, fill, fill, fill, fill);
@@ -169,7 +173,7 @@ void run_scipy_fir_rows(const StencilSpec& spec, const T* input, T* output) {
                 }
                 for (; k < kernel_width; ++k) {
                     if (row) {
-                        const T* x = row + (first_col - k + begin);
+                        const T* x = row + (first_col + step * k + begin);
                         T* __restrict sums = dst + begin;
                         const T weight = w[k];
                         for (int64_t c = 0; c < end - begin; ++c) sums[c] = fma_step(weight, x[c], sums[c]);
@@ -184,7 +188,7 @@ void run_scipy_fir_rows(const StencilSpec& spec, const T* input, T* output) {
         // nonfinite result, including overflow from entirely finite inputs.
         bool finite = true;
         for (int64_t c = 0; c < out_width; ++c) finite &= std::isfinite(dst[c]);
-        if (!finite) throw Error(SM_ENOTSUP, "strict convolution delegates nonfinite results to SciPy");
+        if (!finite) throw Error(SM_ENOTSUP, "strict FIR delegates nonfinite results to SciPy");
     });
 }
 #endif
@@ -794,24 +798,29 @@ TapTable build_taps(const StencilSpec& spec) {
     return table;
 }
 
-BufferPtr run_scipy_fir(sm_context* ctx, const StencilSpec& spec, const void* input) {
+BufferPtr run_scipy_fir(sm_context* ctx, const StencilSpec& spec, const void* input, bool correlate) {
 #if defined(__APPLE__) && defined(__aarch64__)
     check_fir_fpcr();
     uint64_t out_bytes = 0;
     if (sm_checked_mul(spec.out_shape.elements, array::dtype_size(spec.out_dtype), &out_bytes) != SM_OK)
-        throw Error(SM_EOVERFLOW, "strict convolution output byte size overflows");
+        throw Error(SM_EOVERFLOW, "strict FIR output byte size overflows");
     auto result = array::allocate(ctx, out_bytes);
     void* out = mutable_data(result.get());
-    if (spec.out_dtype == SM_FLOAT32)
-        run_scipy_fir_rows(spec, static_cast<const float*>(input), static_cast<float*>(out));
-    else
-        run_scipy_fir_rows(spec, static_cast<const double*>(input), static_cast<double*>(out));
+    auto run = [&]<class T>() {
+        const auto* src = static_cast<const T*>(input);
+        auto* dst = static_cast<T*>(out);
+        if (correlate) run_scipy_fir_rows<T, true>(spec, src, dst);
+        else run_scipy_fir_rows<T, false>(spec, src, dst);
+    };
+    if (spec.out_dtype == SM_FLOAT32) run.operator()<float>();
+    else run.operator()<double>();
     return result;
 #else
     (void)ctx;
     (void)spec;
     (void)input;
-    throw Error(SM_ENOTSUP, "strict convolution requires the verified macOS arm64 arithmetic");
+    (void)correlate;
+    throw Error(SM_ENOTSUP, "strict FIR requires the verified macOS arm64 arithmetic");
 #endif
 }
 

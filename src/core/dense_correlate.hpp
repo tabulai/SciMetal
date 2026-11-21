@@ -73,9 +73,9 @@ TapTable build_taps(const StencilSpec& spec);
 // CPU engine: threaded across P-cores, vectorized across innermost axis.
 BufferPtr run_cpu(sm_context* ctx, const StencilSpec& spec, const TapTable& taps, const void* input);
 
-// The verified SciPy arm64 FIR reduction for same-dtype real 2-D convolution.
+// The verified SciPy arm64 FIR reduction for same-dtype real 2-D convolution or correlation.
 // spec.weights stores the original (unreversed) kernel.
-BufferPtr run_scipy_fir(sm_context* ctx, const StencilSpec& spec, const void* input);
+BufferPtr run_scipy_fir(sm_context* ctx, const StencilSpec& spec, const void* input, bool correlate);
 
 // GPU engine support & execution.
 bool gpu_supports(const StencilSpec& spec, const TapTable& taps) noexcept;

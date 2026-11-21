@@ -77,6 +77,7 @@ def benchmark(quick: bool):
         ("oaconvolve 2^24 x 1025", "oaconvolve", (1 << 24,), (1025,), {"mode": "same"}, True),
         ("oaconvolve 4096^2 x 65^2", "oaconvolve", (4096, 4096), (65, 65), {"mode": "same"}, True),
         ("convolve2d 4096^2 x 5^2", "convolve2d", (4096, 4096), (5, 5), {"mode": "same"}, False),
+        ("correlate2d 4096^2 x 5^2", "correlate2d", (4096, 4096), (5, 5), {"mode": "same"}, False),
     ]
 
     rows = []
@@ -130,16 +131,17 @@ def benchmark(quick: bool):
                 "max_err_over_scale": rel_err,
             }
 
-            if func in ("convolve2d", "convolve"):
+            is_fir = func in ("convolve2d", "correlate2d")
+            if is_fir or func == "convolve":
                 with scimetal.precision("strict"):
-                    strict_ms, _ = timed(lambda: ours(a, b, **kw), scipy_repeats if func == "convolve2d" else repeats, warmup)
+                    strict_ms, _ = timed(lambda: ours(a, b, **kw), scipy_repeats if is_fir else repeats, warmup)
                     s_route = scimetal.last_route()
-                    if func == "convolve2d":
+                    if is_fir:
                         strict_out = ours(a, b, **kw)
                         if strict_out.dtype != ref.dtype or not np.array_equal(
                             strict_out.view(np.uint8), ref.view(np.uint8)
                         ):
-                            raise AssertionError("strict convolve2d differs from SciPy at the byte level")
+                            raise AssertionError(f"strict {func} differs from SciPy at the byte level")
                         del strict_out
                         row["strict_bit_identical"] = True
                 row["strict_ms"] = round(strict_ms, 2)
