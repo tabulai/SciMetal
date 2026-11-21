@@ -10,6 +10,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 
 import pytest
 
@@ -19,7 +20,7 @@ FUNCTIONS = ("convolve", "convolve1d", "correlate", "correlate1d", "gaussian_fil
              "uniform_filter", "uniform_filter1d")
 
 
-def run_oracle(**settings):
+def run_oracle(*args, **settings):
     """Run SciPy's filter tests with the native routes patched in.
 
     Returns pytest's exit code, its output and {function: (native calls, calls handed to SciPy)}.
@@ -33,7 +34,7 @@ def run_oracle(**settings):
     env["PYTHONPATH"] = os.pathsep.join(parts)
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-p", "scimetal_oracle", "-p", "no:cacheprovider", "--pyargs",
-         "scipy.ndimage.tests.test_filters", "-q"],
+         "scipy.ndimage.tests.test_filters", "-q", *args],
         cwd=ROOT, env=env, capture_output=True, text=True, timeout=1800)
     output = result.stdout + result.stderr
     counters = {name: (int(native), int(declined)) for name, native, declined in
@@ -96,27 +97,34 @@ INT_INTERMEDIATE_QUANTIZATION = re.compile(
 INT_GENERIC_LAPLACE = re.compile(r"test_generic_laplace01\[numpy-u?int(8|16|32|64)\]")
 
 
-def test_gpu_route_fails_only_scipy_tests_that_need_more_than_float32(native_filters):
+def test_gpu_route_fails_only_scipy_tests_that_need_more_than_float32(native_filters, tmp_path):
     import scimetal._native as _native
 
     if not _native.has_metal():
         pytest.skip("no GPU engine in CPU-only build")
-    code, output, counters = run_oracle(SCIMETAL_ORACLE_PRECISION="fast", SCIMETAL_ORACLE_DEVICE="gpu")
-    failed = re.findall(r"^FAILED \S*::(.+?)(?: - .*)?$", output, re.M)
-    allowed = (FLOAT32_ACCURACY, INT_INTERMEDIATE_QUANTIZATION, INT_GENERIC_LAPLACE)
-    unexpected = [name for name in failed if not any(pattern.fullmatch(name) for pattern in allowed)]
-    assert not unexpected, f"not float32/int-intermediate accuracy: {unexpected}\n{summary(output)}"
+    report = tmp_path / "ndimage-gpu.xml"
+    code, output, counters = run_oracle(f"--junitxml={report}", SCIMETAL_ORACLE_PRECISION="fast",
+                                        SCIMETAL_ORACLE_DEVICE="gpu")
     assert code in (0, 1), summary(output)  # 1: some tests failed; anything else is a broken run
     assert set(counters) == set(FUNCTIONS), summary(output)
     for name, (native, _) in counters.items():
         assert native > 0, f"{name} never ran natively in GPU mode:\n{summary(output)}"
-    # Bound rounding and intermediate integer quantization differences.
-    differences = [float(x) for x in re.findall(r"Max absolute difference among violations: (\S+)", output)]
-    assert len(differences) == len(failed), summary(output)
-    for name, d in zip(failed, differences):
+    # Pytest can repeat the traceback in its terminal summary on CI. JUnit keeps
+    # each assertion with its test even when the terminal format or order changes.
+    suite = ET.parse(report)
+    assert suite.find(".//error") is None, summary(output)
+    failures = suite.findall(".//testcase[failure]")
+    assert bool(failures) == (code == 1), summary(output)
+    for case in failures:
+        name = case.attrib["name"]
+        details = case.findtext("failure") or ""
+        differences = re.findall(r"Max absolute difference among violations: (\S+)", details)
+        assert len(differences) == 1, f"{name}: expected one numerical difference\n{details}"
+        d = float(differences[0])
         if INT_GENERIC_LAPLACE.fullmatch(name):
             assert d <= 1, f"{name}: unexpected int derivative sum difference {d}\n{summary(output)}"
         elif INT_INTERMEDIATE_QUANTIZATION.fullmatch(name):
             assert d <= 20, f"{name}: unexpected int quantization diff {d}\n{summary(output)}"
         else:
+            assert FLOAT32_ACCURACY.fullmatch(name), f"unexpected GPU oracle failure: {name}\n{details}"
             assert d < 1e-3, f"{name}: unexpected float32 accuracy diff {d}\n{summary(output)}"

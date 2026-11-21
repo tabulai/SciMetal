@@ -95,7 +95,9 @@ def declined(function, x, *args, **kwargs):
         threads = int(route.reason.rsplit("=", 1)[1])
         assert threads == _native.performance_cores() and "workers" not in kwargs
         assert result.tobytes() == getattr(scipy.fft, function)(x, *args, **kwargs, workers=threads).tobytes()
-        np.testing.assert_allclose(result, expected, rtol=0, atol=1e-13 * np.abs(expected).max())
+        # SciPy's single- and multi-worker plans can round differently in the output dtype.
+        tolerance = max(1e-13, 8 * np.finfo(expected.real.dtype).eps)
+        np.testing.assert_allclose(result, expected, rtol=0, atol=tolerance * np.abs(expected).max())
     else:
         assert result.tobytes() == expected.tobytes()
     return route
