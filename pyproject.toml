@@ -1,14 +1,20 @@
 [build-system]
-requires = ["scikit-build-core>=0.10"]
+requires = ["scikit-build-core>=0.11"]
 build-backend = "scikit_build_core.build"
 
 [project]
 name = "scimetal"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "SciPy's API, accelerated on Apple Silicon: Metal GPU kernels and a multithreaded Accelerate/NEON CPU engine"
-readme = "README.md"
+readme = "README.pypi.md"
 requires-python = ">=3.11"
 dependencies = ["numpy>=2", "scipy>=1.15"]
+license-files = [
+    "third_party/NOTICE.txt",
+    "third_party/metal-cpp/LICENSE.txt",
+    "third_party/mlx-kernels/LICENSE.mlx",
+    "third_party/scipy-LICENSE.txt",
+]
 
 [project.optional-dependencies]
 test = ["pytest", "hypothesis"]
@@ -16,6 +22,7 @@ mlx = ["mlx>=0.31"]
 
 [tool.scikit-build]
 minimum-version = "build-system.requires"
+sdist.exclude = ["/.agents/"]
 wheel.packages = ["python/scimetal"]
 # The Python side talks to the native core through ctypes, so the wheel has no
 # Python ABI dependence: one wheel serves every Python 3.

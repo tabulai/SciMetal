@@ -1,0 +1,16 @@
+SciMetal includes portions of the following third-party projects.
+
+Apple MLX
+Copyright © 2023 Apple Inc.
+Copyright © 2024 Apple Inc.
+Licensed under the MIT License. See mlx-kernels/LICENSE.mlx.
+
+Apple metal-cpp
+Copyright 2020-2024 Apple Inc.
+Copyright 2020-2025 Apple Inc.
+Copyright 2025 Apple Inc.
+Licensed under the Apache License, Version 2.0. See metal-cpp/LICENSE.txt.
+
+SciPy
+Includes code adapted from scipy.ndimage. See scipy-LICENSE.txt for the
+SciPy license and the copyright notice and license of Peter J. Verveer.
