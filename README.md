@@ -49,6 +49,15 @@ MACOSX_DEPLOYMENT_TARGET=15.0 .venv/bin/python -m pip wheel . -w dist --no-deps 
 This builds `dist/scimetal-<version>-py3-none-macosx_15_0_arm64.whl` bundling
 `libscimetal.dylib`.
 
+### Publish a release
+
+Update the version in `pyproject.toml`, `python/scimetal/__init__.py`, and
+`CMakeLists.txt` and merge the version bump into `main`. Push a matching tag
+such as `v0.2.0`. The [release workflow](.github/workflows/publish-pypi.yml)
+builds and tests the Apple Silicon wheel, then uploads it to PyPI using
+Trusted Publishing. A manual run in GitHub Actions builds and tests the wheel
+without publishing it.
+
 ### Verification ladder
 
 ```bash
