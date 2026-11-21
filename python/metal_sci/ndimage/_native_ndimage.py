@@ -112,7 +112,7 @@ def separable_filter(function: str, array: np.ndarray, passes, out_dtype=None) -
         slot.kind, slot.axis, slot.mode = kind, axis, mode
         slot.origin, slot.size, slot.cval = origin, size, cval
         if weights is not None:
-            weights = np.ascontiguousarray(weights, dtype=np.float64)
+            weights = np.require(weights, dtype=np.float64, requirements=("C", "A"))
             keep.append(weights)
             slot.weights = weights.ctypes.data
     options = _native.route_options()
@@ -131,8 +131,9 @@ def separable_filter(function: str, array: np.ndarray, passes, out_dtype=None) -
     except (ValueError, MemoryError) as refusal:
         raise _native.NotAccelerated(f"the native filter refused the call: {refusal}") from None
     del held, keep
+    out = _native.to_numpy(result)
     _native.record_route(function, info, input_dtype=array.dtype)
-    return _native.to_numpy(result)
+    return out
 
 
 def dense_filter(function: str, array: np.ndarray, weights: np.ndarray, origins, mode: int,
@@ -142,7 +143,7 @@ def dense_filter(function: str, array: np.ndarray, weights: np.ndarray, origins,
     if not hasattr(lib, "ms_ndimage_dense_filter"):
         raise _native.NotAccelerated("the native library was built without ms_ndimage_dense_filter")
     descriptor, held = _native.as_native(array)
-    weights_f64 = np.ascontiguousarray(weights, dtype=np.float64)
+    weights_f64 = np.require(weights, dtype=np.float64, requirements=("C", "A"))
     out_code = 0 if out_dtype is None else _native.native_dtype(out_dtype)
     if out_dtype is not None and out_code is None:
         raise _native.NotAccelerated(f"no native path for output dtype {out_dtype}")
@@ -161,8 +162,9 @@ def dense_filter(function: str, array: np.ndarray, weights: np.ndarray, origins,
     except (ValueError, MemoryError) as refusal:
         raise _native.NotAccelerated(f"the native filter refused the call: {refusal}") from None
     del held, weights_f64
+    out = _native.to_numpy(result)
     _native.record_route(function, info, input_dtype=array.dtype)
-    return _native.to_numpy(result)
+    return out
 
 
 def composite_filter(function: str, array: np.ndarray, chains, combine_op: int, out_dtype=None) -> np.ndarray:
@@ -194,7 +196,7 @@ def composite_filter(function: str, array: np.ndarray, chains, combine_op: int, 
                 slot.kind, slot.axis, slot.mode = kind, axis, mode
                 slot.origin, slot.size, slot.cval = origin, size, cval
                 if weights is not None:
-                    w = np.ascontiguousarray(weights, dtype=np.float64)
+                    w = np.require(weights, dtype=np.float64, requirements=("C", "A"))
                     keep.append(w)
                     slot.weights = w.ctypes.data
             chain_slot.passes = native_passes
@@ -208,5 +210,6 @@ def composite_filter(function: str, array: np.ndarray, chains, combine_op: int, 
     except (ValueError, MemoryError) as refusal:
         raise _native.NotAccelerated(f"the native filter refused the call: {refusal}") from None
     del held, keep
+    out = _native.to_numpy(result)
     _native.record_route(function, info, input_dtype=array.dtype)
-    return _native.to_numpy(result)
+    return out

@@ -24,7 +24,12 @@ def run_oracle(*, extra_args=(), **settings):
     env.pop("METAL_SCI_PRECISION", None)
     env.pop("METAL_SCI_DEVICE", None)
     env.update(settings)
-    env["PYTHONPATH"] = os.pathsep.join(str(ROOT / part) for part in ("python", "tests/oracle"))
+    parts = [str(ROOT / "tests/oracle")]
+    if not os.environ.get("METAL_SCI_TEST_INSTALLED"):
+        parts.insert(0, str(ROOT / "python"))
+    if env.get("PYTHONPATH"):
+        parts.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(parts)
     cmd = [
         sys.executable,
         "-m",
@@ -101,14 +106,23 @@ def test_gpu_route_fails_only_scipy_tests_that_need_more_than_float32(native_sig
         assert native > 0, f"{name} never ran natively in GPU mode:\n{summary(output)}"
 
     # Every failure under forced GPU fast mode must be a float32 vs float64 numerical tolerance failure.
-    failed = re.findall(r"^FAILED \S+::(\S+?)(?: - .*)?$", output, re.M)
+    assert not re.search(r"\b\d+ error", output), summary(output)
+    m_passed = re.search(r"\b(\d+) passed\b", output)
+    assert m_passed and int(m_passed.group(1)) > 350, summary(output)
+    m_failed = re.search(r"\b(\d+) failed\b", output)
+    expected_failed = int(m_failed.group(1)) if m_failed else 0
+    failed = re.findall(r"^FAILED \S*::(.+?)(?: - .*)?$", output, re.M)
+    assert len(failed) == expected_failed and expected_failed < 1000, (len(failed), expected_failed, summary(output))
     blocks = re.findall(
-        r"^_{5,} (\S+) _{5,}$\n(.*?)(?=^_{5,} \S+ _{5,}$|^=+ )",
+        r"^_{5,} (.+?) _{5,}$\n(.*?)(?=^_{5,} .+? _{5,}$|^=+ )",
         output,
         re.M | re.DOTALL,
     )
-    assert len(blocks) == len(failed), (len(blocks), len(failed), summary(output))
+    assert len(blocks) == expected_failed, (len(blocks), expected_failed, summary(output))
     for name, text in blocks:
         assert "AssertionError" in text and (
             "Not equal to tolerance" in text or "Arrays are not almost equal" in text
         ), f"{name} failed on something other than numerical tolerance:\n{text[-2000:]}"
+        m_abs = re.search(r"Max absolute difference(?: among violations)?: ([0-9.eE+-]+)", text)
+        assert m_abs is not None, f"{name} missing max absolute difference:\n{text[-2000:]}"
+        assert float(m_abs.group(1)) < 5e-3, f"{name}: unexpected max abs diff {m_abs.group(1)}\n{text[-2000:]}"

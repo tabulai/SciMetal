@@ -200,14 +200,13 @@ private:
         std::vector<MTL::Buffer*> buffers;
         MTL::ResourceUsage usage = MTL::ResourceUsageRead;
     };
-    void encode_use(const std::vector<MTL::Buffer*>& buffers, MTL::ResourceUsage usage);
+    void encode_use(MTL::ComputeCommandEncoder* encoder, const std::vector<MTL::Buffer*>& buffers,
+                    MTL::ResourceUsage usage);
     PreparedGpuBatch encode_batch(const ms_buffer* const* outputs, size_t output_count);
     void commit_async_impl(const ms_buffer* const* outputs, size_t count);
 
     ms_context* context_;
-    AutoreleasePool pool_;
     MTL::CommandBuffer* command_ = nullptr;
-    MTL::ComputeCommandEncoder* encoder_ = nullptr;
     std::vector<uint8_t> param_storage_;
     std::vector<Binding> binding_storage_;
     std::vector<Slot> slot_storage_;

@@ -109,6 +109,10 @@ def library() -> ctypes.CDLL:
     return lib
 
 
+def _clamp_threads(host_threads: int) -> int:
+    return max(1, min(int(host_threads), (1 << 32) - 1))
+
+
 def convolve(function: str, in1: np.ndarray, in2: np.ndarray, mode: int, method: int,
              correlate: bool, boundary: int, center: int,
              fill_real: float = 0.0, fill_imag: float = 0.0, host_threads: int = 1,
@@ -124,7 +128,7 @@ def convolve(function: str, in1: np.ndarray, in2: np.ndarray, mode: int, method:
         correlate=1 if correlate else 0,
         boundary=boundary,
         center=center,
-        host_threads=host_threads,
+        host_threads=_clamp_threads(host_threads),
         fillvalue_real=fill_real,
         fillvalue_imag=fill_imag,
     )
@@ -138,9 +142,9 @@ def convolve(function: str, in1: np.ndarray, in2: np.ndarray, mode: int, method:
     except (ValueError, MemoryError) as refusal:
         raise _native.NotAccelerated(f"the native signal route refused the call: {refusal}") from None
     del h1, h2
+    out = _native.to_numpy(result)
     promoted = np.result_type(in1.dtype, in2.dtype)
     _native.record_route(function, info, input_dtype=promoted)
-    out = _native.to_numpy(result)
     if return_route_flags:
         return out, int(info.reserved[0])
     return out
@@ -158,7 +162,7 @@ def fftconvolve(function: str, in1: np.ndarray, in2: np.ndarray, mode: int,
         correlate=1 if correlate else 0,
         overlap_add=1 if overlap_add else 0,
         axis_count=0 if axes is None else len(axes),
-        host_threads=host_threads,
+        host_threads=_clamp_threads(host_threads),
     )
     if axes is not None:
         for i, ax in enumerate(axes):
@@ -173,9 +177,10 @@ def fftconvolve(function: str, in1: np.ndarray, in2: np.ndarray, mode: int,
     except (ValueError, MemoryError) as refusal:
         raise _native.NotAccelerated(f"the native signal fft route refused the call: {refusal}") from None
     del h1, h2
+    out = _native.to_numpy(result)
     promoted = np.result_type(in1.dtype, in2.dtype)
     _native.record_route(function, info, input_dtype=promoted)
-    return _native.to_numpy(result)
+    return out
 
 
 def choose_conv_method(dtype1, shape1, dtype2, shape2, mode: int, host_threads: int = 1) -> int:
@@ -184,6 +189,8 @@ def choose_conv_method(dtype1, shape1, dtype2, shape2, mode: int, host_threads: 
     c2 = _native.native_dtype(dtype2)
     if c1 is None or c2 is None or len(shape1) != len(shape2) or not 1 <= len(shape1) <= _native.MS_MAX_NDIM:
         raise _native.NotAccelerated("unsupported dtype or rank for native choose_conv_method")
+    if any(d < 0 or d >= (1 << 64) for d in shape1) or any(d < 0 or d >= (1 << 64) for d in shape2):
+        raise _native.NotAccelerated("shape exceeds uint64 extent bounds")
     s1_arr = (ctypes.c_uint64 * len(shape1))(*shape1)
     s2_arr = (ctypes.c_uint64 * len(shape2))(*shape2)
     route = _native.route_options()
@@ -191,7 +198,7 @@ def choose_conv_method(dtype1, shape1, dtype2, shape2, mode: int, host_threads: 
     try:
         _native.check(lib.ms_signal_choose_conv_method(
             _native.context(), c1, len(shape1), s1_arr, c2, len(shape2), s2_arr,
-            mode, host_threads, ctypes.byref(route), ctypes.byref(out_method)))
+            mode, _clamp_threads(host_threads), ctypes.byref(route), ctypes.byref(out_method)))
     except (ValueError, MemoryError) as refusal:
         raise _native.NotAccelerated(f"native choose_conv_method refused: {refusal}") from None
     return int(out_method.value)

@@ -31,6 +31,7 @@ exactly as the caller made them.
 """
 from __future__ import annotations
 
+import contextlib
 import contextvars
 import operator
 import os
@@ -78,12 +79,17 @@ def _workers(workers) -> int:
     return workers
 
 
-def _input(x, norm, workers, plan):
+def _input(x, norm, workers, plan, overwrite_x=False):
     """The array to transform, the normalisation code and SciPy's worker count."""
     if plan is not None:
         raise Declined("precomputed plans are SciPy's to reject")
     if not isinstance(x, np.ndarray):
         raise Declined("not a NumPy array")
+    try:
+        if overwrite_x and not x.flags.writeable:
+            raise Declined("overwrite_x on a read-only array is SciPy's to handle")
+    except (TypeError, ValueError):
+        raise Declined("invalid overwrite_x") from None
     if x.ndim == 0 or x.ndim > _native.MS_MAX_NDIM:
         raise Declined(f"no native path for {x.ndim}-dimensional arrays")
     device = _config.get_device()
@@ -148,8 +154,8 @@ def _transform(x, kind, norm, axes, n, threads, function):
         raise Declined(str(why), threaded=True) from None
 
 
-def _transform_1d(function, kind, x, n, axis, norm, workers, plan):
-    x, norm, threads = _input(x, norm, workers, plan)
+def _transform_1d(function, kind, x, n, axis, norm, overwrite_x, workers, plan):
+    x, norm, threads = _input(x, norm, workers, plan, overwrite_x=overwrite_x)
     axis = _index(axis, "axis")
     if not -x.ndim <= axis < x.ndim:
         raise Declined("axis is out of range")
@@ -197,8 +203,8 @@ def _shape_and_axes(x, s, axes):
     return [_length(length) for length in s], axes
 
 
-def _transform_nd(function, kind, x, s, axes, norm, workers, plan):
-    x, norm, threads = _input(x, norm, workers, plan)
+def _transform_nd(function, kind, x, s, axes, norm, overwrite_x, workers, plan):
+    x, norm, threads = _input(x, norm, workers, plan, overwrite_x=overwrite_x)
     natural = s is None
     s, axes = _shape_and_axes(x, s, axes)
     if not axes:
@@ -226,13 +232,19 @@ def _transform_nd(function, kind, x, s, axes, norm, workers, plan):
 _delegating = contextvars.ContextVar("metal_sci_fft_delegating", default=False)
 
 
-def run_threaded(reference, x, arguments, threads):
-    """SciPy's own transform, threaded over the batch."""
+@contextlib.contextmanager
+def _delegating_to_scipy():
     token = _delegating.set(True)
     try:
-        return reference(x, *arguments, threads)
+        yield
     finally:
         _delegating.reset(token)
+
+
+def run_threaded(reference, x, arguments, threads):
+    """SciPy's own transform, threaded over the batch."""
+    with _delegating_to_scipy():
+        return reference(x, *arguments, threads)
 
 
 def threaded_fallback(x, axes, why, workers, plan):
@@ -263,16 +275,20 @@ def _one_dimensional(name, kind):
     reference = getattr(scipy.fft, name)
 
     def core(x, n=None, axis=-1, norm=None, overwrite_x=False, workers=None, *, plan=None):
-        return _transform_1d(function, kind, x, n, axis, norm, workers, plan)
+        return _transform_1d(function, kind, x, n, axis, norm, overwrite_x, workers, plan)
 
     def implementation(x, n=None, axis=-1, norm=None, overwrite_x=False, workers=None, *, plan=None):
         try:
-            return _transform_1d(function, kind, x, n, axis, norm, workers, plan)
+            return _transform_1d(function, kind, x, n, axis, norm, overwrite_x, workers, plan)
         except Declined as why:
             threads = threaded_fallback(x, axis, why, workers, plan)
             if threads is not None:
-                raise NotAccelerated(f"{why}; SciPy with workers={threads}", workers=threads) from None
-            raise
+                raise NotAccelerated(
+                    f"{why}; SciPy with workers={threads}",
+                    context=_delegating_to_scipy,
+                    workers=threads,
+                ) from None
+            raise NotAccelerated(str(why), context=_delegating_to_scipy) from None
 
     implementation.__name__ = implementation.__qualname__ = name
     # The native attempt alone, for the uarray backend: (result) or Declined.
@@ -286,16 +302,20 @@ def _n_dimensional(name, kind, default_axes):
     reference = getattr(scipy.fft, name)
 
     def core(x, s=None, axes=default_axes, norm=None, overwrite_x=False, workers=None, *, plan=None):
-        return _transform_nd(function, kind, x, s, axes, norm, workers, plan)
+        return _transform_nd(function, kind, x, s, axes, norm, overwrite_x, workers, plan)
 
     def implementation(x, s=None, axes=default_axes, norm=None, overwrite_x=False, workers=None, *, plan=None):
         try:
-            return _transform_nd(function, kind, x, s, axes, norm, workers, plan)
+            return _transform_nd(function, kind, x, s, axes, norm, overwrite_x, workers, plan)
         except Declined as why:
             threads = threaded_fallback(x, axes, why, workers, plan)
             if threads is not None:
-                raise NotAccelerated(f"{why}; SciPy with workers={threads}", workers=threads) from None
-            raise
+                raise NotAccelerated(
+                    f"{why}; SciPy with workers={threads}",
+                    context=_delegating_to_scipy,
+                    workers=threads,
+                ) from None
+            raise NotAccelerated(str(why), context=_delegating_to_scipy) from None
 
     implementation.__name__ = implementation.__qualname__ = name
     implementation.core = core
@@ -473,7 +493,7 @@ def prepare(shape, dtype=np.complex128, *, kind="fft", axes=None, n=None, s=None
             elif length != shape_tuple[axis]:
                 off_last_declined = True
 
-    if too_large or off_last_declined or any(d == 0 for d in shape_tuple):
+    if too_large or off_last_declined or any(d == 0 or d >= (1 << 64) for d in shape_tuple):
         return False
     device = _config.get_device()
     if device == "cpu":

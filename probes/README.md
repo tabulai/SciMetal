@@ -20,6 +20,7 @@ Re-run everything: `probes/run_all.sh` (about 3.5 minutes), or one probe:
 | E6 | Hybrid float32 LU + float64 refinement | n = 8192 ≤ 250 ms; backward error ≤ 1e-14 for κ ≤ 1e4; break-even n ≤ 2000 | 180 ms (κ = 1e2) / 204 ms (κ = 1e4); backward error ≤ 3.4e-16; break-even n = 512 | **Pass** |
 | E7 | Recursive factorizations on Accelerate GEMM | ≥ 4× over LAPACK at 8192, ≥ 1.5× at 2048 | Cholesky 5.1× / 1.55×; LU only 1.98× / 1.05× | Cholesky **pass**, LU **fail** |
 | E8 | Out-of-tree MLX primitive on our metallib | ≤ 30 µs marginal cost in a lazy graph, no extra commit | −1.3 to +0.5 µs vs a comparable built-in op; +12 µs vs no op at all (a built-in costs the same); no extra commit or sync | **Pass** |
+| A7 | Accelerate vDSP CPU FFT (`vDSP_fft_zop` / `vDSP_DFT_Execute`) vs `scipy.fft` | ≥ 1.5× end-to-end interleaved over a meaningful range | Batches (16t vs `workers=16`): 0.27–1.20×; 1-D ≥ 2^17 (`complex64`) / ≥ 2^16 (`complex128`) vs `w16`: 0.14–0.89×; ≤ 16384 (`complex64`) with Python+alloc+handoff (~15–20 µs): ≤ 1.4×; narrow 49152–65536 1-D band (~1.7–1.8×) breaks `strict` bit-identity and limits to `f·2^n`, `f∈{1,3,5,15}` | **Negative (keep SciPy fall-through)** |
 
 ## Headline numbers
 
@@ -76,3 +77,13 @@ Re-run everything: `probes/run_all.sh` (about 3.5 minutes), or one probe:
   float64 fallback yet for ill-conditioned systems.
 - The cause of the first-use cost of wrapped memory (E2) is unverified; only its size and
   shape were measured.
+
+## A7 CPU FFT probe (follow-up)
+
+Run alone on the same M1 Ultra host via `probes/run_all.sh a7_cpu_fft` (`uptime` load `2.92 2.74 2.31`; full tables in `probes/results/a7_cpu_fft.{json,log}`):
+
+- **Batches (`batch > 1`, 16 P-core threads vs `scipy.fft.fft(..., workers=16)`)**: end-to-end interleaved vDSP (`vDSP_ctoz[D]` + transform + `vDSP_ztoc[D]`) measures **0.27×–1.20×** across `(64, 256)`, `(256, 1024)`, `(64, 4096)`, `(256, 4096)`, `(1024, 4096)`, `(1024, 1024)`, `(256, 3072)`, and `(64, 15360)` in both `complex64` and `complex128` — never reaching the 1.5× gate (even split-only vDSP tops out at ~1.3–1.4×).
+- **Large 1-D (`≥ 2^17` `complex64`, `≥ 2^16` `complex128`)**: single-threaded vDSP trails 16-worker pocketfft (`0.14×–0.89×`), and Metal GPU already handles `complex64` cleanly in `fast`/`auto` above ~`2^17`.
+- **Small 1-D (`≤ 16384`)**: realistic Python call + output allocation + `metal-sci` ctypes hand-off (`~15–20 µs`, which is also why `auto_min_points = 12461`) erases raw C++ microsecond gains (`≤ 1.4×`, slower than SciPy at `≤ 4096`).
+- **Narrow band**: only 1-D `complex64` `f·2^n` around `49152–65536` (`~0.14 ms` vs `0.25 ms`) hits ~1.7–1.8× end-to-end, while supporting only `f ∈ {1, 3, 5, 15}` and introducing ~1e-7 rounding differences that break `strict` bit-identity with SciPy.
+- **Decision**: Negative result for a native CPU FFT engine; keep the SciPy (`pocketfft`, threaded `workers=cores` under `fast`/`refined` where beneficial, single-worker under `strict`) fall-through.

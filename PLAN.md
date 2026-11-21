@@ -259,14 +259,14 @@ bindings and function-constant specialisations (needed by MLX's kernels), a per-
 threadgroup-capacity check, `max_threads_per_group`, performance-core lane count.
 Re-vendor with `tools/vendor_runtime.sh`, then re-apply the listed changes.
 
-**Core.** `ms_array` descriptors (C-contiguous float32/float64/complex64/complex128, up
-to 8 dimensions), `ms_route_options` (execution, precision), `ms_route_info` (ABI v2:
-engine, compute dtype, `reason[256]`), pooled result buffers, single-pass NEON threaded
-`array::convert` (`ConvertReport` tracking `overflowed`, `has_nonfinite`, `max_finite`,
-`max_magnitude` at `>= 150 GB/s`), a router that picks the engine from the policy and a
-per-family work threshold, and the shared N-D stencil primitive `ms::detail::dense_correlate`
-(CPU + GPU `encode_gpu`, supporting arbitrary `out_shape`, `before[8]`, float and complex
-dtypes, `AccumMode`, and zero-tap pruning).
+**Core.** `ms_array` descriptors (C-contiguous real `float32`/`float64`/`bool`/`int8`–`int64`/`uint8`–`uint64`
+and `complex64`/`complex128`, up to 8 dimensions), `ms_route_options` (execution, precision),
+`ms_route_info` (ABI v3: engine, compute dtype, `reason[256]`), pooled result buffers, single-pass
+NEON threaded `array::convert` (`ConvertReport` tracking `overflowed`, `inexact_int` for `|x| >= 2^24`
+32/64-bit ints, `has_nonfinite`, `max_finite`, `max_magnitude` at `>= 150 GB/s`), a router that picks
+the engine from the policy and a per-family work threshold, and the shared N-D stencil primitive
+`ms::detail::dense_correlate` (CPU + GPU `encode_gpu`, supporting arbitrary `out_shape`, `before[8]`,
+all real & complex float/int/bool dtypes, `AccumMode`, and zero-tap pruning).
 
 **Python package.** Drop-in namespaces (`import metal_sci.ndimage as ndimage`): a name
 with a native route is ours, every other name is SciPy's own object. Sub-modules without
@@ -283,30 +283,31 @@ default (naming `set_precision('strict')` and `warnings.filterwarnings`), and
 `generic_gradient_magnitude` when the derivative callback reduces to supported native
 passes via `ContextVar` symbolic tracing).
 - Three C primitives: `ms_ndimage_separable_filter[_to]`, `ms_ndimage_dense_filter`, and
-  `ms_ndimage_composite_filter` (all supporting `out_dtype` of `float32` or `float64`,
-  including cross-dtype `output=` arrays and dtypes).
-- CPU engine: double accumulation, SciPy's operation order, bit-identical to the SciPy
-  1.18.1 arm64 wheel for float32 and float64 (including `_NI_Correlate` FMA tap order for
-  dense kernels and fused chain combination for composite filters). Innermost-axis
-  uniform passes use interleaved 4/8-line NEON `float64x2_t` recurrences (fixing the
-  2-core tile bottleneck).
-- GPU engine: float32, one command buffer per call, specialised separable kernels (any/even/odd
-  × float32/float64 store, overhanging windows `taps > length` handled without modulo
-  division), dense N-D stencil via `dense_correlate::encode_gpu` (and rank-1 outer-product
-  detection into separable passes in `fast` with adjusted `cval_k`), and a single-`Batch`
-  composite combine kernel. Float64 widening is fused into the final pass.
-- Guard rails (A5): `AUTO` double inputs whose narrowing overflows float32 re-route to the
-  CPU engine in `float64` with the reason recorded in `ms_route_info::reason`; forced
-  `GPU` declines (`MS_ENOTSUP`).
+  `ms_ndimage_composite_filter` across all 11 real dtypes (`float32`, `float64`, `bool`,
+  `int8`–`int64`, `uint8`–`uint64`), including cross-dtype `output=` among real dtypes.
+- CPU engine: double accumulation, SciPy's operation order and integer/boolean conversion
+  rules (`NI_LineBufferToArray` and `CASE_FILTER_OUT_SAFE`, raw `bool` bytes, wrapping
+  composite combines), bit-identical to the SciPy 1.18.1 arm64 wheel across all 11 real
+  dtypes. Innermost-axis uniform passes use interleaved 4/8-line NEON `float64x2_t`
+  recurrences (fixing the 2-core tile bottleneck).
+- GPU engine: float32 (`fast`/`refined`), one command buffer per call, specialised separable
+  kernels (any/even/odd × float32/float64 store, overhanging windows `taps > length` handled
+  without modulo division), dense N-D stencil via `dense_correlate::encode_gpu` (and rank-1
+  outer-product detection into separable passes in `fast` with adjusted `cval_k`), and a
+  single-`Batch` composite combine kernel. Float64 widening and threaded P-core post-cast
+  (`ndimage_cast_from_float`) convert output to any real `out_dtype`.
+- Guard rails (A5, A6): `AUTO` double inputs whose narrowing or filter gain overflows float32,
+  or 32/64-bit integers with `|x| >= 2^24`, re-route to the CPU engine in `float64` with
+  the reason recorded in `ms_route_info::reason`; forced `GPU` declines (`MS_ENOTSUP`).
 - Routing: separable work = elements × CPU operations over all passes (GPU from `80·2^20`);
   dense work = elements × non-zero taps (GPU from `128·2^20`). `strict` with `auto`
-  always uses the CPU engine, float32 included, because SciPy accumulates float32 in
-  double.
-- Declines: anything that is not a plain aligned native float32/float64 `ndarray` of
-  rank 1–8; `output` of a non-float32/float64 dtype, wrong shape, read-only, or partly
-  overlapping; complex or non-1-D/rank-incompatible weights; general non-traceable
-  callbacks in `generic_*`; anything SciPy would reject; fewer than 16384 elements
-  (unless `metal_sci.set_small_inputs('native')`).
+  always uses the CPU engine, float32 and int/bool included.
+- Declines: anything that is not a plain aligned native real `ndarray` (`float32`, `float64`,
+  `bool`, `int8`–`int64`, `uint8`–`uint64`) of rank 1–8; `output` of a complex/`float16`/
+  `longdouble`/non-native-endian dtype, wrong shape, read-only, or partly overlapping;
+  complex or non-1-D/rank-incompatible weights; general non-traceable callbacks in
+  `generic_*`; anything SciPy would reject; fewer than 16384 elements (unless
+  `metal_sci.set_small_inputs('native')`).
 
 **`fft`** — `fft`, `ifft`, `rfft`, `irfft`, `fft2`, `ifft2`, `fftn`, `ifftn`, `rfft2`,
 `irfft2`, `rfftn`, `irfftn`, plus `metal_sci.fft.register()` (the `scipy.fft` uarray
@@ -400,28 +401,31 @@ preserved as M1 pre-A1-optimization baselines; `*.quick.log` are the 2026-11-18
 Phase-1-handoff logs).
 
 **Core `array::convert` (double → single narrowing, `./.build/metal/ms_array_test --bench`):**
-256 MB: `157.69 GB/s` (`no_report`), `175.17 GB/s` (`with_report`); 1024 MB:
-`169.66 GB/s` (`no_report`), `176.85 GB/s` (`with_report`) (`uptime` loadavg `1.32 1.80 2.46`).
+256 MB: `165.17 GB/s` (`no_report`), `172.14 GB/s` (`with_report`); 1024 MB:
+`170.35 GB/s` (`no_report`), `179.44 GB/s` (`with_report`).
 
-**`ndimage` filters** (`bench/ndimage_filters.py`, `uptime` loadavg before `1.49 1.82 2.46`,
-after `1.89 1.91 2.44`), float64 in and out:
+**`ndimage` filters** (`bench/ndimage_filters.py`, `uptime` loadavg `2.15 2.23 2.17`),
+float64 in and out plus integer image rows (`bench/results/m1-ultra/ndimage_filters.json`):
 
 | Workload | SciPy ms | fast (GPU) ms | × | strict (CPU) ms | × |
 |---|---|---|---|---|---|
-| gaussian 4096², σ = 3 | 396.5 | 3.65 | 108.5 | 7.33 | 54.1 |
-| gaussian 4096², σ = 10 | 731.9 | 4.60 | 159.0 | 17.40 | 42.1 |
-| gaussian 512³, σ = 2 | 3809.7 | 25.61 | 148.7 | 72.67 | 52.4 |
-| uniform 4096², size 9 | 339.4 | 2.41 | 141.0 | 3.65 | 93.0 |
-| correlate1d 9 taps, last axis | 66.0 | 2.15 | 30.6 | 1.81 | 36.4 |
-| correlate1d 9 taps, axis 0 | 277.6 | 2.07 | 134.3 | 2.96 | 93.7 |
-| correlate1d 8192×64, 513 taps overhang | 315.3 | 1.56 | 202.1 | 2.65 | 119.2 |
-| gaussian_laplace 4096², σ = 3 | 776.2 | 4.18 | 185.8 | 15.02 | 51.7 |
-| correlate 4096², 5×5 dense | 276.7 | 2.55 | 108.7 | 4.70 | 58.9 |
+| gaussian 4096², σ = 3 (`float64`) | 390.7 | 3.70 | 105.6 | 7.20 | 54.3 |
+| gaussian 4096², σ = 3 (`uint8`) | 308.5 | 4.79 | 64.5 | 7.95 | 38.8 |
+| gaussian 4096², σ = 3 (`uint16`) | 320.0 | 4.59 | 69.7 | 7.65 | 41.8 |
+| gaussian 4096², σ = 10 (`float64`) | 730.2 | 7.74 | 94.4 | 17.03 | 42.9 |
+| gaussian 512³, σ = 2 (`float64`) | 3795.6 | 22.40 | 169.5 | 70.72 | 53.7 |
+| uniform 4096², size 9 (`float64`) | 447.7 | 2.43 | 184.2 | 3.69 | 121.5 |
+| correlate1d 9 taps, last axis (`float64`) | 67.1 | 2.03 | 33.1 | 1.78 | 37.7 |
+| correlate1d 9 taps, axis 0 (`float64`) | 270.1 | 2.08 | 130.2 | 2.98 | 90.5 |
+| correlate1d 8192×64, 513 taps overhang (`float64`) | 314.2 | 1.56 | 201.5 | 2.08 | 151.1 |
+| gaussian_laplace 4096², σ = 3 (`float64`) | 771.1 | 4.00 | 192.8 | 14.62 | 52.7 |
+| correlate 4096², 5×5 dense (`float64`) | 275.3 | 3.44 | 79.9 | 4.56 | 60.4 |
+| correlate 4096², 5×5 dense (`uint8`) | 300.2 | 4.71 | 63.8 | 11.12 | 27.0 |
 
-float32 inputs run faster (3.01 ms for gaussian 4096², σ = 3, 116.3×; 19.51 ms for
-512³, 168.9×; 2.41 ms strict CPU for uniform 4096², size 9, 101.4×; 3.56 ms fast for
-gaussian_laplace 4096², 202.8×; 1.95 ms fast / 4.02 ms strict for 5×5 dense correlate,
-148.6× / 72.1×). Fast-mode error is `1.8e-7–1.4e-6` of the data scale across all float64
+float32 inputs run faster (3.05 ms for gaussian 4096², σ = 3, 114.3×; 19.72 ms for
+512³, 166.3×; 2.24 ms strict CPU for uniform 4096², size 9, 106.2×; 3.40 ms fast for
+gaussian_laplace 4096², 206.2×; 2.88 ms fast / 3.83 ms strict for 5×5 dense correlate,
+100.2× / 75.5×). Fast-mode error is `1.8e-7–1.4e-6` of the data scale across all float64
 workloads; strict is bit-identical to SciPy in every row. Quiet calibration
 (`bench/results/m1-ultra/ndimage_filters_calibrate.json`, 116 rows across 9 filter
 families × 2 dtypes) confirmed `gpu_min_work = 80·2^20`.
@@ -500,21 +504,23 @@ before `1.97 1.91 2.41`, after `2.85 2.11 2.47`), float64 in and out:
 
 | Suite | strict / auto | fast / forced GPU |
 |---|---|---|
-| `scipy.ndimage.tests.test_filters` | 2479 passed | 2464 passed, 15 failed |
+| `scipy.ndimage.tests.test_filters` | 2479 passed | 2448 passed, 31 failed |
 | `scipy.fft.tests.test_basic` | 171 passed | 148 passed, 23 failed |
 | `scipy.signal.tests.test_signaltools` (`Convolve or Correlate or choose_conv_method`) | 11690 passed, 1 skipped | 428 passed, 928 failed (`-m "not slow"`) |
 
-- Filters, native calls per function (strict / auto): `convolve` 274, `convolve1d` 245,
-  `correlate` 284, `correlate1d` 287, `gaussian_filter` 111, `gaussian_filter1d` 7,
-  `gaussian_gradient_magnitude` 98 (16 in forced GPU), `gaussian_laplace` 99,
-  `generic_gradient_magnitude` 1, `generic_laplace` 2, `laplace` 96, `prewitt` 13,
-  `sobel` 13, `uniform_filter` 72, `uniform_filter1d` 10 (all 15 functions > 0).
-  Float-dtype `output=` fall-throughs disappeared after A4; remaining fall-throughs are
-  integer/bool/complex dtypes, non-float `output=`, complex weights, non-traceable
-  `generic_*` callbacks, and invalid-argument tests. The 15 GPU failures are float32
-  accuracy against float64 tolerances (`test_filter_axes*`, `test_gaussian_laplace01/02`,
-  mismatch `< 1e-3` on data of scale 100–1000), pinned in
-  `tests/python/test_ndimage_oracle.py`.
+- Filters, native calls per function (strict / auto after A6): `convolve` 701, `convolve1d`
+  863, `correlate` 749, `correlate1d` 1034, `gaussian_filter` 135, `gaussian_filter1d` 7,
+  `gaussian_gradient_magnitude` 100, `gaussian_laplace` 109,
+  `generic_gradient_magnitude` 1, `generic_laplace` 10, `laplace` 98, `prewitt` 53,
+  `sobel` 53, `uniform_filter` 171, `uniform_filter1d` 18 (all 15 functions > 0, with
+  integer/bool fall-throughs eliminated). Remaining fall-throughs are complex/`float16`/
+  `longdouble`/non-native-endian inputs, non-real `output=`, complex weights,
+  non-traceable `generic_*` callbacks, and invalid-argument tests. The 31 forced-GPU
+  failures are 15 float32-vs-float64 accuracy mismatches (`< 1e-3`) plus 16 integer
+  intermediate-quantization mismatches (`<= 20` on `prewitt`/`sobel` uint32/uint64 and
+  `gaussian_laplace`/`gaussian_gradient_magnitude` int32, where SciPy's reference calls
+  quantize intermediate passes to integer dtypes while GPU `fast` keeps intermediates in
+  `float32`), pinned in `tests/python/test_ndimage_oracle.py`.
 - **FFT in strict / auto runs zero native calls**: SciPy's FFT tests use small
   double-precision arrays, and strict keeps double precision off the GPU. That run only
   proves the fall-through is transparent. The GPU run is the meaningful one: 808 native
@@ -534,6 +540,14 @@ before `1.97 1.91 2.41`, after `2.85 2.11 2.47`), float64 in and out:
   verifies every failure is a float32 vs float64 numerical tolerance mismatch.
 
 ### 5.4 Checks to run before starting
+
+Run the entire C++ and Python ladder (both `metal` and `cpu-only`) in one command:
+
+```bash
+./tools/check.sh           # add --wheel to also build & verify the wheel in a clean venv
+```
+
+Or run each step individually:
 
 ```bash
 cd /Users/tunguz/Programming/metal-sci
@@ -560,36 +574,27 @@ all families):
 
 | Check | Result |
 |---|---|
-| `cmake --build --preset metal` | builds cleanly |
-| `ctest --preset metal --output-on-failure` | **20 / 20 passed** in 55.72s (runtime 10, array 1, ndimage 4, fft 3, signal 2; `_validated` targets run under Metal API and shader validation) |
-| `cmake --build --preset cpu-only && ctest --preset cpu-only --output-on-failure` | **11 / 11 passed** in 2.19s (`MS_ENABLE_METAL=OFF`) |
-| `pytest tests/python` | **595 passed** in 159.46s (includes A5 guard rails, A3/A4 ndimage, A2 signal, and strict + forced-GPU oracle tests) |
-| `METAL_SCI_LIBRARY=$PWD/.build/cpu-only/libmetalsci.dylib pytest tests/python/test_{signal_convolve,signal_oracle,ndimage_filters,ndimage_oracle,precision_guard}.py` | **214 passed, 206 skipped** in 19.82s (full `tests/python` under `cpu-only` reports `243 passed, 206 skipped, 145 failed, 1 error`, where all 145 failures + 1 error are in `test_fft_*.py` because FFT has no CPU engine) |
+| `cmake --build --preset metal && ctest --preset metal --output-on-failure` | **20 / 20 passed** in 57.18s (runtime 10, array 1, ndimage 4, fft 3, signal 2; `_validated` targets run under Metal API and shader validation) |
+| `cmake --build --preset cpu-only && ctest --preset cpu-only --output-on-failure` | **11 / 11 passed** in 3.86s (`MS_ENABLE_METAL=OFF`) |
+| `pytest tests/python` | **728 passed** (verified on wheel + `./tools/check.sh`; includes A6 int/bool dtypes, A5 guard rails, A3/A4 ndimage, A2 signal, and strict + forced-GPU oracle tests) |
+| `METAL_SCI_LIBRARY=$PWD/.build/cpu-only/libmetalsci.dylib pytest tests/python` | **371 passed, 357 skipped** in 22.98s (`0 failed, 0 errors`; GPU-only FFT/GPU tests skip cleanly when `not _native.has_metal()`) |
 | `METAL_SCI_FFT_EXHAUSTIVE=1 pytest tests/python/test_fft_sizes.py` | **3 passed in 31.38s** (41,424 calls) |
-| `./.build/metal/ms_array_test --bench` | `with_report` **175.17 GB/s** (256 MB), **176.85 GB/s** (1024 MB) (`no_report` 157.69 / 169.66 GB/s) |
-| Oracle, filters, strict / auto | **2479 passed** (all 15 functions native > 0) |
-| Oracle, filters, fast / GPU | **2464 passed, 15 failed** (float32 accuracy, pinned in `test_ndimage_oracle.py`) |
+| `./.build/metal/ms_array_test --bench` | `with_report` **172.14 GB/s** (256 MB), **179.44 GB/s** (1024 MB) (`no_report` 165.17 / 170.35 GB/s) |
+| Oracle, filters, strict / auto | **2479 passed** (all 15 functions native > 0, integer fall-throughs eliminated) |
+| Oracle, filters, fast / GPU | **2448 passed, 31 failed** (15 float32 accuracy `< 1e-3` + 16 int intermediate quantization `<= 20`, pinned in `test_ndimage_oracle.py`) |
 | Oracle, FFT, strict / auto | **171 passed**, **0 native calls** (see 5.3) |
 | Oracle, FFT, fast / GPU | **148 passed, 23 failed** (808 native calls; float32 vs float64 tolerances, exercised in `test_fft_oracle.py`) |
 | Oracle, signal, strict / auto | **11690 passed, 1 skipped** (`Convolve or Correlate or choose_conv_method`; 5 CPU-capable functions native > 0, `fftconvolve`/`oaconvolve` fall through to threaded SciPy) |
 | Oracle, signal, fast / GPU | **428 passed, 928 failed** (`-m "not slow"`; all 7 functions native > 0, all failures float32 numerical tolerance, verified in `test_signal_oracle.py`) |
-| Wheel | `pip wheel . --no-deps --no-build-isolation` builds `metal_sci-0.1.0.dev0-py3-none-macosx_26_0_arm64.whl` (2 MB, carries `libmetalsci.dylib`, 2026-11-18 check; not re-run in M5) |
+| Wheel (`macosx_15_0_arm64`) | `MACOSX_DEPLOYMENT_TARGET=15.0 .venv/bin/python -m pip wheel . -w dist --no-deps --no-build-isolation` builds `metal_sci-0.1.0.dev0-py3-none-macosx_15_0_arm64.whl` (2.2 MB, bundles `libmetalsci.dylib`); clean-venv install passes **728 / 728** (`METAL_SCI_TEST_INSTALLED=1`) from `/tmp` |
 | `tools/vendor_mlx_kernels.sh --check` | **identical** to MLX 0.31.1 sources (verified 2026-11-19) |
 
-Not verified at hand-off:
+Milestone status:
+- **Milestone M1 reached** (all work packages `A0`–`A8` complete and verified; `./tools/check.sh` runs the full CTest + Python Metal + CPU-only ladder, with `--wheel` for isolated wheel verification).
+- Sanitizers: AddressSanitizer / ThreadSanitizer remain environment-blocked on this host; see 6.8 and 9.2.
+- The repository is local only (no git remote configured).
 
-- The wheel was not rebuilt/installed into a clean environment, and the Python test suite
-  was not run against an installed wheel. Its platform tag says macOS 26 although the
-  build targets macOS 15 (set `MACOSX_DEPLOYMENT_TARGET=15.0` for the wheel build).
-- Under `METAL_SCI_LIBRARY=.build/cpu-only/libmetalsci.dylib`, all non-FFT Python suites
-  pass (`214 passed, 206 skipped` across ndimage/signal/guard tests), whereas `test_fft_*.py`
-  does not yet skip when `has_metal()` is false (`145 failed, 1 error`).
-- Sanitizers: no result. An AddressSanitizer build of the FFT tests was killed after ten
-  CPU-minutes inside the first test; see 6.8 and 9.2.
-- The tree is on local `main` with uncommitted Stage A0–A5 and A2–A4 changes and
-  `bench/results/m1-ultra/*.json` results; there is no remote and nothing has been pushed.
-
-Leftovers that are safe to delete: build trees `.build/ndimage`, `.build/fft`,
+Safe-to-delete stale build directories if still present: `.build/ndimage`, `.build/fft`,
 `.build/fft-all`, `.build/fft-cpu`, `.build/fft-asan`, `.build/wheel` (all ignored by
 `.gitignore`).
 
@@ -973,6 +978,13 @@ values). GPU: convert to float32 on the way in, and only in `fast`, and only whe
 input range is exactly representable (|x| < 2^24).
 **Gate.** Oracle strict passes with the integer fall-throughs gone; uint8 gaussian 4096²
 strict ≥ 30×.
+**Status.** Done (M1). ABI bumped to `MS_ARRAY_ABI_VERSION = 3u` across `bool` and
+`int8..64`/`uint8..64`; CPU `ndimage` passes `scipy.ndimage.tests.test_filters` strict
+oracle (**2479 passed**, integer fall-throughs gone) and bit-exact native C++ & Python
+tests across all 15 filters; `uint8` `gaussian_filter` 4096² σ = 3 achieves **38.8×**
+strict (`7.95 ms`) and **64.5×** fast GPU (`4.79 ms`); `|x| >= 2^24` guard rail
+verified via `ConvertReport::inexact_int`; `array::convert` `with_report` measures
+**172.14 / 179.44 GB/s** (`>= 150 GB/s`).
 
 #### A7. CPU FFT engine — measure first (M)
 
@@ -988,6 +1000,13 @@ float64, lengths 2^8–2^24 and batches. vDSP supports lengths `f·2^n` with f �
 **Gate.** If vDSP is ≥ 1.5× pocketfft for supported lengths in some size range, add a CPU
 engine for exactly that range (and make it the engine for `strict` float32). Otherwise
 record the negative result and keep the SciPy fall-through.
+**Status.** Done (negative result recorded in `probes/README.md` and
+`probes/results/a7_cpu_fft.{json,log}`). `probes/a7_cpu_fft` measured 16-thread
+end-to-end interleaved vDSP at **0.27×–1.20×** vs `scipy.fft.fft(..., workers=16)` on
+batches and `0.14×–0.89×` on large 1-D (`>= 2^17` `complex64`, `>= 2^16` `complex128`),
+with Python + alloc + ctypes handoff erasing gains below `<= 16384`; keeping the SciPy
+(`pocketfft`) fall-through avoids `strict` rounding divergence across a narrow
+`49152–65536` `f·2^n` band.
 
 #### A8. Packaging and documentation (S)
 
@@ -1006,6 +1025,12 @@ record the negative result and keep the SciPy fall-through.
   cases).
 - `tools/check.sh`: the whole ladder in one command.
 **Gate.** A clean venv with only the wheel installed passes the Python tests.
+**Status.** Done (M1 reached). Expanded `README.md`, created executable `tools/check.sh`
+(with `--wheel`), skipped GPU-only FFT tests cleanly when `not _native.has_metal()`
+(`cpu-only` Python suite **371 passed, 357 skipped**), added `METAL_SCI_TEST_INSTALLED`
+in `tests/python/conftest.py` and all subprocess `PYTHONPATH` setups, built
+`dist/metal_sci-0.1.0.dev0-py3-none-macosx_15_0_arm64.whl`, and verified **728 passed**
+against the installed wheel inside an isolated venv from `/tmp`.
 
 ### Stage B — Phase 2: signal, FFT and image breadth
 

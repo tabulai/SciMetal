@@ -41,8 +41,8 @@ Reservation reserve(ms_context*, uint64_t bytes);
 // Metal storage may reuse an idle cached buffer of the same capacity (or up to
 // 1.5x capacity for allocations >= 1 MiB).
 BufferPtr allocate_reserved(ms_context*, Reservation&, uint64_t logical, Fill = Fill::zero);
-// Suballocates 256-byte-aligned scratch slices (up to 64 KiB) from persistent
-// 1 MiB shared Metal arena slabs when budget/cache headroom permits; otherwise
+// Suballocates 256-byte-aligned scratch slices (up to 32 KiB) from persistent
+// 256 KiB shared Metal arena slabs when budget/cache headroom permits; otherwise
 // falls back to regular page-rounded allocation.
 BufferPtr allocate_scratch(ms_context*, uint64_t logical, Fill = Fill::device_zero);
 bool is_scratch_slice(const ms_buffer*);
@@ -80,15 +80,24 @@ struct EventWait {
     void* event = nullptr;
     uint64_t value = 0;
 };
+struct ClaimedPrior {
+    std::shared_ptr<void> alloc;
+    void* event = nullptr;
+    uint64_t value = 0;
+};
 struct PreparedGpuBatch {
     std::vector<EventWait> waits;
     std::vector<BlitFill> fills;
     std::vector<std::shared_ptr<void>> touched;
     std::vector<std::shared_ptr<void>> claimed;
+    std::vector<ClaimedPrior> cleared_priors;
 };
 PreparedGpuBatch prepare_gpu_batch(ms_context*, const std::vector<const ms_buffer*>& bound_buffers,
                                    const std::vector<void*>& indirect_metal_buffers);
+void rollback_gpu_batch(const PreparedGpuBatch&) noexcept;
 void complete_sync_gpu_batch(ms_context*, const PreparedGpuBatch&) noexcept;
+std::vector<std::shared_ptr<void>> borrowed_pins_for_async(const PreparedGpuBatch&, const ms_buffer* const* outputs,
+                                                           size_t output_count);
 std::shared_ptr<void> context_state_handle(ms_context*);
 void attach_async_gpu_batch(ms_context*, const PreparedGpuBatch&, const ms_buffer* const* outputs,
                             size_t output_count, void* event, uint64_t ticket,

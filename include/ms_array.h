@@ -5,7 +5,7 @@
 extern "C" {
 #endif
 
-/* Array operations ABI, version 2. Shared by every numerical family
+/* Array operations ABI, version 3. Shared by every numerical family
  * (ms_ndimage.h, ms_fft.h, ...).
  *
  * Inputs are C-contiguous host arrays the caller keeps alive and unmodified
@@ -13,11 +13,14 @@ extern "C" {
  * C-contiguous array; release them with ms_buffer_release. Released result
  * storage returns to the context's buffer cache, so repeated calls reuse it.
  * Functions leave *out and *info unchanged on failure. */
-#define MS_ARRAY_ABI_VERSION 2u
+#define MS_ARRAY_ABI_VERSION 3u
 #define MS_MAX_NDIM 8u
 
 typedef enum ms_dtype {
-    MS_FLOAT32 = 1, MS_FLOAT64 = 2, MS_COMPLEX64 = 3, MS_COMPLEX128 = 4
+    MS_FLOAT32 = 1, MS_FLOAT64 = 2, MS_COMPLEX64 = 3, MS_COMPLEX128 = 4,
+    MS_BOOL = 5,
+    MS_INT8 = 6, MS_INT16 = 7, MS_INT32 = 8, MS_INT64 = 9,
+    MS_UINT8 = 10, MS_UINT16 = 11, MS_UINT32 = 12, MS_UINT64 = 13
 } ms_dtype;
 
 /* fast:    double-precision inputs may be computed in single precision (on the
@@ -73,9 +76,11 @@ typedef enum ms_capability {
 } ms_capability;
 uint32_t ms_array_capabilities(void);
 
-/* Copies `input` into a new array of `dtype`, converting between single and
- * double precision with IEEE round-to-nearest-even (as a C cast). Real and
- * complex types do not convert into each other (MS_EINVAL). Runs on the CPU. */
+/* Copies `input` into a new array of `dtype`, converting among real dtypes
+ * (float32, float64, bool, signed/unsigned 8..64-bit integers matching NumPy
+ * astype semantics on arm64) or between single and double complex precision.
+ * Real and complex types do not convert into each other (MS_EINVAL). Runs on
+ * the CPU. */
 ms_status ms_array_astype(ms_context*, const ms_array* input, uint32_t dtype, ms_array_result* out);
 
 #ifdef __cplusplus

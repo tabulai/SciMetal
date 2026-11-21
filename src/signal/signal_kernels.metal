@@ -247,7 +247,7 @@ kernel void ms_signal_oa_combine_r_f32(constant MSSignalCombineParams& p [[buffe
                                        uint gid [[thread_position_in_grid]]) {
     if (gid >= p.out_elements) return;
     const float v = ms_signal_combine_eval<float>(p, src, gid);
-    if (!isfinite(v)) atomic_fetch_or_explicit(nf_flag, 2u, memory_order_relaxed);
+    if (!isfinite(v)) atomic_fetch_or_explicit(nf_flag, 4u, memory_order_relaxed);
     ms_signal_store(dst, gid, v);
 }
 
@@ -258,7 +258,7 @@ kernel void ms_signal_oa_combine_r_f64(constant MSSignalCombineParams& p [[buffe
                                        uint gid [[thread_position_in_grid]]) {
     if (gid >= p.out_elements) return;
     const float v = ms_signal_combine_eval<float>(p, src, gid);
-    if (!isfinite(v)) atomic_fetch_or_explicit(nf_flag, 2u, memory_order_relaxed);
+    if (!isfinite(v)) atomic_fetch_or_explicit(nf_flag, 4u, memory_order_relaxed);
     ms_signal_store(dst, gid, v);
 }
 
@@ -269,7 +269,7 @@ kernel void ms_signal_oa_combine_c_f32(constant MSSignalCombineParams& p [[buffe
                                        uint gid [[thread_position_in_grid]]) {
     if (gid >= p.out_elements) return;
     const float v = ms_signal_combine_eval<float2>(p, src, gid).x;
-    if (!isfinite(v)) atomic_fetch_or_explicit(nf_flag, 2u, memory_order_relaxed);
+    if (!isfinite(v)) atomic_fetch_or_explicit(nf_flag, 4u, memory_order_relaxed);
     ms_signal_store(dst, gid, v);
 }
 
@@ -280,7 +280,7 @@ kernel void ms_signal_oa_combine_c_f64(constant MSSignalCombineParams& p [[buffe
                                        uint gid [[thread_position_in_grid]]) {
     if (gid >= p.out_elements) return;
     const float v = ms_signal_combine_eval<float2>(p, src, gid).x;
-    if (!isfinite(v)) atomic_fetch_or_explicit(nf_flag, 2u, memory_order_relaxed);
+    if (!isfinite(v)) atomic_fetch_or_explicit(nf_flag, 4u, memory_order_relaxed);
     ms_signal_store(dst, gid, v);
 }
 
@@ -291,7 +291,7 @@ kernel void ms_signal_oa_combine_c_c64(constant MSSignalCombineParams& p [[buffe
                                        uint gid [[thread_position_in_grid]]) {
     if (gid >= p.out_elements) return;
     float2 v = ms_signal_combine_eval<float2>(p, src, gid);
-    if (!isfinite(v.x) || !isfinite(v.y)) atomic_fetch_or_explicit(nf_flag, 2u, memory_order_relaxed);
+    if (!isfinite(v.x) || !isfinite(v.y)) atomic_fetch_or_explicit(nf_flag, 4u, memory_order_relaxed);
     if (p.flags & MS_SIGNAL_COMBINE_REV_CONJ) v.y = -v.y;
     ms_signal_store(dst, gid, v);
 }
@@ -303,7 +303,7 @@ kernel void ms_signal_oa_combine_c_c128(constant MSSignalCombineParams& p [[buff
                                         uint gid [[thread_position_in_grid]]) {
     if (gid >= p.out_elements) return;
     float2 v = ms_signal_combine_eval<float2>(p, src, gid);
-    if (!isfinite(v.x) || !isfinite(v.y)) atomic_fetch_or_explicit(nf_flag, 2u, memory_order_relaxed);
+    if (!isfinite(v.x) || !isfinite(v.y)) atomic_fetch_or_explicit(nf_flag, 4u, memory_order_relaxed);
     if (p.flags & MS_SIGNAL_COMBINE_REV_CONJ) v.y = -v.y;
     ms_signal_store(dst, gid, v);
 }
@@ -351,7 +351,7 @@ kernel void ms_signal_check_finite_f32(constant MSSignalFiniteParams& p [[buffer
                                        uint grid_size [[threads_per_grid]]) {
     for (ulong i = ulong(gid); i < p.count; i += ulong(grid_size)) {
         if (!isfinite(src[i])) {
-            atomic_fetch_or_explicit(nf_flag, 2u, memory_order_relaxed);
+            atomic_fetch_or_explicit(nf_flag, 4u, memory_order_relaxed);
             return;
         }
     }

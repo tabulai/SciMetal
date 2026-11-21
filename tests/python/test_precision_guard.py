@@ -413,7 +413,8 @@ def test_scipy_fft_backend_1e39_declines_cleanly():
 
 def _run_py(code: str, extra_args: list[str] | None = None) -> str:
     env = os.environ.copy()
-    env["PYTHONPATH"] = PYTHON_DIR + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    if not os.environ.get("METAL_SCI_TEST_INSTALLED"):
+        env["PYTHONPATH"] = PYTHON_DIR + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     cmd = [sys.executable, *(extra_args or []), "-c", code]
     proc = subprocess.run(cmd, cwd=str(REPO_ROOT), env=env, capture_output=True, text=True, check=True)
     return proc.stdout
@@ -506,7 +507,8 @@ with metal_sci.device("gpu"), metal_sci.precision("fast"):
 print("OK")
 """
     env = os.environ.copy()
-    env["PYTHONPATH"] = PYTHON_DIR + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    if not os.environ.get("METAL_SCI_TEST_INSTALLED"):
+        env["PYTHONPATH"] = PYTHON_DIR + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
     proc_default = subprocess.run([sys.executable, "-c", code_stderr],
                                   cwd=str(REPO_ROOT), env=env, capture_output=True, text=True, check=True)
     assert proc_default.stdout.strip() == "OK"

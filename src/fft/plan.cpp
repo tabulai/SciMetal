@@ -316,6 +316,21 @@ public:
             order_.pop_back();
         }
     }
+    Value insert_if_absent(const Key& key, Value value) {
+        std::lock_guard lock(mutex_);
+        const auto found = index_.find(key);
+        if (found != index_.end()) {
+            order_.splice(order_.begin(), order_, found->second);
+            return found->second->second;
+        }
+        order_.emplace_front(key, std::move(value));
+        index_[key] = order_.begin();
+        if (order_.size() > capacity_) {
+            index_.erase(order_.back().first);
+            order_.pop_back();
+        }
+        return order_.front().second;
+    }
 
 private:
     size_t capacity_;
@@ -412,7 +427,13 @@ Planned plan_single_kernel(const Request& request, const Limits& limits) {
         return unsupported("the transform needs more threads than a threadgroup has");
     }
     // Short transforms share a threadgroup.
-    step.width = std::max(std::min(min_group_elements / fft_size, limits.group_threads / step.threads), 1);
+    // Vendored MLX ReadWriter<float2, float2> assumes elems_per_thread divides
+    // fft_size whenever width > 1; force width = 1 otherwise to avoid OOB reads/writes.
+    if (request.transform == Transform::c2c && (fft_size % step.constants.elems_per_thread != 0)) {
+        step.width = 1;
+    } else {
+        step.width = std::max(std::min(min_group_elements / fft_size, limits.group_threads / step.threads), 1);
+    }
     step.paired = request.transform != Transform::c2c;
     const char* in_type = request.transform == Transform::r2c ? "float" : "float2";
     const char* out_type = request.transform == Transform::c2r ? "float" : "float2";
@@ -429,6 +450,11 @@ Planned plan_single_kernel(const Request& request, const Limits& limits) {
         step.values = {n, decomposition.bluestein_n, 0};
         step.batch_value = 2;
         plan->clear_dc_imag = request.transform == Transform::c2r;
+        if (request.transform == Transform::c2r && decomposition.bluestein_n / 2 > n / 2) {
+            // Vendored MLX ReadWriter<float2, float>::load_padded reads up to
+            // index = bluestein_n / 2 before checking index < n / 2 + 1.
+            plan->input_tail_scalars = 2 * static_cast<uint64_t>(decomposition.bluestein_n / 2 - n / 2);
+        }
         plan->name = "bluestein " + std::to_string(n) + " in " + std::to_string(decomposition.bluestein_n);
     } else if (decomposition.rader_n > 1) {
         step.kind = Kernel::rader;
@@ -577,6 +603,7 @@ Planned plan_chain(const Request& request, const std::vector<int32_t>& factors, 
     if (request.transform == Transform::c2r) {
         plan->load = Load::half_spectrum;
         plan->store = Store::real_part;
+        plan->clear_hermitian_imag = true;
     }
     plan->name = "strided " + factor_list(factors) + (request.tail > 1 ? " tail " + std::to_string(request.tail) : "");
     return {std::move(plan), {}};
@@ -662,6 +689,7 @@ Planned plan_power_of_two(const Request& request, const std::vector<int32_t>& fa
             plan->result_real = true;
             plan->input_row = half_spectrum(request.n);
             plan->result_row = request.n;
+            plan->clear_hermitian_imag = true;
         }
     }
     plan->result_slot = target[count - 1];
@@ -787,7 +815,7 @@ namespace mlx {
 std::vector<int32_t> prime_factors(int32_t n) {
     std::vector<int32_t> factors;
     int32_t z = 2;
-    while (z * z <= n) {
+    while (z <= n / z) {
         if (n % z == 0) {
             factors.push_back(z);
             n /= z;
@@ -873,8 +901,8 @@ Planned plan(const Request& request, const Limits& limits) {
     Planned planned;
     if (plan_cache().find(key, planned)) return planned;
     planned = build_plan(request, limits);
-    plan_cache().insert(key, planned);
-    return planned;
+    // Do not overwrite an entry a concurrent replan() installed while we built.
+    return plan_cache().insert_if_absent(key, std::move(planned));
 }
 
 Planned replan(const Request& request, const Limits& limits, int32_t group_threads) {
@@ -889,14 +917,20 @@ Planned replan(const Request& request, const Limits& limits, int32_t group_threa
 uint64_t plans_built() { return built_plans.load(std::memory_order_relaxed); }
 
 namespace {
+uint64_t safe_bit_ceil(uint64_t value) noexcept {
+    if (value > (uint64_t{1} << 63)) return UINT64_MAX;
+    return std::bit_ceil(value);
+}
+
 uint64_t next_smooth_235(uint64_t target) {
     if (target <= 1) return target;
+    if (target > (uint64_t{1} << 63)) return UINT64_MAX;
     uint64_t best = UINT64_MAX;
     for (uint64_t p5 = 1;;) {
         for (uint64_t p35 = p5;;) {
             const uint64_t need = (target - 1) / p35 + 1;
-            const uint64_t p2 = std::bit_ceil(need);
-            if (p35 <= best / p2) {
+            const uint64_t p2 = safe_bit_ceil(need);
+            if (p2 != UINT64_MAX && p35 <= best / p2) {
                 const uint64_t cand = p35 * p2;
                 if (cand < best) best = cand;
             }
@@ -914,11 +948,12 @@ uint64_t next_smooth_235(uint64_t target) {
 
 uint64_t next_fast_len(uint64_t target, bool real, bool last_axis, const Limits& limits) {
     if (target <= 1) return target;
+    if (target > (uint64_t{1} << 63)) return UINT64_MAX;
     if (real && last_axis) {
         const uint64_t limit = static_cast<uint64_t>(std::max<int32_t>(limits.group_elements, 0));
-        if (target > limit) return std::bit_ceil(target);
+        if (target > limit) return safe_bit_ceil(target);
         const uint64_t smooth = next_smooth_235(target);
-        return smooth <= limit ? smooth : std::bit_ceil(target);
+        return smooth <= limit ? smooth : safe_bit_ceil(target);
     }
     return next_smooth_235(target);
 }

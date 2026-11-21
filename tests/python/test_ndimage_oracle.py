@@ -25,7 +25,12 @@ def run_oracle(**settings):
     Returns pytest's exit code, its output and {function: (native calls, calls handed to SciPy)}.
     """
     env = dict(os.environ, **settings)
-    env["PYTHONPATH"] = os.pathsep.join(str(ROOT / part) for part in ("python", "tests/oracle"))
+    parts = [str(ROOT / "tests/oracle")]
+    if not os.environ.get("METAL_SCI_TEST_INSTALLED"):
+        parts.insert(0, str(ROOT / "python"))
+    if env.get("PYTHONPATH"):
+        parts.append(env["PYTHONPATH"])
+    env["PYTHONPATH"] = os.pathsep.join(parts)
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-p", "metal_sci_oracle", "-p", "no:cacheprovider", "--pyargs",
          "scipy.ndimage.tests.test_filters", "-q"],
@@ -57,10 +62,17 @@ def native_filters():
 def test_scipys_filter_tests_pass_on_the_native_routes_in_strict_mode(native_filters):
     code, output, counters = run_oracle(METAL_SCI_ORACLE_PRECISION="strict", METAL_SCI_ORACLE_DEVICE="auto")
     assert code == 0 and re.search(r"\b\d+ passed", output), summary(output)
-    # The suite really ran native code: every function has native calls.
+    # The suite really ran native code: every function has native calls, including integer/bool dtypes.
     assert set(counters) == set(FUNCTIONS), summary(output)
     for name, (native, _) in counters.items():
         assert native > 0, f"{name} never ran natively:\n{summary(output)}"
+    assert counters["correlate1d"][0] >= 1000, summary(output)
+    assert counters["convolve1d"][0] >= 800, summary(output)
+    assert counters["correlate"][0] >= 700, summary(output)
+    assert counters["convolve"][0] >= 650, summary(output)
+    assert counters["uniform_filter"][0] >= 150, summary(output)
+    assert counters["prewitt"][0] >= 50, summary(output)
+    assert counters["sobel"][0] >= 50, summary(output)
 
 
 # What float32 arithmetic cannot pass. test_filter_axes* compare two float64
@@ -68,20 +80,37 @@ def test_scipys_filter_tests_pass_on_the_native_routes_in_strict_mode(native_fil
 # times the square root of the float64 epsilon); the gaussian_laplace tests
 # compare sums of second-derivative filters of data up to 900 to 1.5e-6
 # absolute. Float32 is good for about 1e-7 of the data scale per operation.
+# Separately, forced-GPU multi-pass integer filters compute intermediates in
+# float32 and quantize once on output, whereas SciPy's composite references
+# quantize each intermediate derivative/correlation pass into uint32/uint64/int32.
 FLOAT32_ACCURACY = re.compile(r"test_filter_axes(_kwargs)?\[numpy-axes\d+-(gaussian|uniform)_filter\]"
                               r"|test_derivative_filter_axes\[numpy-gaussian_gradient_magnitude\]"
                               r"|test_gaussian_laplace0[12]\[numpy-float(32|64)\]")
+INT_INTERMEDIATE_QUANTIZATION = re.compile(
+    r"test_(prewitt|sobel)0[123]\[numpy-uint(32|64)\]"
+    r"|test_gaussian_(laplace|gradient_magnitude)0[12]\[numpy-int32\]"
+)
 
 
 def test_gpu_route_fails_only_scipy_tests_that_need_more_than_float32(native_filters):
+    import metal_sci._native as _native
+
+    if not _native.has_metal():
+        pytest.skip("no GPU engine in CPU-only build")
     code, output, counters = run_oracle(METAL_SCI_ORACLE_PRECISION="fast", METAL_SCI_ORACLE_DEVICE="gpu")
-    failed = re.findall(r"^FAILED \S+::(\S+)", output, re.M)
-    unexpected = [name for name in failed if not FLOAT32_ACCURACY.fullmatch(name)]
-    assert not unexpected, f"not float32 accuracy: {unexpected}\n{summary(output)}"
+    failed = re.findall(r"^FAILED \S*::(.+?)(?: - .*)?$", output, re.M)
+    unexpected = [name for name in failed if not (FLOAT32_ACCURACY.fullmatch(name) or INT_INTERMEDIATE_QUANTIZATION.fullmatch(name))]
+    assert not unexpected, f"not float32/int-intermediate accuracy: {unexpected}\n{summary(output)}"
     assert code in (0, 1), summary(output)  # 1: some tests failed; anything else is a broken run
     assert set(counters) == set(FUNCTIONS), summary(output)
-    # Failures are differences of rounding, never wrong values: every reported
-    # mismatch is below 1e-3 absolute on data of scale 100 to 1000. (A build
-    # without a GPU engine hands every forced-GPU call to SciPy and fails nothing.)
+    for name, (native, _) in counters.items():
+        assert native > 0, f"{name} never ran natively in GPU mode:\n{summary(output)}"
+    # Differences are either tiny rounding (below 1e-3 for FLOAT32_ACCURACY) or
+    # intermediate pass clamping/truncation (<= 20 for INT_INTERMEDIATE_QUANTIZATION).
     differences = [float(x) for x in re.findall(r"Max absolute difference among violations: (\S+)", output)]
-    assert len(differences) == len(failed) and all(d < 1e-3 for d in differences), summary(output)
+    assert len(differences) == len(failed), summary(output)
+    for name, d in zip(failed, differences):
+        if INT_INTERMEDIATE_QUANTIZATION.fullmatch(name):
+            assert d <= 20, f"{name}: unexpected int quantization diff {d}\n{summary(output)}"
+        else:
+            assert d < 1e-3, f"{name}: unexpected float32 accuracy diff {d}\n{summary(output)}"

@@ -19,6 +19,7 @@ struct FftConvPlan {
     bool swapped = false;
     bool correlate = false;
     bool use_oa = false;
+    uint32_t raw_axis_mask = 0;
     uint32_t axis_mask = 0;
     uint32_t axes[MS_MAX_NDIM] = {};
     uint32_t axis_count = 0;
@@ -42,12 +43,13 @@ FftConvPlan plan_fft_conv(const array::Shape& s1_in, const array::Shape& s2_in,
                           uint32_t out_dtype, uint32_t mode, bool correlate,
                           bool allow_oa, bool force_oa,
                           const uint32_t* axes_in, uint32_t axis_count_in,
-                          const fft::Limits& limits);
+                          const fft::Limits& limits,
+                          uint32_t center = MS_SIGNAL_CENTER_ND);
 
 #if defined(MS_ENABLE_METAL)
 BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1, const ms_array& in2,
                            const FftConvPlan& plan, const ms_route_options& route_options,
-                           uint32_t& out_compute_dtype, bool* out_has_nonfinite = nullptr);
+                           uint32_t& out_compute_dtype, uint32_t* out_nf_flags = nullptr);
 #endif
 
 } // namespace ms::detail::signal

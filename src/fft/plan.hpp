@@ -108,6 +108,9 @@ struct Plan {
     // float32 scalars each buffer slot holds per block of the request. Slot 0
     // is the input the host loads; a slot can be larger than its first use.
     std::vector<uint64_t> slots;
+    // Extra float32 tail scalars required past slots[0] * count for vendored
+    // kernels that read padded indices before checking bounds (Bluestein c2r).
+    uint64_t input_tail_scalars = 0;
     uint8_t result_slot = 1;
     bool input_real = false;    // slot 0 holds float rows, not float2
     bool result_real = false;   // the result slot holds float rows
@@ -118,6 +121,9 @@ struct Plan {
     // The fused Bluestein c2r kernel keeps imag(x[0]), which SciPy ignores:
     // the host clears it in its copy of the input.
     bool clear_dc_imag = false;
+    // Four-step and strided c2r plans do not clear imag(X[0]) or imag(X[n/2])
+    // inside the kernel: cleared on host for 1-D or on GPU after inner axes.
+    bool clear_hermitian_imag = false;
     // An inverse built on MLX kernels comes out divided by n. A plan whose last
     // step is ours applies any factor there instead (takes_scale).
     bool divides_by_n = false;

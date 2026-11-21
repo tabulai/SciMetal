@@ -17,6 +17,10 @@ import re
 import subprocess
 import sys
 
+import pytest
+
+from metal_sci import _native
+
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 NAMES = ["fft", "fft2", "fftn", "ifft", "ifft2", "ifftn", "irfft", "irfft2", "irfftn", "rfft", "rfft2", "rfftn"]
 
@@ -26,19 +30,23 @@ def run_oracle(**environment):
     env.pop("METAL_SCI_PRECISION", None)
     env.pop("METAL_SCI_DEVICE", None)
     env.update(environment)
-    paths = [str(ROOT / "python"), str(ROOT / "tests" / "oracle")]
+    paths = [str(ROOT / "tests" / "oracle")] if os.environ.get("METAL_SCI_TEST_INSTALLED") else [
+        str(ROOT / "python"), str(ROOT / "tests" / "oracle")
+    ]
     env["PYTHONPATH"] = os.pathsep.join(paths + [env["PYTHONPATH"]] if env.get("PYTHONPATH") else paths)
     completed = subprocess.run(
         [sys.executable, "-m", "pytest", "-p", "metal_sci_oracle", "--pyargs",
          "scipy.fft.tests.test_basic", "-q", "-rf", "-p", "no:cacheprovider"],
         capture_output=True, text=True, env=env, cwd=str(ROOT), timeout=1800)
     output = completed.stdout + completed.stderr
+    assert completed.returncode in (0, 1), output[-3000:]
     summary = re.search(r"^(?:(\d+) failed, )?(\d+) passed.*$", output, re.MULTILINE)
     assert summary, output[-3000:]
+    assert not re.search(r"\b\d+ error", summary.group(0)), output[-3000:]
     counters = {name: (int(native), int(fell)) for name, native, fell in
                 re.findall(r"^fft\.(\w+): (\d+) native, (\d+) fell through to SciPy$", output, re.MULTILINE)}
     assert set(counters) == set(NAMES), output[-3000:]
-    failed = sorted(set(re.findall(r"^FAILED \S+::(\S+?)(?: - .*)?$", output, re.MULTILINE)))
+    failed = sorted(set(re.findall(r"^FAILED \S*::(.+?)(?: - .*)?$", output, re.MULTILINE)))
     return int(summary.group(1) or 0), int(summary.group(2)), counters, failed, output
 
 
@@ -53,6 +61,8 @@ def test_scipy_suite_passes_under_the_default_strict_policy():
 
 
 def test_scipy_suite_with_the_gpu_forced_fails_only_on_double_precision_tolerances():
+    if not _native.has_metal():
+        pytest.skip("requires Metal GPU build")
     # With the GPU forced under the fast policy most calls run natively, in
     # single precision. SciPy's tests compare the results with double-precision
     # references at relative tolerances of 6e-8 to 1e-7 with no absolute term
@@ -65,7 +75,7 @@ def test_scipy_suite_with_the_gpu_forced_fails_only_on_double_precision_toleranc
                                                                METAL_SCI_ORACLE_PRECISION="fast")
     assert passed > 120 and failed_count < 40, output[-3000:]
     assert sum(native for native, _ in counters.values()) > 500, counters
-    blocks = re.findall(r"^_{5,} (\S+) _{5,}$\n(.*?)(?=^_{5,} \S+ _{5,}$|^=+ )", output, re.MULTILINE | re.DOTALL)
+    blocks = re.findall(r"^_{5,} (.+?) _{5,}$\n(.*?)(?=^_{5,} .+? _{5,}$|^=+ )", output, re.MULTILINE | re.DOTALL)
     assert len(blocks) == failed_count, (len(blocks), failed_count)
     for name, text in blocks:
         assert "AssertionError" in text and "Not equal to tolerance" in text, \

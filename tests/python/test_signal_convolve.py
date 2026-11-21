@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import pathlib
 import subprocess
 import sys
 import threading
@@ -255,9 +256,13 @@ def test_precision_warning_emitted_once_for_signal_gpu(gpu):
         "    msg = str(pw[0].message)\n"
         "    assert 'set_precision' in msg and 'strict' in msg\n"
     )
+    root = pathlib.Path(__file__).resolve().parents[2]
     env = dict(os.environ)
-    env["PYTHONPATH"] = "python"
-    proc = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True, text=True)
+    if not os.environ.get("METAL_SCI_TEST_INSTALLED"):
+        python_dir = str(root / "python")
+        existing_pp = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = os.pathsep.join([python_dir, existing_pp]) if existing_pp else python_dir
+    proc = subprocess.run([sys.executable, "-c", code], cwd=str(root), env=env, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stdout + proc.stderr
 
 
@@ -926,3 +931,56 @@ def test_convolve_correlate_direct_publish_inverse_fft_overflow_warning(gpu, sha
         assert metal_sci.last_route().engine == "gpu"
         assert not any(issubclass(w.category, RuntimeWarning) for w in rec)
     assert np.isfinite(got_fin).all()
+
+
+def test_review_regressions(gpu):
+    # 1. 0-D float64 ndarray fillvalue on float32 convolve2d raises ValueError like SciPy.
+    a32 = np.ones((64, 64), dtype=np.float32)
+    b32 = np.ones((5, 5), dtype=np.float32)
+    fv64 = np.array(1.5, dtype=np.float64)
+    with pytest.raises(ValueError):
+        ss.convolve2d(a32, b32, fillvalue=fv64)
+    prev_small = metal_sci._config.small_to_scipy()
+    metal_sci.set_small_inputs("native")
+    try:
+        with metal_sci.device("cpu"):
+            with pytest.raises(ValueError):
+                msig.convolve2d(a32, b32, fillvalue=fv64)
+            assert metal_sci.last_route().engine == "scipy"
+
+        # 2. RuntimeWarning from FFT convolve on NaN points at caller frame (this file).
+        xnf = np.ones(40000, dtype=np.float32)
+        xnf[100] = np.nan
+        knf = np.ones(100, dtype=np.float32)
+        with metal_sci.precision("fast"), metal_sci.device("gpu"):
+            with warnings.catch_warnings(record=True) as rec:
+                warnings.simplefilter("always")
+                msig.convolve(xnf, knf, mode="full", method="fft")
+        rw = [w for w in rec if issubclass(w.category, RuntimeWarning)]
+        assert rw and rw[0].filename == __file__
+
+        # 3. correlate with unit-length axis reversal on FFT path matches SciPy.
+        rng = np.random.default_rng(77)
+        u1 = rng.standard_normal((1, 200)).astype(np.float32)
+        u2 = rng.standard_normal((5, 200)).astype(np.float32)
+        with metal_sci.precision("fast"), metal_sci.device("gpu"):
+            for mode in ("full", "same", "valid"):
+                got = msig.correlate(u1, u2, mode=mode, method="fft")
+                ref = ss.correlate(u1, u2, mode=mode, method="fft")
+                np.testing.assert_allclose(got, ref, rtol=1e-4, atol=1e-4)
+
+        # 4. float64 spectral overflow (1e15*1e15 len 65536) and underflow (1e-25*1e-25) fall back cleanly.
+        with metal_sci.precision("fast"), metal_sci.device("gpu"):
+            big1 = np.full(65536, 1e15, dtype=np.float64)
+            big2 = np.full(65536, 1e15, dtype=np.float64)
+            got_big = msig.fftconvolve(big1, big2)
+            assert metal_sci.last_route().engine == "scipy"
+            assert np.isfinite(got_big).all() and got_big[65535] > 6e34
+
+            tiny1 = np.full(256, 1e-25, dtype=np.float64)
+            tiny2 = np.full(64, 1e-25, dtype=np.float64)
+            got_tiny = msig.fftconvolve(tiny1, tiny2)
+            assert metal_sci.last_route().engine == "scipy"
+            np.testing.assert_allclose(got_tiny, ss.fftconvolve(tiny1, tiny2))
+    finally:
+        metal_sci.set_small_inputs("scipy" if prev_small else "native")

@@ -121,6 +121,38 @@ void sweep_interior_real(AccumT* __restrict acc, const SrcT* const* ptrs, const 
     }
 }
 
+inline void compute_row_bases(const StencilSpec& spec, const TapTable& taps, const int64_t* in_strides,
+                              uint64_t row_idx, uint8_t* outer_ok, int64_t* row_bases, int64_t* inner_offsets) {
+    const uint32_t ndim = spec.out_shape.ndim;
+    int64_t p_outer[MS_MAX_NDIM] = {};
+    if (ndim > 1) {
+        uint64_t rem = row_idx;
+        for (int32_t d = static_cast<int32_t>(ndim) - 2; d >= 0; --d) {
+            const uint64_t extent = spec.out_shape.dims[d];
+            p_outer[d] = static_cast<int64_t>(rem % extent);
+            rem /= extent;
+        }
+    }
+    const size_t num_taps = taps.taps.size();
+    for (size_t k = 0; k < num_taps; ++k) {
+        const Tap& tap = taps.taps[k];
+        int64_t off = 0;
+        bool ok = true;
+        for (uint32_t d = 0; d + 1 < ndim; ++d) {
+            const int64_t q = extend(p_outer[d] + tap.coord[d],
+                                     static_cast<int64_t>(spec.in_shape.dims[d]), spec.mode[d]);
+            if (q < 0) {
+                ok = false;
+                break;
+            }
+            off += q * in_strides[d];
+        }
+        outer_ok[k] = ok ? 1 : 0;
+        row_bases[k] = off;
+        inner_offsets[k] = off + tap.coord[ndim - 1];
+    }
+}
+
 template<class SrcT, class DstT, class AccumT>
 void run_real_impl(const StencilSpec& spec, const TapTable& taps, const void* input_ptr, void* output_ptr) {
     const SrcT* src = static_cast<const SrcT*>(input_ptr);
@@ -188,34 +220,7 @@ void run_real_impl(const StencilSpec& spec, const TapTable& taps, const void* in
         const uint64_t chunk_idx = item % chunks;
         const int64_t c_begin = static_cast<int64_t>(chunk_idx * col_chunk);
         const int64_t c_end = static_cast<int64_t>(std::min<uint64_t>(inner_u64, static_cast<uint64_t>(c_begin) + col_chunk));
-
-        int64_t p_outer[MS_MAX_NDIM] = {};
-        if (ndim > 1) {
-            uint64_t rem = r;
-            for (int32_t d = static_cast<int32_t>(ndim) - 2; d >= 0; --d) {
-                const uint64_t extent = spec.out_shape.dims[d];
-                p_outer[d] = static_cast<int64_t>(rem % extent);
-                rem /= extent;
-            }
-        }
-
-        for (size_t k = 0; k < num_taps; ++k) {
-            const Tap& tap = taps.taps[k];
-            int64_t off = 0;
-            bool ok = true;
-            for (uint32_t d = 0; d + 1 < ndim; ++d) {
-                const int64_t q = extend(p_outer[d] + tap.coord[d],
-                                         static_cast<int64_t>(spec.in_shape.dims[d]), spec.mode[d]);
-                if (q < 0) {
-                    ok = false;
-                    break;
-                }
-                off += q * in_strides[d];
-            }
-            ws.outer_ok[k] = ok ? 1 : 0;
-            ws.row_bases[k] = off;
-            ws.inner_offsets[k] = off + tap.coord[ndim - 1];
-        }
+        compute_row_bases(spec, taps, in_strides, r, ws.outer_ok.data(), ws.row_bases.data(), ws.inner_offsets.data());
 
         DstT* __restrict dst_row = dst + r * inner_u64;
 
@@ -248,7 +253,7 @@ void run_real_impl(const StencilSpec& spec, const TapTable& taps, const void* in
         if (mid_begin < mid_end) {
             const size_t n = static_cast<size_t>(mid_end - mid_begin);
             for (size_t k = 0; k < num_taps; ++k) {
-                ws.ptrs[k] = ws.outer_ok[k] ? (src + ws.inner_offsets[k] + mid_begin) : nullptr;
+                ws.ptrs[k] = ws.outer_ok[k] ? (src + (ws.inner_offsets[k] + mid_begin)) : nullptr;
             }
             if constexpr (std::is_same_v<DstT, AccumT>) {
                 AccumT* __restrict acc_ptr = dst_row + mid_begin;
@@ -340,34 +345,7 @@ void run_complex_impl(const StencilSpec& spec, const TapTable& taps, const void*
         const uint64_t chunk_idx = item % chunks;
         const int64_t c_begin = static_cast<int64_t>(chunk_idx * col_chunk);
         const int64_t c_end = static_cast<int64_t>(std::min<uint64_t>(inner_u64, static_cast<uint64_t>(c_begin) + col_chunk));
-
-        int64_t p_outer[MS_MAX_NDIM] = {};
-        if (ndim > 1) {
-            uint64_t rem = r;
-            for (int32_t d = static_cast<int32_t>(ndim) - 2; d >= 0; --d) {
-                const uint64_t extent = spec.out_shape.dims[d];
-                p_outer[d] = static_cast<int64_t>(rem % extent);
-                rem /= extent;
-            }
-        }
-
-        for (size_t k = 0; k < num_taps; ++k) {
-            const Tap& tap = taps.taps[k];
-            int64_t off = 0;
-            bool ok = true;
-            for (uint32_t d = 0; d + 1 < ndim; ++d) {
-                const int64_t q = extend(p_outer[d] + tap.coord[d],
-                                         static_cast<int64_t>(spec.in_shape.dims[d]), spec.mode[d]);
-                if (q < 0) {
-                    ok = false;
-                    break;
-                }
-                off += q * in_strides[d];
-            }
-            ws.outer_ok[k] = ok ? 1 : 0;
-            ws.row_bases[k] = off;
-            ws.inner_offsets[k] = off + tap.coord[ndim - 1];
-        }
+        compute_row_bases(spec, taps, in_strides, r, ws.outer_ok.data(), ws.row_bases.data(), ws.inner_offsets.data());
 
         DstScalar* __restrict dst_row = dst + r * inner_u64 * 2;
         const int64_t left_end = std::min<int64_t>(c_end, x_lo);
@@ -446,6 +424,153 @@ void run_complex_impl(const StencilSpec& spec, const TapTable& taps, const void*
     });
 }
 
+void store_dense_row(uint32_t dst_dtype, const double* __restrict__ acc, void* dst, size_t n) {
+    auto run = [&](auto* out) {
+        using DstT = std::remove_pointer_t<decltype(out)>;
+        for (size_t c = 0; c < n; ++c) {
+            out[c] = array::cast_double_ndimage<DstT>(acc[c], /*dense_safe=*/true);
+        }
+    };
+    switch (dst_dtype) {
+    case MS_FLOAT64: run(static_cast<double*>(dst)); break;
+    case MS_FLOAT32: run(static_cast<float*>(dst)); break;
+    case MS_BOOL:
+    case MS_UINT8: run(static_cast<uint8_t*>(dst)); break;
+    case MS_UINT16: run(static_cast<uint16_t*>(dst)); break;
+    case MS_UINT32: run(static_cast<uint32_t*>(dst)); break;
+    case MS_UINT64: run(static_cast<uint64_t*>(dst)); break;
+    case MS_INT8: run(static_cast<int8_t*>(dst)); break;
+    case MS_INT16: run(static_cast<int16_t*>(dst)); break;
+    case MS_INT32: run(static_cast<int32_t*>(dst)); break;
+    case MS_INT64: run(static_cast<int64_t*>(dst)); break;
+    default: throw Error(MS_EINVAL, "unknown dense_correlate output dtype");
+    }
+}
+
+template<class SrcT>
+void run_real_int_src(const StencilSpec& spec, const TapTable& taps, const void* input_ptr, void* output_ptr) {
+    const SrcT* src = static_cast<const SrcT*>(input_ptr);
+    uint8_t* dst = static_cast<uint8_t*>(output_ptr);
+    const size_t dst_esize = static_cast<size_t>(array::dtype_size(spec.out_dtype));
+
+    const uint32_t ndim = spec.out_shape.ndim;
+    const uint64_t inner_u64 = spec.out_shape.dims[ndim - 1];
+    const int64_t in_inner = static_cast<int64_t>(spec.in_shape.dims[ndim - 1]);
+    const uint64_t outer_rows = spec.out_shape.elements / inner_u64;
+    const size_t num_taps = taps.taps.size();
+
+    int64_t in_strides[MS_MAX_NDIM] = {};
+    if (ndim > 0) {
+        in_strides[ndim - 1] = 1;
+        for (int32_t d = static_cast<int32_t>(ndim) - 2; d >= 0; --d) {
+            in_strides[d] = in_strides[d + 1] * static_cast<int64_t>(spec.in_shape.dims[d + 1]);
+        }
+    }
+
+    std::vector<double> weights(num_taps);
+    for (size_t k = 0; k < num_taps; ++k) weights[k] = taps.taps[k].weight_re_f64;
+    const double cval = spec.cval_real;
+    const int64_t x_lo = taps.interior_lo[ndim - 1];
+    const int64_t x_hi = taps.interior_hi[ndim - 1];
+    const uint32_t inner_mode = spec.mode[ndim - 1];
+
+    const unsigned lanes = lanes_for(spec.out_shape.elements, num_taps);
+    uint64_t col_chunk = max_col_chunk;
+    if (lanes > 1 && outer_rows < uint64_t{4} * lanes) {
+        const uint64_t target_chunks = (uint64_t{4} * lanes + outer_rows - 1) / outer_rows;
+        col_chunk = std::clamp<uint64_t>(inner_u64 / target_chunks, min_col_chunk, max_col_chunk);
+    }
+    const uint64_t chunks = (inner_u64 + col_chunk - 1) / col_chunk;
+    const uint64_t total_items = outer_rows * chunks;
+    const uint64_t grain =
+        outer_rows >= uint64_t{4} * lanes ? std::max<uint64_t>(1, 16384 / std::max<uint64_t>(inner_u64, 1)) : 1;
+
+    struct Workspace {
+        std::vector<int64_t> row_bases;
+        std::vector<int64_t> inner_offsets;
+        std::vector<uint8_t> outer_ok;
+        std::vector<const SrcT*> ptrs;
+        std::vector<double> acc;
+    };
+    const auto make = [&] {
+        Workspace ws;
+        ws.row_bases.resize(num_taps);
+        ws.inner_offsets.resize(num_taps);
+        ws.outer_ok.resize(num_taps);
+        ws.ptrs.resize(num_taps);
+        ws.acc.resize(static_cast<size_t>(std::min<uint64_t>(col_chunk, inner_u64)));
+        return ws;
+    };
+
+    for_each_item(total_items, grain, lanes, make, [&](uint64_t item, Workspace& ws) {
+        const uint64_t r = item / chunks;
+        const uint64_t chunk_idx = item % chunks;
+        const int64_t c_begin = static_cast<int64_t>(chunk_idx * col_chunk);
+        const int64_t c_end =
+            static_cast<int64_t>(std::min<uint64_t>(inner_u64, static_cast<uint64_t>(c_begin) + col_chunk));
+        compute_row_bases(spec, taps, in_strides, r, ws.outer_ok.data(), ws.row_bases.data(), ws.inner_offsets.data());
+
+        uint8_t* dst_row = dst + r * inner_u64 * dst_esize;
+        const int64_t left_end = std::min<int64_t>(c_end, x_lo);
+        const int64_t mid_begin = std::max<int64_t>(c_begin, x_lo);
+        const int64_t mid_end = std::max<int64_t>(mid_begin, std::min<int64_t>(c_end, x_hi));
+        const int64_t right_begin = std::max<int64_t>(c_begin, mid_end);
+
+        auto eval_boundary = [&](int64_t begin, int64_t end) {
+            if (begin >= end) return;
+            const size_t n = static_cast<size_t>(end - begin);
+            double* __restrict__ acc_ptr = ws.acc.data();
+            for (int64_t c = begin; c < end; ++c) {
+                double acc = 0.0;
+                for (size_t k = 0; k < num_taps; ++k) {
+                    if (!ws.outer_ok[k]) {
+                        if (!spec.omit_oob) acc = fma_step(cval, weights[k], acc);
+                        continue;
+                    }
+                    const int64_t q = extend(c + taps.taps[k].coord[ndim - 1], in_inner, inner_mode);
+                    if (q < 0) {
+                        if (!spec.omit_oob) acc = fma_step(cval, weights[k], acc);
+                    } else {
+                        acc = fma_step(static_cast<double>(src[ws.row_bases[k] + q]), weights[k], acc);
+                    }
+                }
+                acc_ptr[static_cast<size_t>(c - begin)] = acc;
+            }
+            store_dense_row(spec.out_dtype, acc_ptr, dst_row + static_cast<size_t>(begin) * dst_esize, n);
+        };
+
+        eval_boundary(c_begin, left_end);
+        if (mid_begin < mid_end) {
+            const size_t n = static_cast<size_t>(mid_end - mid_begin);
+            for (size_t k = 0; k < num_taps; ++k) {
+                ws.ptrs[k] = ws.outer_ok[k] ? (src + (ws.inner_offsets[k] + mid_begin)) : nullptr;
+            }
+            double* __restrict__ acc_ptr = ws.acc.data();
+            std::fill_n(acc_ptr, n, 0.0);
+            sweep_interior_real(acc_ptr, ws.ptrs.data(), weights.data(), num_taps, n, cval, spec.omit_oob);
+            store_dense_row(spec.out_dtype, acc_ptr, dst_row + static_cast<size_t>(mid_begin) * dst_esize, n);
+        }
+        eval_boundary(right_begin, c_end);
+    });
+}
+
+void run_real_generic_int(const StencilSpec& spec, const TapTable& taps, const void* input_ptr, void* output_ptr) {
+    switch (spec.in_dtype) {
+    case MS_FLOAT64: run_real_int_src<double>(spec, taps, input_ptr, output_ptr); break;
+    case MS_FLOAT32: run_real_int_src<float>(spec, taps, input_ptr, output_ptr); break;
+    case MS_BOOL:
+    case MS_UINT8: run_real_int_src<uint8_t>(spec, taps, input_ptr, output_ptr); break;
+    case MS_UINT16: run_real_int_src<uint16_t>(spec, taps, input_ptr, output_ptr); break;
+    case MS_UINT32: run_real_int_src<uint32_t>(spec, taps, input_ptr, output_ptr); break;
+    case MS_UINT64: run_real_int_src<uint64_t>(spec, taps, input_ptr, output_ptr); break;
+    case MS_INT8: run_real_int_src<int8_t>(spec, taps, input_ptr, output_ptr); break;
+    case MS_INT16: run_real_int_src<int16_t>(spec, taps, input_ptr, output_ptr); break;
+    case MS_INT32: run_real_int_src<int32_t>(spec, taps, input_ptr, output_ptr); break;
+    case MS_INT64: run_real_int_src<int64_t>(spec, taps, input_ptr, output_ptr); break;
+    default: throw Error(MS_EINVAL, "unknown dense_correlate input dtype");
+    }
+}
+
 } // namespace
 
 TapTable build_taps(const StencilSpec& spec) {
@@ -454,6 +579,8 @@ TapTable build_taps(const StencilSpec& spec) {
         throw Error(MS_EINVAL, "dense_correlate: invalid rank");
     if (!spec.weights) throw Error(MS_EINVAL, "dense_correlate: null weights");
     (void)array::dtype_size(spec.weights_dtype);
+    if (!array::is_float(spec.weights_dtype) && !array::is_complex(spec.weights_dtype))
+        throw Error(MS_EINVAL, "dense_correlate: weights dtype must be floating-point or complex");
 
     uint64_t w_total = 1;
     for (uint32_t d = 0; d < ndim; ++d) {
@@ -561,7 +688,9 @@ TapTable build_taps(const StencilSpec& spec) {
 }
 
 BufferPtr run_cpu(ms_context* ctx, const StencilSpec& spec, const TapTable& taps, const void* input) {
-    const uint64_t out_bytes = spec.out_shape.elements * array::dtype_size(spec.out_dtype);
+    uint64_t out_bytes = 0;
+    if (ms_checked_mul(spec.out_shape.elements, array::dtype_size(spec.out_dtype), &out_bytes) != MS_OK)
+        throw Error(MS_EOVERFLOW, "dense_correlate: output byte size overflows");
     BufferPtr result = array::allocate(ctx, out_bytes);
     if (spec.out_shape.elements == 0) return result;
     void* out_ptr = mutable_data(result.get());
@@ -580,6 +709,10 @@ BufferPtr run_cpu(ms_context* ctx, const StencilSpec& spec, const TapTable& taps
     const bool in_c = array::is_complex(spec.in_dtype);
     const bool out_c = array::is_complex(spec.out_dtype);
     if (!in_c && !out_c && !taps.is_complex_weights) {
+        if (array::is_int_or_bool(spec.in_dtype) || array::is_int_or_bool(spec.out_dtype)) {
+            run_real_generic_int(spec, taps, input, out_ptr);
+            return result;
+        }
         const bool use_f32_accum =
             spec.cpu_accum == AccumMode::InputDtype && spec.in_dtype == MS_FLOAT32 && spec.out_dtype == MS_FLOAT32;
         if (use_f32_accum) {
@@ -614,6 +747,8 @@ BufferPtr run_cpu(ms_context* ctx, const StencilSpec& spec, const TapTable& taps
             run_complex_impl<true, double, double, double>(spec, taps, input, out_ptr);
         }
     } else {
+        if (!array::is_float(spec.in_dtype))
+            throw Error(MS_EINVAL, "dense_correlate: real input for complex output must be floating-point");
         if (use_f32_accum) {
             run_complex_impl<false, float, float, float>(spec, taps, input, out_ptr);
         } else if (!in_d && !out_d) {

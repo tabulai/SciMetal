@@ -570,6 +570,30 @@ void test_abi_without_gpu() {
     options.kind = MS_FFT_R2C;
     CHECK(ms_fft_transform(context, &array, &options, &route, &result, &info) == MS_EINVAL);
     CHECK(ms_fft_auto_min_points() > 1024);
+
+    // Review regressions: C2R 2*(have-1) overflow check, prime_factors(INT32_MAX),
+    // ReadWriter width=1 mitigation, Bluestein C2R input_tail_scalars, clear_hermitian_imag.
+    {
+        const uint64_t overflow_shape[2] = {2, (uint64_t{1} << 63) + 1};
+        options.kind = MS_FFT_C2R;
+        options.axes[0] = 1;
+        ms_fft_plan_info plan_info{};
+        plan_info.struct_size = sizeof(plan_info);
+        plan_info.abi_version = MS_FFT_ABI_VERSION;
+        CHECK(ms_fft_plan(context, MS_COMPLEX64, 2, overflow_shape, &options, &route, 0, &plan_info) == MS_EOVERFLOW);
+    }
+    CHECK((mlx::prime_factors(INT32_MAX) == std::vector<int32_t>{INT32_MAX}));
+    for (uint64_t n : {uint64_t{17}, uint64_t{19}, uint64_t{22}, uint64_t{23}, uint64_t{26}, uint64_t{33}}) {
+        const auto p = must_plan(request(Transform::c2c, n));
+        CHECK(p->steps[0].width == 1);
+    }
+    for (uint64_t n : {uint64_t{47}, uint64_t{1021}, uint64_t{1973}}) {
+        const auto p = must_plan(request(Transform::c2r, n));
+        CHECK(p->steps[0].kind == Kernel::bluestein && p->input_tail_scalars > 0);
+    }
+    CHECK(must_plan(request(Transform::c2r, 8192))->clear_hermitian_imag);
+    CHECK(must_plan(request(Transform::c2r, 6000))->clear_hermitian_imag);
+
     ms_context_release(context);
 }
 } // namespace

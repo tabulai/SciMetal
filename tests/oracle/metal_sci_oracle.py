@@ -44,6 +44,15 @@ def pytest_configure(config):
     config._metal_sci_patched = patched
 
 
+def pytest_runtest_setup(item):
+    # Some SciPy test suites (e.g. scipy.fft.tests.test_basic) draw unseeded
+    # arrays from NumPy's legacy global RNG; pin it per test so oracle runs
+    # are deterministic.
+    import numpy as np
+
+    np.random.seed(0)
+
+
 def pytest_report_header(config):
     import metal_sci
 

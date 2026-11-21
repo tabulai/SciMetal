@@ -36,6 +36,8 @@ REAL = {np.complex64: np.float32, np.complex128: np.float64}
 
 @pytest.fixture
 def gpu():
+    if not _native.has_metal():
+        pytest.skip("requires Metal GPU build")
     with metal_sci.device("gpu"), metal_sci.precision("fast"):
         yield
 
@@ -374,6 +376,8 @@ def _accepts(function, *args):
 
 
 def test_precision_policies():
+    if not _native.has_metal():
+        pytest.skip("requires Metal GPU build")
     x = random((64, 4096), np.complex128)
     single = x.astype(np.complex64)
     with metal_sci.device("gpu"):
@@ -393,6 +397,8 @@ def test_precision_policies():
 
 
 def test_device_policies_and_the_crossover():
+    if not _native.has_metal():
+        pytest.skip("requires Metal GPU build")
     floor = _native_fft.auto_min_points()
     assert 1 << 12 < floor < 1 << 19
     x = random((1024, 4096), np.complex64)
@@ -437,7 +443,10 @@ def test_small_inputs_go_to_scipy_by_default():
             assert "elements" in declined("fftn", small).reason
         finally:
             metal_sci.set_small_inputs("native")
-        assert "crossover" in declined("fft", small).reason
+        if _native.has_metal():
+            assert "crossover" in declined("fft", small).reason
+        else:
+            assert declined("fft", small).engine == "scipy"
 
 
 def test_declined_batches_use_scipys_worker_threads():
@@ -605,6 +614,8 @@ def test_prepare_supported_kinds_and_dtypes(gpu):
 
 
 def test_prepare_policies_and_declines_return_false():
+    if not _native.has_metal():
+        pytest.skip("requires Metal GPU build")
     with metal_sci.device("cpu"), metal_sci.precision("fast"):
         assert mfft.prepare((1024, 4096), np.complex64) is False
 
@@ -676,11 +687,14 @@ def test_prepare_invalid_arguments_raise_value_error(gpu):
 
 
 def test_prepare_warms_pipeline_for_first_call():
+    if not _native.has_metal():
+        pytest.skip("requires Metal GPU build")
     repo_root = pathlib.Path(__file__).resolve().parents[2]
     env = os.environ.copy()
-    existing_pp = env.get("PYTHONPATH")
-    python_dir = str(repo_root / "python")
-    env["PYTHONPATH"] = f"{python_dir}:{existing_pp}" if existing_pp else python_dir
+    if not os.environ.get("METAL_SCI_TEST_INSTALLED"):
+        existing_pp = env.get("PYTHONPATH")
+        python_dir = str(repo_root / "python")
+        env["PYTHONPATH"] = os.pathsep.join([python_dir, existing_pp]) if existing_pp else python_dir
 
     common = (
         "import time, numpy as np, scipy.fft, metal_sci, metal_sci.fft as mfft\n"
@@ -714,6 +728,48 @@ def test_prepare_warms_pipeline_for_first_call():
 def test_prepare_exports_and_backend():
     assert "prepare" in mfft.__all__
     assert "prepare" in dir(mfft)
+
+
+def test_review_regressions():
+    from metal_sci._dispatch import counters
+
+    # 1. Declined direct mfft.fft() under register() does not re-enter uarray or double-count.
+    was_reg = mfft.registered()
+    mfft.register()
+    try:
+        x_big = np.ones((4, 1 << 15), dtype=np.complex128)
+        with metal_sci.device("cpu"), metal_sci.precision("fast"):
+            before_fall = counters["fft.fft"][1]
+            out = mfft.fft(x_big)
+            after_fall = counters["fft.fft"][1]
+            route = metal_sci.last_route()
+        assert after_fall == before_fall + 1
+        assert route.engine == "scipy"
+        if _native.performance_cores() > 1:
+            assert "SciPy with workers=" in route.reason
+        np.testing.assert_allclose(out, scipy.fft.fft(x_big))
+    finally:
+        if not was_reg:
+            mfft.unregister()
+
+    # 2. overwrite_x=True on read-only complex array matches SciPy's ValueError.
+    ro = np.ones(64, dtype=np.complex64)
+    ro.setflags(write=False)
+    prev_small = metal_sci._config.small_to_scipy()
+    metal_sci.set_small_inputs("native")
+    try:
+        with metal_sci.device("gpu"):
+            with pytest.raises(ValueError, match="writeable|read-only"):
+                mfft.fft(ro, overwrite_x=True)
+    finally:
+        metal_sci.set_small_inputs("scipy" if prev_small else "native")
+
+    # 3. Large workers value doesn't truncate to 0 in uint32 options().
+    opts = _native_fft.options(_native_fft.FORWARD, 0, [0], 0, 1 << 32)
+    assert opts.host_threads == (1 << 32) - 1
+
+    # 4. Huge shape >= 2^64 returns False from prepare() without uint64 truncation.
+    assert mfft.prepare((1 << 65,), np.complex64) is False
     assert "prepare" not in metal_sci.accelerated()["fft"]
     assert not mfft.registered()
     mfft.register()

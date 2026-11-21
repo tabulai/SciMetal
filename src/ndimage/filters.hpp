@@ -86,7 +86,7 @@ BufferPtr run_cpu_composite(ms_context*, const CompositePlan&, const void* input
 bool gpu_supports(const Plan&) noexcept;
 bool gpu_supports_composite(const CompositePlan&) noexcept;
 BufferPtr run_gpu(ms_context*, const Plan&, const ms_array& input, bool allow_cpu_fallback,
-                  std::string& overflow_reason);
+                  std::string& overflow_reason, bool dense_safe = false);
 BufferPtr run_gpu_composite(ms_context*, const CompositePlan&, const ms_array& input, bool allow_cpu_fallback,
                             std::string& overflow_reason);
 } // namespace ms::detail::ndimage

@@ -830,6 +830,423 @@ void test_cross_float_out_dtype() {
     }
 }
 
+void test_dense_and_composite_int_bool() {
+    namespace array = ms::detail::array;
+
+    auto dtype_bytes = [](uint32_t dt) -> size_t {
+        switch (dt) {
+        case MS_BOOL: case MS_INT8: case MS_UINT8: return 1;
+        case MS_INT16: case MS_UINT16: return 2;
+        case MS_FLOAT32: case MS_INT32: case MS_UINT32: return 4;
+        default: return 8;
+        }
+    };
+    auto read_raw_f64 = [](const void* src, uint32_t dt, size_t idx) -> double {
+        switch (dt) {
+        case MS_BOOL:
+        case MS_UINT8: return static_cast<double>(static_cast<const uint8_t*>(src)[idx]);
+        case MS_UINT16: return static_cast<double>(static_cast<const uint16_t*>(src)[idx]);
+        case MS_UINT32: return static_cast<double>(static_cast<const uint32_t*>(src)[idx]);
+        case MS_UINT64: return static_cast<double>(static_cast<const uint64_t*>(src)[idx]);
+        case MS_INT8: return static_cast<double>(static_cast<const int8_t*>(src)[idx]);
+        case MS_INT16: return static_cast<double>(static_cast<const int16_t*>(src)[idx]);
+        case MS_INT32: return static_cast<double>(static_cast<const int32_t*>(src)[idx]);
+        case MS_INT64: return static_cast<double>(static_cast<const int64_t*>(src)[idx]);
+        case MS_FLOAT32: return static_cast<double>(static_cast<const float*>(src)[idx]);
+        default: return static_cast<const double*>(src)[idx];
+        }
+    };
+    auto store_ndimage = [](double x, uint32_t dt, bool dense_safe, void* dst, size_t idx) {
+        switch (dt) {
+        case MS_BOOL: static_cast<uint8_t*>(dst)[idx] = array::cast_double_ndimage<uint8_t>(x, dense_safe); break;
+        case MS_UINT8: static_cast<uint8_t*>(dst)[idx] = array::cast_double_ndimage<uint8_t>(x, dense_safe); break;
+        case MS_UINT16: static_cast<uint16_t*>(dst)[idx] = array::cast_double_ndimage<uint16_t>(x, dense_safe); break;
+        case MS_UINT32: static_cast<uint32_t*>(dst)[idx] = array::cast_double_ndimage<uint32_t>(x, dense_safe); break;
+        case MS_UINT64: static_cast<uint64_t*>(dst)[idx] = array::cast_double_ndimage<uint64_t>(x, dense_safe); break;
+        case MS_INT8: static_cast<int8_t*>(dst)[idx] = array::cast_double_ndimage<int8_t>(x, dense_safe); break;
+        case MS_INT16: static_cast<int16_t*>(dst)[idx] = array::cast_double_ndimage<int16_t>(x, dense_safe); break;
+        case MS_INT32: static_cast<int32_t*>(dst)[idx] = array::cast_double_ndimage<int32_t>(x, dense_safe); break;
+        case MS_INT64: static_cast<int64_t*>(dst)[idx] = array::cast_double_ndimage<int64_t>(x, dense_safe); break;
+        case MS_FLOAT32: static_cast<float*>(dst)[idx] = static_cast<float>(x); break;
+        case MS_FLOAT64: static_cast<double*>(dst)[idx] = x; break;
+        }
+    };
+
+    const uint32_t int_bool_dtypes[] = {MS_BOOL,   MS_INT8,   MS_INT16, MS_INT32, MS_INT64,
+                                        MS_UINT8,  MS_UINT16, MS_UINT32, MS_UINT64};
+    const std::vector<uint64_t> shape = {11, 13};
+    const size_t n = product(shape);
+
+    // 1. Dense filter across all 9 int/bool dtypes including negative outputs (CASE_FILTER_OUT_SAFE).
+    const std::vector<double> w_dense = {-1.0, 0.5, 0.0, 0.25, 2.0, -0.5, 0.0, -1.0, 0.5};
+    for (uint32_t dt : int_bool_dtypes) {
+        std::vector<uint8_t> raw_in(n * dtype_bytes(dt), 0);
+        std::vector<double> f64_in(n);
+        for (size_t i = 0; i < n; ++i) {
+            if (dt == MS_BOOL) {
+                raw_in[i] = static_cast<uint8_t>(i % 3);
+                f64_in[i] = static_cast<double>(raw_in[i]);
+            } else {
+                const double v = (dt >= MS_INT8 && dt <= MS_INT64) ? static_cast<double>(static_cast<int>(i % 21) - 10)
+                                                                    : static_cast<double>(i % 21);
+                store_ndimage(v, dt, false, raw_in.data(), i);
+                f64_in[i] = read_raw_f64(raw_in.data(), dt, i);
+            }
+        }
+        const auto ref_f64 = ref_dense_real(f64_in, shape, shape, {3, 3}, {-1, -1}, w_dense,
+                                            {MS_NDIMAGE_REFLECT, MS_NDIMAGE_REFLECT}, 0.0, true);
+        std::vector<uint8_t> expected(n * dtype_bytes(dt), 0);
+        for (size_t i = 0; i < n; ++i) store_ndimage(ref_f64[i], dt, true, expected.data(), i);
+
+        const ms_array in_arr = describe(shape, dt, raw_in.data());
+        ms_ndimage_dense_options dopts{};
+        dopts.struct_size = sizeof(dopts);
+        dopts.abi_version = MS_NDIMAGE_ABI_VERSION;
+        dopts.mode = MS_NDIMAGE_REFLECT;
+        dopts.wshape[0] = 3;
+        dopts.wshape[1] = 3;
+        dopts.weights = w_dense.data();
+
+        const auto cpu_opts = route_opts(MS_EXECUTION_CPU, MS_PRECISION_STRICT);
+        ms_array_result res{};
+        ms_route_info info = new_info();
+        CHECK(ms_ndimage_dense_filter(ctx, &in_arr, &dopts, &cpu_opts, &res, &info) == MS_OK);
+        CHECK(res.dtype == dt && info.engine == MS_EXECUTION_CPU && info.compute_dtype == MS_FLOAT64);
+        const void* ptr = nullptr;
+        uint64_t bytes = 0;
+        CHECK(ms_buffer_data(res.buffer, &ptr, &bytes) == MS_OK);
+        CHECK(bytes == expected.size());
+        CHECK(std::memcmp(ptr, expected.data(), expected.size()) == 0);
+        ms_buffer_release(res.buffer);
+    }
+
+    // Explicit CASE_FILTER_OUT_SAFE check: -2.0 -> uint32 gives 0xFFFFFFFE (wrapping), unlike separable's 0.
+    {
+        const uint32_t in_u32[4] = {0, 2, 0, 0};
+        const double w_neg[1] = {-1.0};
+        const ms_array a = describe({4}, MS_UINT32, in_u32);
+        ms_ndimage_dense_options dopts{};
+        dopts.struct_size = sizeof(dopts);
+        dopts.abi_version = MS_NDIMAGE_ABI_VERSION;
+        dopts.mode = MS_NDIMAGE_CONSTANT;
+        dopts.wshape[0] = 1;
+        dopts.weights = w_neg;
+        const auto cpu_opts = route_opts(MS_EXECUTION_CPU, MS_PRECISION_STRICT);
+        ms_array_result res{};
+        CHECK(ms_ndimage_dense_filter(ctx, &a, &dopts, &cpu_opts, &res, nullptr) == MS_OK);
+        const void* ptr = nullptr;
+        uint64_t bytes = 0;
+        CHECK(ms_buffer_data(res.buffer, &ptr, &bytes) == MS_OK);
+        CHECK(static_cast<const uint32_t*>(ptr)[1] == static_cast<uint32_t>(-2));
+        ms_buffer_release(res.buffer);
+    }
+
+    // 2. Composite filter across all 9 int/bool dtypes: wrapping add/square, sqrt, bool OR/!=0.
+    const std::vector<double> w0 = {1.0, -2.0, 1.0};
+    const std::vector<double> w1 = {0.5, 1.0, 0.5};
+    ms_ndimage_pass p0{}, p1{};
+    p0.struct_size = p1.struct_size = sizeof(p0);
+    p0.abi_version = p1.abi_version = MS_NDIMAGE_ABI_VERSION;
+    p0.kind = p1.kind = MS_NDIMAGE_CORRELATE;
+    p0.size = p1.size = 3;
+    p0.mode = p1.mode = MS_NDIMAGE_REFLECT;
+    p0.axis = 0;
+    p1.axis = 1;
+    p0.weights = w0.data();
+    p1.weights = w1.data();
+
+    ms_ndimage_chain chains[2]{};
+    chains[0].struct_size = chains[1].struct_size = sizeof(ms_ndimage_chain);
+    chains[0].abi_version = chains[1].abi_version = MS_NDIMAGE_ABI_VERSION;
+    chains[0].pass_count = chains[1].pass_count = 1;
+    chains[0].passes = &p0;
+    chains[1].passes = &p1;
+
+    for (uint32_t dt : int_bool_dtypes) {
+        std::vector<uint8_t> raw_in(n * dtype_bytes(dt), 0);
+        for (size_t i = 0; i < n; ++i) {
+            const double v = (dt == MS_BOOL) ? static_cast<double>(i % 3)
+                                             : static_cast<double>((i * 17) % 150);
+            store_ndimage(v, dt, false, raw_in.data(), i);
+        }
+        const ms_array in_arr = describe(shape, dt, raw_in.data());
+        const auto cpu_opts = route_opts(MS_EXECUTION_CPU, MS_PRECISION_STRICT);
+
+        auto run_sep_raw = [&](const ms_ndimage_pass* pass) {
+            ms_array_result r{};
+            CHECK(ms_ndimage_separable_filter(ctx, &in_arr, pass, 1, &cpu_opts, &r, nullptr) == MS_OK);
+            const void* ptr = nullptr;
+            uint64_t bytes = 0;
+            CHECK(ms_buffer_data(r.buffer, &ptr, &bytes) == MS_OK);
+            std::vector<uint8_t> out(static_cast<const uint8_t*>(ptr), static_cast<const uint8_t*>(ptr) + bytes);
+            ms_buffer_release(r.buffer);
+            return out;
+        };
+        const auto r0 = run_sep_raw(&p0);
+        const auto r1 = run_sep_raw(&p1);
+
+        for (uint32_t op : {MS_NDIMAGE_COMBINE_SUM, MS_NDIMAGE_COMBINE_SQRT_SUM_SQ}) {
+            ms_array_result cres{};
+            CHECK(ms_ndimage_composite_filter(ctx, &in_arr, chains, 2, op, 0, &cpu_opts, &cres, nullptr) == MS_OK);
+            const void* ptr = nullptr;
+            uint64_t bytes = 0;
+            CHECK(ms_buffer_data(cres.buffer, &ptr, &bytes) == MS_OK);
+            CHECK(bytes == n * dtype_bytes(dt));
+
+            for (size_t i = 0; i < n; ++i) {
+                if (dt == MS_BOOL) {
+                    const uint8_t expected_b = (r0[i] != 0 || r1[i] != 0) ? 1 : 0;
+                    CHECK(static_cast<const uint8_t*>(ptr)[i] == expected_b);
+                } else if (dt == MS_UINT8) {
+                    const uint8_t a = r0[i], b = r1[i];
+                    const uint8_t exp = (op == MS_NDIMAGE_COMBINE_SUM)
+                                            ? static_cast<uint8_t>(a + b)
+                                            : static_cast<uint8_t>(std::sqrt(static_cast<double>(
+                                                  static_cast<uint8_t>(a * a + b * b))));
+                    CHECK(static_cast<const uint8_t*>(ptr)[i] == exp);
+                } else if (dt == MS_INT8) {
+                    const int8_t a = reinterpret_cast<const int8_t*>(r0.data())[i];
+                    const int8_t b = reinterpret_cast<const int8_t*>(r1.data())[i];
+                    if (op == MS_NDIMAGE_COMBINE_SUM) {
+                        CHECK(static_cast<const int8_t*>(ptr)[i] ==
+                              static_cast<int8_t>(static_cast<uint8_t>(a) + static_cast<uint8_t>(b)));
+                    } else {
+                        const int8_t sq = static_cast<int8_t>(static_cast<uint8_t>(a) * static_cast<uint8_t>(a) +
+                                                              static_cast<uint8_t>(b) * static_cast<uint8_t>(b));
+                        const int8_t exp = sq < 0 ? 0 : static_cast<int8_t>(std::sqrt(static_cast<double>(sq)));
+                        CHECK(static_cast<const int8_t*>(ptr)[i] == exp);
+                    }
+                }
+            }
+            ms_buffer_release(cres.buffer);
+        }
+    }
+
+    // 3. GPU uint8/int16 dense & composite + |x| >= 2^24 guard rail.
+    if (have_gpu) {
+        std::vector<uint8_t> u8_in(n);
+        for (size_t i = 0; i < n; ++i) u8_in[i] = static_cast<uint8_t>((i * 5) % 100);
+        const ms_array a_u8 = describe(shape, MS_UINT8, u8_in.data());
+
+        const std::vector<double> w_exact = {0.25, 0.5, 0.25, 0.0, 0.0, 0.0, 0.0, 0.5, -0.25};
+        ms_ndimage_dense_options dopts{};
+        dopts.struct_size = sizeof(dopts);
+        dopts.abi_version = MS_NDIMAGE_ABI_VERSION;
+        dopts.mode = MS_NDIMAGE_REFLECT;
+        dopts.wshape[0] = 3;
+        dopts.wshape[1] = 3;
+        dopts.weights = w_exact.data();
+
+        const auto cpu_opts = route_opts(MS_EXECUTION_CPU, MS_PRECISION_STRICT);
+        const auto gpu_opts = route_opts(MS_EXECUTION_GPU, MS_PRECISION_FAST);
+        const ms_execution_info b0 = counters();
+        ms_array_result cres{}, gres{};
+        ms_route_info ginfo = new_info();
+        CHECK(ms_ndimage_dense_filter(ctx, &a_u8, &dopts, &cpu_opts, &cres, nullptr) == MS_OK);
+        CHECK(ms_ndimage_dense_filter(ctx, &a_u8, &dopts, &gpu_opts, &gres, &ginfo) == MS_OK);
+        const ms_execution_info a0 = counters();
+        CHECK(ginfo.engine == MS_EXECUTION_GPU && ginfo.compute_dtype == MS_FLOAT32);
+        CHECK(a0.gpu_operations == b0.gpu_operations + 1 && a0.gpu_command_buffers == b0.gpu_command_buffers + 1);
+        const void *cp = nullptr, *gp = nullptr;
+        uint64_t cb = 0, gb = 0;
+        CHECK(ms_buffer_data(cres.buffer, &cp, &cb) == MS_OK);
+        CHECK(ms_buffer_data(gres.buffer, &gp, &gb) == MS_OK);
+        CHECK(cb == n && gb == n && std::memcmp(cp, gp, n) == 0);
+        ms_buffer_release(cres.buffer);
+        ms_buffer_release(gres.buffer);
+
+        const ms_execution_info b1 = counters();
+        ms_array_result gcres{};
+        ms_route_info gcinfo = new_info();
+        CHECK(ms_ndimage_composite_filter(ctx, &a_u8, chains, 2, MS_NDIMAGE_COMBINE_SQRT_SUM_SQ, 0, &gpu_opts, &gcres,
+                                          &gcinfo) == MS_OK);
+        const ms_execution_info a1 = counters();
+        CHECK(gcinfo.engine == MS_EXECUTION_GPU && gcinfo.compute_dtype == MS_FLOAT32);
+        CHECK(a1.gpu_operations == b1.gpu_operations + 1 && a1.gpu_command_buffers == b1.gpu_command_buffers + 1);
+        ms_buffer_release(gcres.buffer);
+
+        const std::vector<uint64_t> large = {2896, 2896};
+        std::vector<double> w5(25, 0.1);
+        w5[0] = -0.2;
+        ms_ndimage_dense_options dopts_large{};
+        dopts_large.struct_size = sizeof(dopts_large);
+        dopts_large.abi_version = MS_NDIMAGE_ABI_VERSION;
+        dopts_large.mode = MS_NDIMAGE_REFLECT;
+        dopts_large.wshape[0] = 5;
+        dopts_large.wshape[1] = 5;
+        dopts_large.weights = w5.data();
+
+        std::vector<int32_t> i32(product(large), 3);
+        i32[0] = (int32_t{1} << 24);
+        const ms_array a_bad = describe(large, MS_INT32, i32.data());
+        const auto auto_opts = route_opts(MS_EXECUTION_AUTO, MS_PRECISION_FAST);
+
+        const ms_execution_info b2 = counters();
+        ms_array_result ad_res{}, gd_res{};
+        ms_route_info ad_info = new_info();
+        CHECK(ms_ndimage_dense_filter(ctx, &a_bad, &dopts_large, &auto_opts, &ad_res, &ad_info) == MS_OK);
+        CHECK(ad_info.engine == MS_EXECUTION_CPU && ad_info.compute_dtype == MS_FLOAT64 && ad_info.reason[0] != '\0');
+        CHECK(counters().gpu_operations == b2.gpu_operations);
+        ms_buffer_release(ad_res.buffer);
+        CHECK(ms_ndimage_dense_filter(ctx, &a_bad, &dopts_large, &gpu_opts, &gd_res, nullptr) == MS_ENOTSUP);
+
+        ms_array_result ac_res{}, gc2_res{};
+        ms_route_info ac_info = new_info();
+        CHECK(ms_ndimage_composite_filter(ctx, &a_bad, chains, 2, MS_NDIMAGE_COMBINE_SUM, 0, &auto_opts, &ac_res,
+                                          &ac_info) == MS_OK);
+        CHECK(ac_info.engine == MS_EXECUTION_CPU && ac_info.compute_dtype == MS_FLOAT64 && ac_info.reason[0] != '\0');
+        CHECK(counters().gpu_operations == b2.gpu_operations);
+        ms_buffer_release(ac_res.buffer);
+        CHECK(ms_ndimage_composite_filter(ctx, &a_bad, chains, 2, MS_NDIMAGE_COMBINE_SUM, 0, &gpu_opts, &gc2_res,
+                                          nullptr) == MS_ENOTSUP);
+    }
+}
+
+void test_review_regressions() {
+    // 1. Rank-1 separable dense filter on uint32 with negative weights wraps (dense_safe=true) on GPU too.
+    if (have_gpu) {
+        const std::vector<uint64_t> shape = {13, 17};
+        const size_t n = product(shape);
+        std::vector<uint32_t> u32_in(n, 2u);
+        const ms_array a_u32 = describe(shape, MS_UINT32, u32_in.data());
+        // Rank-1 outer product of {-1, 0, 0} and {1, 0, 0} -> negative output -2 wraps to UINT32_MAX - 1.
+        const std::vector<double> w_rank1 = {-1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+        ms_ndimage_dense_options dopts{};
+        dopts.struct_size = sizeof(dopts);
+        dopts.abi_version = MS_NDIMAGE_ABI_VERSION;
+        dopts.mode = MS_NDIMAGE_REFLECT;
+        dopts.wshape[0] = 3;
+        dopts.wshape[1] = 3;
+        dopts.weights = w_rank1.data();
+
+        const auto cpu_opts = route_opts(MS_EXECUTION_CPU, MS_PRECISION_STRICT);
+        const auto gpu_opts = route_opts(MS_EXECUTION_GPU, MS_PRECISION_FAST);
+        ms_array_result cres{}, gres{};
+        ms_route_info ginfo = new_info();
+        CHECK(ms_ndimage_dense_filter(ctx, &a_u32, &dopts, &cpu_opts, &cres, nullptr) == MS_OK);
+        CHECK(ms_ndimage_dense_filter(ctx, &a_u32, &dopts, &gpu_opts, &gres, &ginfo) == MS_OK);
+        CHECK(ginfo.engine == MS_EXECUTION_GPU);
+        const void *cp = nullptr, *gp = nullptr;
+        uint64_t cb = 0, gb = 0;
+        CHECK(ms_buffer_data(cres.buffer, &cp, &cb) == MS_OK);
+        CHECK(ms_buffer_data(gres.buffer, &gp, &gb) == MS_OK);
+        CHECK(cb == n * sizeof(uint32_t) && gb == cb);
+        CHECK(static_cast<const uint32_t*>(gp)[0] == static_cast<uint32_t>(-2));
+        CHECK(std::memcmp(cp, gp, cb) == 0);
+        ms_buffer_release(cres.buffer);
+        ms_buffer_release(gres.buffer);
+    }
+
+    // 2. MS_BOOL composite filter declines GPU (preserves canonical {0, 1} / logical-OR semantics on CPU).
+    {
+        const std::vector<uint64_t> shape = {16, 16};
+        std::vector<uint8_t> raw_b(product(shape), 2); // non-canonical raw bool byte
+        raw_b[0] = 0;
+        const ms_array a_b = describe(shape, MS_BOOL, raw_b.data());
+        ms_ndimage_chain id_chain{};
+        id_chain.struct_size = sizeof(id_chain);
+        id_chain.abi_version = MS_NDIMAGE_ABI_VERSION;
+        id_chain.pass_count = 0;
+
+        if (have_gpu) {
+            const auto gpu_opts = route_opts(MS_EXECUTION_GPU, MS_PRECISION_FAST);
+            ms_array_result gres{};
+            CHECK(ms_ndimage_composite_filter(ctx, &a_b, &id_chain, 1, MS_NDIMAGE_COMBINE_SUM, 0, &gpu_opts, &gres,
+                                              nullptr) == MS_ENOTSUP);
+        }
+        const auto auto_opts = route_opts(MS_EXECUTION_AUTO, MS_PRECISION_FAST);
+        ms_array_result ares{};
+        ms_route_info ainfo = new_info();
+        CHECK(ms_ndimage_composite_filter(ctx, &a_b, &id_chain, 1, MS_NDIMAGE_COMBINE_SQRT_SUM_SQ, 0, &auto_opts, &ares,
+                                          &ainfo) == MS_OK);
+        CHECK(ainfo.engine == MS_EXECUTION_CPU);
+        const void* ptr = nullptr;
+        uint64_t bytes = 0;
+        CHECK(ms_buffer_data(ares.buffer, &ptr, &bytes) == MS_OK);
+        CHECK(static_cast<const uint8_t*>(ptr)[0] == 0 && static_cast<const uint8_t*>(ptr)[1] == 1);
+        ms_buffer_release(ares.buffer);
+
+        // 2-chain SUM performs logical OR -> canonical {0, 1}.
+        ms_ndimage_chain two_id[2] = {id_chain, id_chain};
+        CHECK(ms_ndimage_composite_filter(ctx, &a_b, two_id, 2, MS_NDIMAGE_COMBINE_SUM, 0, &auto_opts, &ares, &ainfo) ==
+              MS_OK);
+        CHECK(ainfo.engine == MS_EXECUTION_CPU);
+        CHECK(ms_buffer_data(ares.buffer, &ptr, &bytes) == MS_OK);
+        CHECK(static_cast<const uint8_t*>(ptr)[0] == 0 && static_cast<const uint8_t*>(ptr)[1] == 1);
+        ms_buffer_release(ares.buffer);
+    }
+
+    // 3. int16/uint16 composite SQRT_SUM_SQ with large magnitudes (no signed int UB on v*v).
+    {
+        const std::vector<uint64_t> shape = {8, 8};
+        const size_t n = product(shape);
+        std::vector<int16_t> s16(n, 30000);
+        std::vector<uint16_t> u16(n, 60000);
+        const std::vector<double> w1 = {1.0};
+        ms_ndimage_pass p0{};
+        p0.struct_size = sizeof(p0);
+        p0.abi_version = MS_NDIMAGE_ABI_VERSION;
+        p0.kind = MS_NDIMAGE_CORRELATE;
+        p0.axis = 0;
+        p0.size = 1;
+        p0.mode = MS_NDIMAGE_REFLECT;
+        p0.weights = w1.data();
+        ms_ndimage_chain chains[2]{};
+        for (auto& c : chains) {
+            c.struct_size = sizeof(c);
+            c.abi_version = MS_NDIMAGE_ABI_VERSION;
+            c.pass_count = 1;
+            c.passes = &p0;
+        }
+        const auto cpu_opts = route_opts(MS_EXECUTION_CPU, MS_PRECISION_STRICT);
+        const ms_array a_s16 = describe(shape, MS_INT16, s16.data());
+        const ms_array a_u16 = describe(shape, MS_UINT16, u16.data());
+        ms_array_result r_s16{}, r_u16{};
+        CHECK(ms_ndimage_composite_filter(ctx, &a_s16, chains, 2, MS_NDIMAGE_COMBINE_SQRT_SUM_SQ, 0, &cpu_opts,
+                                          &r_s16, nullptr) == MS_OK);
+        CHECK(ms_ndimage_composite_filter(ctx, &a_u16, chains, 2, MS_NDIMAGE_COMBINE_SQRT_SUM_SQ, 0, &cpu_opts,
+                                          &r_u16, nullptr) == MS_OK);
+        const void *ps = nullptr, *pu = nullptr;
+        uint64_t bs = 0, bu = 0;
+        CHECK(ms_buffer_data(r_s16.buffer, &ps, &bs) == MS_OK);
+        CHECK(ms_buffer_data(r_u16.buffer, &pu, &bu) == MS_OK);
+        const int16_t exp_s16_sq = static_cast<int16_t>(
+            static_cast<uint16_t>(uint16_t{30000} * uint16_t{30000} + uint16_t{30000} * uint16_t{30000}));
+        const int16_t exp_s16 = exp_s16_sq < 0 ? 0 : static_cast<int16_t>(std::sqrt(static_cast<double>(exp_s16_sq)));
+        const uint16_t exp_u16_sq = static_cast<uint16_t>(uint32_t{60000} * uint32_t{60000} * 2u);
+        const uint16_t exp_u16 = static_cast<uint16_t>(std::sqrt(static_cast<double>(exp_u16_sq)));
+        CHECK(static_cast<const int16_t*>(ps)[0] == exp_s16);
+        CHECK(static_cast<const uint16_t*>(pu)[0] == exp_u16);
+        ms_buffer_release(r_s16.buffer);
+        ms_buffer_release(r_u16.buffer);
+    }
+
+    // 4. Empty input on dense filter still respects router::decide (STRICT + GPU -> MS_ENOTSUP),
+    //    and unaligned weights pointer returns MS_EINVAL.
+    {
+        const std::vector<double> w(9, 1.0);
+        ms_ndimage_dense_options dopts{};
+        dopts.struct_size = sizeof(dopts);
+        dopts.abi_version = MS_NDIMAGE_ABI_VERSION;
+        dopts.mode = MS_NDIMAGE_REFLECT;
+        dopts.wshape[0] = 3;
+        dopts.wshape[1] = 3;
+        dopts.weights = w.data();
+
+        const ms_array empty = describe({0, 8}, MS_FLOAT64, nullptr);
+        const auto strict_gpu = route_opts(MS_EXECUTION_GPU, MS_PRECISION_STRICT);
+        ms_array_result res{};
+        CHECK(ms_ndimage_dense_filter(ctx, &empty, &dopts, &strict_gpu, &res, nullptr) == MS_ENOTSUP);
+
+        alignas(double) uint8_t raw_w[9 * sizeof(double) + 1]{};
+        dopts.weights = reinterpret_cast<const double*>(raw_w + 1);
+        const std::vector<double> small(16, 1.0);
+        const ms_array a_small = describe({4, 4}, MS_FLOAT64, small.data());
+        const auto cpu_opts = route_opts(MS_EXECUTION_CPU, MS_PRECISION_STRICT);
+        CHECK(ms_ndimage_dense_filter(ctx, &a_small, &dopts, &cpu_opts, &res, nullptr) == MS_EINVAL);
+    }
+}
+
 } // namespace
 
 int main() {
@@ -851,6 +1268,8 @@ int main() {
     test_composite_filter();
     test_validation_errors();
     test_cross_float_out_dtype();
+    test_dense_and_composite_int_bool();
+    test_review_regressions();
 
     ms_context_release(ctx);
     std::printf("ndimage dense/composite ok%s\n", have_gpu ? "" : " [CPU only]");

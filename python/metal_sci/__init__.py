@@ -46,8 +46,15 @@ def accelerated() -> dict[str, list[str]]:
 def __getattr__(name):
     # Namespaces: a real metal_sci module when there is one, else SciPy's.
     if not name.startswith("_"):
+        target = f"{__name__}.{name}"
         try:
-            return _importlib.import_module(f"{__name__}.{name}")
-        except ImportError:
-            pass
+            return _importlib.import_module(target)
+        except ModuleNotFoundError as exc:
+            if exc.name != target:
+                raise
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    import scipy
+    return sorted(set(__all__) | {name for name in dir(scipy) if not name.startswith("_")})

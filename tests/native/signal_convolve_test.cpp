@@ -1392,6 +1392,180 @@ void test_choose_conv_method() {
     CHECK(method == MS_SIGNAL_METHOD_FFT);
 }
 
+void test_review_regressions() {
+    // 1. correlate=1 with unit-length axes on FFT/OA matches ref_conv (raw_axis_mask reversal).
+    if (have_gpu) {
+        const ms_route_options r_gpu = route_opts(MS_EXECUTION_GPU, MS_PRECISION_FAST);
+        struct UnitCase {
+            std::vector<uint64_t> s1, s2;
+            uint32_t mode;
+            bool oa;
+        };
+        const std::vector<UnitCase> ucases = {
+            {{1, 200}, {5, 200}, MS_SIGNAL_FULL, false},
+            {{1, 200}, {5, 200}, MS_SIGNAL_SAME, false},
+            {{5, 200}, {1, 200}, MS_SIGNAL_VALID, false},
+            {{1, 200}, {5, 200}, MS_SIGNAL_VALID, false},
+            {{1, 2000}, {5, 64}, MS_SIGNAL_FULL, true},
+        };
+        for (size_t i = 0; i < ucases.size(); ++i) {
+            const auto& uc = ucases[i];
+            const auto d1 = make_data(product(uc.s1), static_cast<uint32_t>(9100 + i), false);
+            const auto d2 = make_data(product(uc.s2), static_cast<uint32_t>(9200 + i), false);
+            const auto b1 = pack(d1, MS_FLOAT32);
+            const auto b2 = pack(d2, MS_FLOAT32);
+            const ms_array a1 = describe(uc.s1, MS_FLOAT32, b1.data());
+            const ms_array a2 = describe(uc.s2, MS_FLOAT32, b2.data());
+            ms_signal_fftconv_options opts{};
+            opts.struct_size = sizeof(opts);
+            opts.abi_version = MS_SIGNAL_ABI_VERSION;
+            opts.mode = uc.mode;
+            opts.correlate = 1;
+            opts.overlap_add = uc.oa ? 1 : 0;
+
+            std::vector<uint64_t> ref_shape;
+            const auto ref = ref_conv(d1, uc.s1, d2, uc.s2, uc.mode, true, MS_SIGNAL_BOUNDARY_FILL, {0, 0},
+                                      MS_SIGNAL_CENTER_ND, {}, ref_shape);
+            ms_array_result out{};
+            CHECK(ms_signal_fftconvolve(ctx, &a1, &a2, &opts, &r_gpu, &out, nullptr) == MS_OK);
+            const auto got = unpack(out);
+            ms_buffer_release(out.buffer);
+            CHECK(got.size() == ref.size());
+            const double scale = std::max(1.0, max_norm(ref));
+            CHECK(max_abs_diff(got, ref) <= 2e-5 * scale);
+        }
+    }
+
+    // 2. out_double GPU FFT/OA spectral overflow (1e15*1e15 len 65536), OA overflow (1e17), and underflow (1e-25*1e-25).
+    if (have_gpu) {
+        const ms_route_options r_gpu = route_opts(MS_EXECUTION_GPU, MS_PRECISION_FAST);
+        const ms_route_options r_auto = route_opts(MS_EXECUTION_AUTO, MS_PRECISION_FAST);
+        {
+            std::vector<double> x(65536, 1e15), k(65536, 1e15);
+            const ms_array ax = describe({65536}, MS_FLOAT64, x.data());
+            const ms_array ak = describe({65536}, MS_FLOAT64, k.data());
+            ms_signal_fftconv_options fopts{};
+            fopts.struct_size = sizeof(fopts);
+            fopts.abi_version = MS_SIGNAL_ABI_VERSION;
+            fopts.mode = MS_SIGNAL_FULL;
+            ms_array_result out{};
+            CHECK(ms_signal_fftconvolve(ctx, &ax, &ak, &fopts, &r_gpu, &out, nullptr) == MS_ENOTSUP);
+        }
+        {
+            std::vector<double> x(40000, 1e17), k(1000, 1e17);
+            const ms_array ax = describe({40000}, MS_FLOAT64, x.data());
+            const ms_array ak = describe({1000}, MS_FLOAT64, k.data());
+            ms_signal_fftconv_options fopts{};
+            fopts.struct_size = sizeof(fopts);
+            fopts.abi_version = MS_SIGNAL_ABI_VERSION;
+            fopts.mode = MS_SIGNAL_FULL;
+            fopts.overlap_add = 1;
+            ms_array_result out{};
+            CHECK(ms_signal_fftconvolve(ctx, &ax, &ak, &fopts, &r_gpu, &out, nullptr) == MS_ENOTSUP);
+        }
+        {
+            std::vector<double> x(256, 1e-25), k(64, 1e-25);
+            const ms_array ax = describe({256}, MS_FLOAT64, x.data());
+            const ms_array ak = describe({64}, MS_FLOAT64, k.data());
+            ms_signal_fftconv_options fopts{};
+            fopts.struct_size = sizeof(fopts);
+            fopts.abi_version = MS_SIGNAL_ABI_VERSION;
+            fopts.mode = MS_SIGNAL_FULL;
+            ms_array_result out{};
+            CHECK(ms_signal_fftconvolve(ctx, &ax, &ak, &fopts, &r_gpu, &out, nullptr) == MS_ENOTSUP);
+
+            ms_signal_conv_options copts{};
+            copts.struct_size = sizeof(copts);
+            copts.abi_version = MS_SIGNAL_ABI_VERSION;
+            copts.mode = MS_SIGNAL_FULL;
+            copts.method = MS_SIGNAL_METHOD_AUTO;
+            ms_route_info info = new_info();
+            CHECK(ms_signal_convolve(ctx, &ax, &ak, &copts, &r_auto, &out, &info) == MS_OK);
+            CHECK(info.engine == MS_EXECUTION_CPU);
+            const auto got = unpack(out);
+            ms_buffer_release(out.buffer);
+            CHECK(got[0].real() > 0.0 && std::fabs(got[0].real() - 1e-50) < 1e-60);
+        }
+    }
+
+    // 3. MS_SIGNAL_CENTER_2D_CORR with METHOD_FFT on even-sized 2-D SAME correlation.
+    if (have_gpu) {
+        const std::vector<uint64_t> s1 = {16, 16}, s2 = {4, 4};
+        const auto d1 = make_data(product(s1), 9301, false);
+        const auto d2 = make_data(product(s2), 9302, false);
+        const auto b1 = pack(d1, MS_FLOAT32);
+        const auto b2 = pack(d2, MS_FLOAT32);
+        const ms_array a1 = describe(s1, MS_FLOAT32, b1.data());
+        const ms_array a2 = describe(s2, MS_FLOAT32, b2.data());
+        ms_signal_conv_options opts{};
+        opts.struct_size = sizeof(opts);
+        opts.abi_version = MS_SIGNAL_ABI_VERSION;
+        opts.mode = MS_SIGNAL_SAME;
+        opts.method = MS_SIGNAL_METHOD_FFT;
+        opts.correlate = 1;
+        opts.center = MS_SIGNAL_CENTER_2D_CORR;
+        const auto r_gpu = route_opts(MS_EXECUTION_GPU, MS_PRECISION_FAST);
+        ms_array_result out{};
+        CHECK(ms_signal_convolve(ctx, &a1, &a2, &opts, &r_gpu, &out, nullptr) == MS_OK);
+        const auto got = unpack(out);
+        ms_buffer_release(out.buffer);
+        std::vector<uint64_t> ref_shape;
+        const auto ref = ref_conv(d1, s1, d2, s2, MS_SIGNAL_SAME, true, MS_SIGNAL_BOUNDARY_FILL, {0, 0},
+                                  MS_SIGNAL_CENTER_2D_CORR, {}, ref_shape);
+        const double scale = std::max(1.0, max_norm(ref));
+        CHECK(max_abs_diff(got, ref) <= 2e-5 * scale);
+    }
+
+    // 4. Validation & ABI edge cases: VALID+METHOD_FFT dominance -> EINVAL, METHOD_FFT with 0 eff axes -> ENOTSUP,
+    //    natural complex alignment (+4/+8), fillvalue_imag on real -> EINVAL (ignored on WRAP), choose_conv_method overflow.
+    {
+        const auto r_cpu = route_opts(MS_EXECUTION_CPU, MS_PRECISION_STRICT);
+        const auto r_auto = route_opts(MS_EXECUTION_AUTO, MS_PRECISION_FAST);
+        std::vector<float> f1(50, 1.0f), f2(50, 1.0f);
+        const ms_array a_10x5 = describe({10, 5}, MS_FLOAT32, f1.data());
+        const ms_array a_5x10 = describe({5, 10}, MS_FLOAT32, f2.data());
+        ms_signal_conv_options opts{};
+        opts.struct_size = sizeof(opts);
+        opts.abi_version = MS_SIGNAL_ABI_VERSION;
+        opts.mode = MS_SIGNAL_VALID;
+        opts.method = MS_SIGNAL_METHOD_FFT;
+        ms_array_result out{};
+        CHECK(ms_signal_convolve(ctx, &a_10x5, &a_5x10, &opts, &r_auto, &out, nullptr) == MS_EINVAL);
+
+        const ms_array a_1x1 = describe({1, 1}, MS_FLOAT32, f1.data());
+        opts.mode = MS_SIGNAL_FULL;
+        CHECK(ms_signal_convolve(ctx, &a_1x1, &a_1x1, &opts, &r_auto, &out, nullptr) == MS_ENOTSUP);
+
+        // Naturally-aligned complex64 (+4B) and complex128 (+8B).
+        alignas(16) uint8_t raw1[128]{}, raw2[128]{};
+        const ms_array ac64 = describe({4}, MS_COMPLEX64, raw1 + 4);
+        const ms_array bc64 = describe({2}, MS_COMPLEX64, raw2 + 4);
+        opts.method = MS_SIGNAL_METHOD_DIRECT;
+        CHECK(ms_signal_convolve(ctx, &ac64, &bc64, &opts, &r_cpu, &out, nullptr) == MS_OK);
+        ms_buffer_release(out.buffer);
+        const ms_array ac128 = describe({4}, MS_COMPLEX128, raw1 + 8);
+        const ms_array bc128 = describe({2}, MS_COMPLEX128, raw2 + 8);
+        CHECK(ms_signal_convolve(ctx, &ac128, &bc128, &opts, &r_cpu, &out, nullptr) == MS_OK);
+        ms_buffer_release(out.buffer);
+
+        // fillvalue_imag != 0 rejected for real output with BOUNDARY_FILL, ignored with BOUNDARY_WRAP.
+        const ms_array r1 = describe({4, 4}, MS_FLOAT32, f1.data());
+        const ms_array r2 = describe({2, 2}, MS_FLOAT32, f2.data());
+        opts.boundary = MS_SIGNAL_BOUNDARY_FILL;
+        opts.fillvalue_imag = 1.0;
+        CHECK(ms_signal_convolve(ctx, &r1, &r2, &opts, &r_cpu, &out, nullptr) == MS_EINVAL);
+        opts.boundary = MS_SIGNAL_BOUNDARY_WRAP;
+        CHECK(ms_signal_convolve(ctx, &r1, &r2, &opts, &r_cpu, &out, nullptr) == MS_OK);
+        ms_buffer_release(out.buffer);
+
+        // choose_conv_method uint64 overflow -> MS_EOVERFLOW.
+        const uint64_t huge_s[1] = {(uint64_t{1} << 63) + 1};
+        uint32_t method = 0;
+        CHECK(ms_signal_choose_conv_method(ctx, MS_FLOAT64, 1, huge_s, MS_FLOAT64, 1, huge_s, MS_SIGNAL_FULL, 1,
+                                           &r_auto, &method) == MS_EOVERFLOW);
+    }
+}
+
 #if defined(MS_TEST_METAL)
 void test_fft_scratch_encode() {
     if (!have_gpu) return;
@@ -1468,6 +1642,7 @@ int main() {
     test_method_fft_disables_oa_nonfinite();
     test_direct_publish_inverse_fft_overflow_nonfinite();
     test_choose_conv_method();
+    test_review_regressions();
 #if defined(MS_TEST_METAL)
     test_fft_scratch_encode();
 #endif

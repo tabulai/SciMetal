@@ -93,6 +93,87 @@ int main() {
     CHECK(ms_context_execution_info(ctx, &info) == MS_OK);
     CHECK(info.gpu_command_buffers == 2 && info.gpu_dispatches == 3);
 
+    // Scratch-slice offset binding: gpu::bind must pass non-zero ArenaSlab offsets to kernels.
+    {
+        BufferPtr s0 = allocate_scratch(ctx, 128, Fill::zero);
+        BufferPtr s1 = allocate_scratch(ctx, 128, Fill::zero);
+        BufferPtr s2 = allocate_scratch(ctx, 128, Fill::zero);
+        CHECK(is_scratch_slice(s0.get()) && is_scratch_slice(s1.get()) && is_scratch_slice(s2.get()));
+        CHECK(device_view(s1.get(), ctx).offset == 256 && device_view(s2.get(), ctx).offset == 512);
+        auto* p0 = reinterpret_cast<float*>(mutable_data(s0.get()));
+        auto* p1 = reinterpret_cast<float*>(mutable_data(s1.get()));
+        for (uint32_t i = 0; i < 32; ++i) {
+            p0[i] = 999.0f;
+            p1[i] = static_cast<float>(i + 1);
+        }
+        const uint32_t n32 = 32;
+        const float sc = 4.0f;
+        gpu::Specialization plain{"negate=0", {gpu::Constant::of(4, false)}};
+        gpu::Grid line;
+        line.groups[0] = 1;
+        line.threads[0] = 32;
+        gpu::Batch batch(ctx);
+        batch.dispatch_indexed("ms_smoke_scale", &plain, {{3, gpu::bind(s1.get(), ctx)}, {5, gpu::bind(s2.get(), ctx)}},
+                               {{2, &n32, sizeof(n32)}, {7, &sc, sizeof(sc)}}, line);
+        batch.commit_and_wait();
+        const auto* r0 = reinterpret_cast<const float*>(read(s0.get(), ctx).data);
+        const auto* r2 = reinterpret_cast<const float*>(read(s2.get(), ctx).data);
+        for (uint32_t i = 0; i < 32; ++i) {
+            CHECK(r0[i] == 999.0f);
+            CHECK(r2[i] == 4.0f * static_cast<float>(i + 1));
+        }
+    }
+
+    // Batch::dispatch rejects zero-byte or null parameter payloads cleanly.
+    {
+        gpu::Batch batch(ctx);
+        const gpu::Binding bufs[2] = {gpu::bind(x.get(), ctx), gpu::bind(y.get(), ctx)};
+        bool caught = false;
+        try {
+            batch.dispatch("ms_smoke_saxpy2d", nullptr, 0, bufs, 2, grid);
+        } catch (const Error& err) {
+            caught = (err.status == MS_EBACKEND);
+        }
+        CHECK(caught);
+    }
+
+    // Cross-context zero-copy commit_async pins borrowed source storage until GPU completion.
+    {
+        ms_context* consumer = nullptr;
+        CHECK(ms_context_create(&options, &consumer) == MS_OK);
+        ms_buffer_view exported{};
+        CHECK(ms_buffer_export(x.get(), &exported) == MS_OK);
+        ms_import_result imported{};
+        CHECK(ms_buffer_import(consumer, &exported, MS_COPY_NEVER, &imported) == MS_OK);
+        CHECK(imported.copied_bytes == 0 && imported.buffer != nullptr);
+
+        auto ro = reserve(consumer, padded_capacity(bytes, consumer));
+        BufferPtr out_async = allocate_reserved(consumer, ro, bytes, Fill::unfilled);
+        const uint32_t n = static_cast<uint32_t>(count);
+        const float scale = 2.5f;
+        gpu::Specialization plain{"negate=0", {gpu::Constant::of(4, false)}};
+        gpu::Grid line;
+        line.groups[0] = (count + 63) / 64;
+        line.threads[0] = 64;
+
+        gpu::Batch batch(consumer);
+        batch.dispatch_indexed("ms_smoke_scale", &plain,
+                               {{3, gpu::bind(imported.buffer, consumer)}, {5, gpu::bind(out_async.get(), consumer)}},
+                               {{2, &n, sizeof(n)}, {7, &scale, sizeof(scale)}}, line);
+        batch.commit_async({out_async.get()});
+        // Release the borrowed import handle and exported descriptor while the GPU batch is in flight.
+        ms_buffer_release(imported.buffer);
+        exported.release(exported.owner);
+
+        // read() waits for the async GPU batch to complete.
+        const auto* got = reinterpret_cast<const float*>(read(out_async.get(), consumer).data);
+        for (uint64_t i = 0; i < count; ++i) {
+            CHECK(got[i] == 2.5f * (static_cast<float>(i % 251) * 0.5f));
+        }
+        out_async.reset();
+        ms_context_release(consumer);
+    }
+
     x.reset();
     y.reset();
     ms_context_release(ctx);

@@ -806,6 +806,80 @@ void test_memory_budget() {
     context = saved;
     ms_context_release(small);
 }
+
+void test_review_regressions() {
+    // 1. C2C Stockham (22, 26, 33) and Rader (17, 19, 23) with width=1 mitigation under shader validation.
+    for (uint64_t n : {uint64_t{17}, uint64_t{19}, uint64_t{22}, uint64_t{23}, uint64_t{26}, uint64_t{33}}) {
+        for (uint64_t rows : {uint64_t{1}, uint64_t{2}, uint64_t{3}, uint64_t{5}, uint64_t{17}}) {
+            const Tensor x = random_tensor({rows, n}, true);
+            check(x, MS_COMPLEX64, MS_FFT_FORWARD, MS_FFT_NORM_BACKWARD, {1});
+            check(x, MS_COMPLEX64, MS_FFT_INVERSE, MS_FFT_NORM_BACKWARD, {1});
+        }
+    }
+
+    // 2. Bluestein C2R (47, 509, 1021, and 1973 when not validated) with input_tail_scalars slack under shader validation + poison.
+    std::vector<uint64_t> bluestein_ns = {47, 509, 1021};
+    if (!validated) bluestein_ns.push_back(1973);
+    for (uint64_t n : bluestein_ns) {
+        for (uint64_t rows : {uint64_t{1}, uint64_t{2}, uint64_t{3}, uint64_t{4}}) {
+            const Tensor x = random_tensor({rows, n / 2 + 1}, true);
+            check(x, MS_COMPLEX64, MS_FFT_C2R, MS_FFT_NORM_BACKWARD, {1}, n);
+        }
+    }
+
+    // 3. Four-step (8192) and strided (6000) C2R ignore garbage/Inf/NaN in imag(X[..., 0]) and imag(X[..., n/2])
+    //    for both 1-D irfft and 2-D irfftn.
+    for (uint64_t n : {uint64_t{6000}, uint64_t{8192}}) {
+        const uint64_t m = n / 2 + 1;
+        Tensor x1 = random_tensor({3, m}, true);
+        x1.data[0] = {1.5, 1e20};
+        x1.data[m - 1] = {-0.5, std::numeric_limits<double>::infinity()};
+        x1.data[m] = {2.0, std::numeric_limits<double>::quiet_NaN()};
+        x1.data[2 * m - 1] = {0.25, -1e20};
+        check(x1, MS_COMPLEX64, MS_FFT_C2R, MS_FFT_NORM_BACKWARD, {1}, n);
+
+        // 2-D irfftn over axes {0, 1}: inner axis 0 runs first, then ms_fft_c2r_hermitian_fix clears DC/Nyquist imag.
+        Tensor x2 = random_tensor({4, m}, true);
+        // Make axis-0 spectrum conjugate-symmetric at k=0 and k=m-1? Even arbitrary complex input has
+        // non-zero imag at DC/Nyquist after axis-0 IFFT; reference() runs C2R ignoring imag at 0 & n/2.
+        x2.data[0] = {1.0, 1e10};
+        x2.data[m - 1] = {-1.0, -1e10};
+        check(x2, MS_COMPLEX64, MS_FFT_C2R, MS_FFT_NORM_BACKWARD, {0, 1}, n);
+    }
+
+    // 4. irfft2 norm="forward" must not fuse |scale| > 1 before divides_by_n (prevents float32 overflow).
+    {
+        Tensor big = random_tensor({256, 129}, true);
+        for (Complex& v : big.data) v *= 1e35;
+        const Output out = call(big, MS_COMPLEX64, MS_FFT_C2R, MS_FFT_NORM_FORWARD, {0, 1}, 256);
+        CHECK(out.status == MS_OK);
+        for (const Complex& v : out.tensor.data) CHECK(std::isfinite(v.real()));
+    }
+
+    // 5. ms_fft_plan passes counts ms_fft_scale and ms_fft_c2r_hermitian_fix.
+    {
+        const ms_route_options route = route_options();
+        {
+            const uint64_t shape[2] = {8, 1000};
+            const ms_fft_options opts = fft_options(MS_FFT_FORWARD, MS_FFT_NORM_ORTHO, {1}, 0);
+            ms_fft_plan_info info{};
+            info.struct_size = sizeof(info);
+            info.abi_version = MS_FFT_ABI_VERSION;
+            CHECK(ms_fft_plan(context, MS_COMPLEX64, 2, shape, &opts, &route, 0, &info) == MS_OK);
+            CHECK(info.status == MS_OK && info.passes == 2); // stockham + ms_fft_scale
+        }
+        {
+            const uint64_t shape[2] = {4, 4097};
+            const ms_fft_options opts = fft_options(MS_FFT_C2R, MS_FFT_NORM_BACKWARD, {0, 1}, 8192);
+            ms_fft_plan_info info{};
+            info.struct_size = sizeof(info);
+            info.abi_version = MS_FFT_ABI_VERSION;
+            CHECK(ms_fft_plan(context, MS_COMPLEX64, 2, shape, &opts, &route, 0, &info) == MS_OK);
+            // axis 0 (strided 4: 1 pass) + hermitian_fix (1 pass) + axis 1 (four-step 8192: >= 2 passes)
+            CHECK(info.status == MS_OK && info.passes >= 4);
+        }
+    }
+}
 } // namespace
 
 int main() {
@@ -831,6 +905,7 @@ int main() {
     test_plan_info();
     test_factorisations();
     test_memory_budget();
+    test_review_regressions();
 
     ms_memory_info memory{};
     memory.struct_size = sizeof(memory);

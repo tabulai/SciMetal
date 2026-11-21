@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import glob
 import importlib
 import importlib.abc
 import importlib.util
@@ -39,25 +40,51 @@ def install(module_globals: dict, scipy_name: str) -> None:
 
     module_globals["__getattr__"] = __getattr__
     module_globals["__dir__"] = __dir__
+    own_all = set(module_globals.get("__all__", ()))
+    scipy_all = set(getattr(scipy_module, "__all__", ()))
+    if own_all or scipy_all:
+        module_globals["__all__"] = sorted(own_all | scipy_all)
     module_globals.setdefault("__doc__", scipy_module.__doc__)
 
 
 class _AliasLoader(importlib.abc.Loader):
     def __init__(self, scipy_name):
         self._scipy_name = scipy_name
+        self._saved_attrs = None
 
     def create_module(self, spec):
-        return importlib.import_module(self._scipy_name)
+        module = importlib.import_module(self._scipy_name)
+        self._saved_attrs = (
+            getattr(module, "__spec__", None),
+            getattr(module, "__loader__", None),
+            getattr(module, "__package__", None),
+        )
+        return module
 
     def exec_module(self, module):
-        pass  # already executed as the SciPy module
+        # importlib._bootstrap._init_module_attrs overwrites __spec__/__loader__/__package__
+        # on the returned SciPy module object; restore SciPy's own metadata immediately so
+        # importlib.resources, importlib.reload, and introspection on scipy.<pkg> stay intact.
+        if self._saved_attrs is not None:
+            orig_spec, orig_loader, orig_package = self._saved_attrs
+            if orig_spec is not None:
+                module.__spec__ = orig_spec
+            if orig_loader is not None:
+                module.__loader__ = orig_loader
+            if orig_package is not None:
+                module.__package__ = orig_package
+            self._saved_attrs = None
 
 
 def _has_own_module(relative: str) -> bool:
-    base = _PACKAGE_DIR.joinpath(*relative.split("."))
-    if (base / "__init__.py").exists():
+    parts = relative.split(".")
+    if any(not part or part in (".", "..") or "/" in part or "\\" in part for part in parts):
+        return False
+    base = _PACKAGE_DIR.joinpath(*parts)
+    if (base / "__init__.py").exists() or base.with_suffix(".py").exists():
         return True
-    return any(base.parent.glob(base.name + ".py")) or any(base.parent.glob(base.name + ".*.so"))
+    escaped = glob.escape(base.name)
+    return any(base.parent.glob(escaped + ".*.so"))
 
 
 class _ScipyAliasFinder(importlib.abc.MetaPathFinder):
@@ -65,24 +92,27 @@ class _ScipyAliasFinder(importlib.abc.MetaPathFinder):
 
     It has to run before the path finder: an aliased parent such as
     ``metal_sci.stats`` *is* ``scipy.stats``, so the path finder would otherwise
-    find ``distributions`` on SciPy's path and execute a second copy of it.
+    find submodules (including private underscore ones) on SciPy's path and
+    execute a second copy of them.
     """
 
     def find_spec(self, fullname, path=None, target=None):
         if not fullname.startswith(_PREFIX):
             return None
         relative = fullname[len(_PREFIX):]
+        if not relative or relative.startswith("_"):
+            return None
         if _has_own_module(relative):
             return None
         scipy_name = "scipy." + relative
-        if any(part.startswith("_") for part in scipy_name.split(".")):
-            return None
         try:
-            if importlib.util.find_spec(scipy_name) is None:
-                return None
+            scipy_spec = importlib.util.find_spec(scipy_name)
         except (ImportError, ValueError):
             return None
-        return importlib.util.spec_from_loader(fullname, _AliasLoader(scipy_name))
+        if scipy_spec is None:
+            return None
+        is_package = scipy_spec.submodule_search_locations is not None
+        return importlib.util.spec_from_loader(fullname, _AliasLoader(scipy_name), is_package=is_package)
 
 
 def install_finder() -> None:

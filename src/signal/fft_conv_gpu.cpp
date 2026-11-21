@@ -5,7 +5,6 @@
 #include "signal_kernels.h"
 #include "core/router.hpp"
 #include "fft/engine.hpp"
-#include "ms/detail/parallel.hpp"
 #include "runtime/metal_compute.hpp"
 
 #include <algorithm>
@@ -120,62 +119,52 @@ StagedFft build_stages(const uint64_t* dims, const uint64_t* nsteps, const uint3
 StagedFft fit_stages(const uint64_t* dims, const uint64_t* nsteps, uint32_t axis_mask,
                      uint32_t ndim, bool real_last, bool inverse, const fft::Limits& limits) {
     StagedFft staged = build_stages(dims, nsteps, &axis_mask, ndim, real_last, inverse, limits);
-    int32_t ceiling = limits.group_threads;
-    for (fft::Refusal refusal;;) {
-        if (!fft::refused(staged.stages, refusal)) break;
-        ceiling = std::min(ceiling, refusal.granted);
-        const fft::Stage& ref_stage = staged.stages[refusal.stage];
+    std::vector<int32_t> ceilings(staged.stages.size(), limits.group_threads);
+    const uint32_t last = ndim - 1;
+    const bool has_last = (axis_mask & (1u << last)) != 0;
+    constexpr uint32_t max_replan_iters = 64;
+    for (uint32_t iter = 0; iter < max_replan_iters; ++iter) {
+        fft::Refusal refusal;
+        if (!fft::refused(staged.stages, refusal)) {
+            for (const fft::Stage& s : staged.stages) {
+                if (s.plan->load != fft::Load::direct || s.plan->store != fft::Store::direct) {
+                    throw Error(MS_ENOTSUP, "signal FFT requires direct load/store plan");
+                }
+            }
+            return staged;
+        }
+        const size_t idx = refusal.stage;
+        const int32_t next_ceiling = refusal.granted < ceilings[idx] ? refusal.granted : ceilings[idx] / 2;
+        ceilings[idx] = next_ceiling;
+        const fft::Stage& ref_stage = staged.stages[idx];
         fft::Request req = ref_stage.plan->request;
         req.count = ref_stage.count;
-        fft::replan(req, limits, ceiling);
-        staged = build_stages(dims, nsteps, &axis_mask, ndim, real_last, inverse, limits);
-    }
-    for (const fft::Stage& s : staged.stages) {
-        if (s.plan->load != fft::Load::direct || s.plan->store != fft::Store::direct) {
+        fft::Planned replacement = fft::replan(req, limits, next_ceiling);
+        if (!replacement.plan) {
+            throw Error(MS_ENOTSUP, "no GPU plan for signal FFT length " + std::to_string(req.n) + ": " +
+                                        replacement.reason);
+        }
+        if (replacement.plan->load != fft::Load::direct || replacement.plan->store != fft::Store::direct) {
             throw Error(MS_ENOTSUP, "signal FFT requires direct load/store plan");
         }
-    }
-    return staged;
-}
-
-void scan_single_peak(const float* data, uint64_t elements, bool is_complex,
-                      double& out_peak, bool& out_nonfinite) {
-    const uint64_t scalars = elements * (is_complex ? 2 : 1);
-    double lane_peak[parallel::max_lanes] = {};
-    bool lane_nf[parallel::max_lanes] = {};
-    parallel::parallel_for(scalars, uint64_t{1} << 18, [&](unsigned lane, uint64_t begin, uint64_t end) {
-        float lp = 0.0f;
-        bool nf = false;
-        for (uint64_t i = begin; i < end; ++i) {
-            const float v = std::fabs(data[i]);
-            if (std::isfinite(v)) {
-                if (v > lp) lp = v;
-            } else {
-                nf = true;
-            }
+        staged.stages[idx].plan = std::move(replacement.plan);
+        staged.stages[idx].resolved.reset();
+        const bool is_last = has_last && ((!inverse && idx == 0) || (inverse && idx + 1 == staged.stages.size()));
+        if (is_last) {
+            staged.input_real = staged.stages[idx].plan->input_real;
+            staged.result_real = staged.stages[idx].plan->result_real;
         }
-        lane_peak[lane] = static_cast<double>(lp);
-        lane_nf[lane] = nf;
-    });
-    out_peak = 0.0;
-    out_nonfinite = false;
-    for (unsigned l = 0; l < parallel::max_lanes; ++l) {
-        if (lane_peak[l] > out_peak) out_peak = lane_peak[l];
-        if (lane_nf[l]) out_nonfinite = true;
+        staged.applied = 1.0;
+        for (const fft::Stage& s : staged.stages) {
+            if (s.plan->divides_by_n) staged.applied /= static_cast<double>(s.plan->request.n);
+        }
     }
+    throw Error(MS_ENOTSUP, "could not fit signal FFT plan to device threadgroup limits");
 }
 
 void check_single_range(const array::ConvertReport& rep) {
     if (rep.overflowed || rep.has_nonfinite || !(rep.max_finite <= narrow_ceiling) ||
         (rep.max_finite != 0.0 && rep.max_finite < narrow_floor)) {
-        throw Error(MS_ENOTSUP, "input magnitudes do not fit single-precision FFT range; SciPy is used");
-    }
-}
-
-void check_f32_range_for_double_out(const float* data, uint64_t elements, bool is_complex, double& peak) {
-    bool nonfinite = false;
-    scan_single_peak(data, elements, is_complex, peak, nonfinite);
-    if (nonfinite || !(peak <= narrow_ceiling) || (peak != 0.0 && peak < narrow_floor)) {
         throw Error(MS_ENOTSUP, "input magnitudes do not fit single-precision FFT range; SciPy is used");
     }
 }
@@ -250,7 +239,7 @@ void build_logical_spec_shapes(const FftConvPlan& plan, std::vector<uint32_t>& d
 
 BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const ms_array& in2_orig,
                            const FftConvPlan& plan_in, const ms_route_options& route_options,
-                           uint32_t& out_compute_dtype, bool* out_has_nonfinite) {
+                           uint32_t& out_compute_dtype, uint32_t* out_nf_flags) {
     if (storage_kind(context) != MS_BUFFER_METAL) {
         throw Error(MS_ENOTSUP, "GPU execution needs a Metal-storage context");
     }
@@ -271,9 +260,10 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
     const fft::Limits limits = fft::device_limits();
     FftConvPlan plan = plan_in;
     for (uint32_t d = 0; d < plan.ndim; ++d) {
-        if (plan.nsteps1[d] * plan.fft_len[d] > INT32_MAX ||
-            plan.nsteps2[d] * plan.fft_len[d] > INT32_MAX ||
-            plan.nsteps_out[d] * plan.fft_len[d] > INT32_MAX) {
+        if (plan.fft_len[d] == 0 || plan.fft_len[d] > INT32_MAX ||
+            plan.nsteps1[d] > INT32_MAX / plan.fft_len[d] ||
+            plan.nsteps2[d] > INT32_MAX / plan.fft_len[d] ||
+            plan.nsteps_out[d] > INT32_MAX / plan.fft_len[d]) {
             throw Error(MS_ENOTSUP, "the signal FFT convolution exceeds 32-bit kernel indexing");
         }
     }
@@ -303,14 +293,17 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
             // If real_last_axis non-power-of-two got replanned to non-direct load/store,
             // upgrade last axis to power-of-two once.
             const uint32_t last = plan.ndim - 1;
-            if (attempt == 0 && plan.real_last_axis && !std::has_single_bit(plan.fft_len[last])) {
+            if (attempt == 0 && plan.real_last_axis && !std::has_single_bit(plan.fft_len[last]) &&
+                plan.fft_len[last] <= (uint64_t{1} << 30)) {
                 const uint64_t pow2 = std::bit_ceil(plan.fft_len[last]);
                 plan.fft_len[last] = pow2;
                 dims1[last] = dims2[last] = dims_out[last] = pow2;
                 if (plan.use_oa && plan.overlap[last] > 0) {
                     const uint64_t s1_d = plan.s1.dims[last];
                     const uint64_t s2_d = plan.s2.dims[last];
-                    const uint64_t full_d = s1_d + s2_d - 1;
+                    uint64_t full_d = 0;
+                    if (ms_checked_add(s1_d, s2_d - 1, &full_d) != MS_OK)
+                        throw Error(MS_EOVERFLOW, "convolution output dimension overflows");
                     if (pow2 >= full_d) {
                         plan.overlap[last] = 0;
                         plan.step1[last] = s1_d;
@@ -328,20 +321,15 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
                             plan.step1[last] = small;
                             plan.step2[last] = eff_step;
                         }
-                        if (s1_d > plan.step1[last]) {
-                            uint64_t n1 = (s1_d + plan.step1[last]) / plan.step1[last];
-                            if (eff_step * n1 < full_d) ++n1;
-                            plan.nsteps1[last] = n1;
-                        } else {
-                            plan.nsteps1[last] = 1;
-                        }
-                        if (s2_d > plan.step2[last]) {
-                            uint64_t n2 = (s2_d + plan.step2[last]) / plan.step2[last];
-                            if (eff_step * n2 < full_d) ++n2;
-                            plan.nsteps2[last] = n2;
-                        } else {
-                            plan.nsteps2[last] = 1;
-                        }
+                        auto calc_n = [&](uint64_t s_d, uint64_t st_d) -> uint64_t {
+                            if (s_d <= st_d) return 1;
+                            uint64_t n = 1 + s_d / st_d;
+                            uint64_t covered = 0;
+                            if (ms_checked_mul(eff_step, n, &covered) == MS_OK && covered < full_d) ++n;
+                            return n;
+                        };
+                        plan.nsteps1[last] = calc_n(s1_d, plan.step1[last]);
+                        plan.nsteps2[last] = calc_n(s2_d, plan.step2[last]);
                         plan.nsteps_out[last] = std::max(plan.nsteps1[last], plan.nsteps2[last]);
                     }
                 }
@@ -361,29 +349,43 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
 
     // Load inputs into single-precision shared storage and enforce A5 guard rails.
     array::ConvertReport rep1, rep2;
-    const bool d1_double = array::is_double(src1.dtype);
-    const bool d2_double = array::is_double(src2.dtype);
-    BufferPtr single1 = array::load_single(context, src1, plan.s1, d1_double ? &rep1 : nullptr);
-    BufferPtr single2 = array::load_single(context, src2, plan.s2, d2_double ? &rep2 : nullptr);
+    BufferPtr single1 = array::load_single(context, src1, plan.s1, out_double ? &rep1 : nullptr);
+    BufferPtr single2 = array::load_single(context, src2, plan.s2, out_double ? &rep2 : nullptr);
+
+    double total_fft_n = 1.0;
+    for (uint32_t i = 0; i < plan.axis_count; ++i) {
+        total_fft_n *= static_cast<double>(plan.fft_len[plan.axes[i]]);
+    }
 
     if (out_double) {
-        double peak1 = 0.0, peak2 = 0.0;
-        if (d1_double) {
-            check_single_range(rep1);
-            peak1 = rep1.max_finite;
-        } else {
-            check_f32_range_for_double_out(reinterpret_cast<const float*>(read(single1.get(), context).data),
-                                           plan.s1.elements, array::is_complex(src1.dtype), peak1);
+        check_single_range(rep1);
+        check_single_range(rep2);
+        const double peak1 = rep1.max_finite;
+        const double peak2 = rep2.max_finite;
+        const double c1 = array::is_complex(src1.dtype) ? 2.0 : 1.0;
+        const double c2 = array::is_complex(src2.dtype) ? 2.0 : 1.0;
+        double n1_blk = 1.0, n2_blk = 1.0;
+        for (uint32_t i = 0; i < plan.axis_count; ++i) {
+            const uint32_t d = plan.axes[i];
+            n1_blk *= static_cast<double>(plan.step1[d]);
+            n2_blk *= static_cast<double>(plan.step2[d]);
         }
-        if (d2_double) {
-            check_single_range(rep2);
-            peak2 = rep2.max_finite;
-        } else {
-            check_f32_range_for_double_out(reinterpret_cast<const float*>(read(single2.get(), context).data),
-                                           plan.s2.elements, array::is_complex(src2.dtype), peak2);
-        }
-        if (peak1 * peak2 * static_cast<double>(plan.overlap_elements) > product_ceiling) {
+        // Bound spectral product and unnormalized inverse FFT intermediates in float32.
+        const double spec1_max = c1 * peak1 * n1_blk;
+        const double spec2_max = c2 * peak2 * n2_blk;
+        const double prod_max = 2.0 * spec1_max * spec2_max;
+        const double unnorm_inv = total_fft_n;
+        if (!std::isfinite(prod_max) || prod_max > product_ceiling ||
+            !std::isfinite(prod_max * unnorm_inv) || prod_max * unnorm_inv > product_ceiling ||
+            peak1 * peak2 * static_cast<double>(plan.overlap_elements) > product_ceiling) {
             throw Error(MS_ENOTSUP, "the signal convolution product exceeds single-precision range; SciPy is used");
+        }
+        // Guard against single-precision underflow of tiny finite products.
+        if (peak1 != 0.0 && peak2 != 0.0) {
+            const double prod_min = peak1 * peak2;
+            if (prod_min < narrow_floor || (prod_min / total_fft_n) < 0x1p-116) {
+                throw Error(MS_ENOTSUP, "the signal convolution product underflows single-precision range; SciPy is used");
+            }
         }
     }
 
@@ -412,10 +414,6 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
         pad_elems2 * (buf_complex ? 2 : 1) * scalar_bytes,
         fwd2.stages.front().plan->slots[0] * fwd2.stages.front().count * scalar_bytes);
 
-    double total_fft_n = 1.0;
-    for (uint32_t i = 0; i < plan.axis_count; ++i) {
-        total_fft_n *= static_cast<double>(plan.fft_len[plan.axes[i]]);
-    }
     const double total_inv_scale = 1.0 / total_fft_n;
     const float remaining_scale = static_cast<float>(total_inv_scale / inv.applied);
 
@@ -451,7 +449,7 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
         false, 0u);
     const MSSignalPadParams pad2_params = make_pad_params(
         plan.s2, plan.nsteps2, plan.step2, dims2, pad_elems2, src2_complex, buf_complex,
-        rev_src2, rev_src2 ? plan.axis_mask : 0u);
+        rev_src2, rev_src2 ? plan.raw_axis_mask : 0u);
 
     std::vector<uint32_t> d_out, d_a, d_b;
     build_logical_spec_shapes(plan, d_out, d_a, d_b);
@@ -549,7 +547,7 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
         BufferPtr out_buf;
         if (direct_publish) {
             ms_buffer* conv_buf = fft::encode(context, batch, scratch, inv.stages, spec_prod, remaining_scale);
-            if (out_has_nonfinite && plan.out_shape.elements > 0) {
+            if (out_nf_flags && plan.out_shape.elements > 0) {
                 const uint64_t scalar_count =
                     plan.out_shape.elements * (plan.is_complex ? uint64_t{2} : uint64_t{1});
                 const uint64_t groups =
@@ -565,12 +563,15 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
             out_buf = scratch.take(conv_buf);
         } else {
             ms_buffer* conv_buf = fft::encode(context, batch, scratch, inv.stages, spec_prod, 1.0f);
-            out_buf = array::allocate(context, plan.out_shape.elements * array::dtype_size(plan.out_dtype));
+            uint64_t out_bytes = 0;
+            if (ms_checked_mul(plan.out_shape.elements, array::dtype_size(plan.out_dtype), &out_bytes) != MS_OK)
+                throw Error(MS_EOVERFLOW, "signal output byte size overflows");
+            out_buf = array::allocate(context, out_bytes);
 
             MSSignalCombineParams cp{};
             cp.ndim = plan.ndim;
             cp.out_elements = static_cast<ms_u32>(plan.out_shape.elements);
-            const uint32_t rev_out_mask = (plan.correlate && plan.swapped) ? plan.axis_mask : 0u;
+            const uint32_t rev_out_mask = (plan.correlate && plan.swapped) ? plan.raw_axis_mask : 0u;
             cp.flags = (inv_src_complex ? MS_SIGNAL_COMBINE_SRC_COMPLEX : 0u) |
                        (plan.is_complex ? MS_SIGNAL_COMBINE_DST_COMPLEX : 0u) |
                        (out_double ? MS_SIGNAL_COMBINE_DST_DOUBLE : 0u) |
@@ -602,9 +603,12 @@ BufferPtr run_fft_conv_gpu(ms_context* context, const ms_array& in1_orig, const 
             batch.commit_and_wait();
             operation.complete();
         }
-        if (out_has_nonfinite) {
-            const uint32_t nf_flags = *reinterpret_cast<const uint32_t*>(read(nf_buf.get(), context).data);
-            *out_has_nonfinite = (nf_flags != 0);
+        const uint32_t nf_flags = *reinterpret_cast<const uint32_t*>(read(nf_buf.get(), context).data);
+        if (out_double && nf_flags != 0) {
+            throw Error(MS_ENOTSUP, "float64 signal FFT convolution overflowed single precision; SciPy is used");
+        }
+        if (out_nf_flags) {
+            *out_nf_flags = nf_flags;
         }
         out_compute_dtype = array::single_of(plan.out_dtype);
         return out_buf;

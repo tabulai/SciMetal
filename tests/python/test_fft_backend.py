@@ -16,6 +16,8 @@ NAMES = ["fft", "ifft", "rfft", "irfft", "fft2", "ifft2", "fftn", "ifftn", "rfft
 
 @pytest.fixture
 def registered():
+    if not _native.has_metal():
+        pytest.skip("requires Metal GPU build")
     assert not mfft.registered()
     mfft.register()
     try:
@@ -144,6 +146,8 @@ def test_errors_and_other_functions_are_scipys(registered):
 
 
 def test_unregister_restores_scipys_backend():
+    if not _native.has_metal():
+        pytest.skip("requires Metal GPU build")
     x, r = arrays(4)
     with metal_sci.device("gpu"):
         exact = {name: getattr(scipy.fft, name)(r if name.startswith("r") else x) for name in NAMES}
@@ -165,6 +169,8 @@ def test_unregister_restores_scipys_backend():
 
 
 def test_backend_object_with_scipys_context_manager():
+    if not _native.has_metal():
+        pytest.skip("requires Metal GPU build")
     x, r = arrays(5)
     exact = scipy.fft.fft(x)
     exact_inner = scipy.fft.fft(x[:17], axis=0)

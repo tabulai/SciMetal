@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
+#include <exception>
 #include <iterator>
 #include <limits>
 #include <list>
@@ -185,9 +186,9 @@ struct Allocation {
     std::shared_ptr<ArenaSlab> arena_slab;
     uint64_t arena_offset = 0, arena_slice_bytes = 0;
     std::unique_ptr<ForeignHold> foreign;
-    bool owned = false, charged = false;
+    bool owned = false, charged = false, host_readable = true;
 
-    std::mutex sync_mutex;
+    mutable std::mutex sync_mutex;
     std::atomic<bool> host_ready{true};
     PendingFill pending_fill{};
     void* prior_event = nullptr;
@@ -309,17 +310,15 @@ struct ms_context {
         // Without a handle nothing can reuse cached storage: free it, and let
         // surviving buffers free their storage directly.
         if (pid != getpid()) return;
-        std::vector<CacheEntry> evicted;
+        std::list<CacheEntry> evicted;
         {
             std::lock_guard lock(state->mutex);
             state->open = false;
-            evicted.reserve(state->cache.size());
-            while (!state->cache.empty()) {
-                const uint64_t cap = state->cache.front().capacity();
-                evicted.push_back(std::move(state->cache.front()));
-                state->cache.pop_front();
-                state->cached -= cap;
+            for (auto& entry : state->cache) {
+                if (entry.slab) entry.slab->in_idle_cache = false;
             }
+            evicted.splice(evicted.end(), state->cache);
+            state->cached = 0;
             state->cache_index.clear();
             state->idle_slabs.clear();
         }
@@ -460,6 +459,13 @@ std::shared_ptr<Allocation> admitted_source(ms_context* context, const ms_buffer
     const Identity identity = source_identity(source);
     const Key key{source.kind, source.device_id, source.allocation_id};
     const auto state = context->state;
+    const bool need_producer = source.kind == MS_BUFFER_METAL && !(source.flags & MS_BUFFER_PRODUCER_COMPLETE);
+    std::shared_ptr<AsyncSync> exported_sync;
+    if (need_producer && source.retain == export_retain && source.release == export_release) {
+        const auto& src_alloc = static_cast<const ExportOwner*>(source.owner)->allocation;
+        std::lock_guard src_lock(src_alloc->sync_mutex);
+        exported_sync = src_alloc->producer_sync;
+    }
     std::shared_ptr<Allocation> existing;
     {
         std::lock_guard lock(state->mutex);
@@ -469,13 +475,12 @@ std::shared_ptr<Allocation> admitted_source(ms_context* context, const ms_buffer
     if (existing) {
         if (!same_backing(*existing, source, identity))
             throw Error(MS_EINVAL, "allocation identity collides with different backing");
-        if (source.kind == MS_BUFFER_METAL && !(source.flags & MS_BUFFER_PRODUCER_COMPLETE)) {
+        if (need_producer) {
             std::lock_guard sync_lock(existing->sync_mutex);
             if (!ms::detail::metal_event_complete(source.completion_event, source.completion_value)) {
                 existing->producer_event = source.completion_event;
                 existing->producer_value = source.completion_value;
-                if (source.retain == export_retain && source.release == export_release)
-                    existing->producer_sync = static_cast<const ExportOwner*>(source.owner)->allocation->producer_sync;
+                if (exported_sync) existing->producer_sync = std::move(exported_sync);
                 existing->host_ready.store(false, std::memory_order_release);
             }
         }
@@ -489,13 +494,13 @@ std::shared_ptr<Allocation> admitted_source(ms_context* context, const ms_buffer
     candidate->host = source.host_base;
     candidate->metal = source.metal_buffer;
     candidate->identity = identity;
+    candidate->host_readable = (source.flags & MS_BUFFER_HOST_READABLE) != 0;
     candidate->foreign = std::make_unique<ForeignHold>(source);
-    if (source.kind == MS_BUFFER_METAL && !(source.flags & MS_BUFFER_PRODUCER_COMPLETE)) {
+    if (need_producer) {
         if (!ms::detail::metal_event_complete(source.completion_event, source.completion_value)) {
             candidate->producer_event = source.completion_event;
             candidate->producer_value = source.completion_value;
-            if (source.retain == export_retain && source.release == export_release)
-                candidate->producer_sync = static_cast<const ExportOwner*>(source.owner)->allocation->producer_sync;
+            if (exported_sync) candidate->producer_sync = std::move(exported_sync);
             candidate->host_ready.store(false, std::memory_order_release);
         }
     }
@@ -516,6 +521,15 @@ std::shared_ptr<Allocation> admitted_source(ms_context* context, const ms_buffer
             candidate->charged = true;
             state->mark_peak();
             result = candidate;
+        }
+    }
+    if (result != candidate && need_producer) {
+        std::lock_guard sync_lock(result->sync_mutex);
+        if (!ms::detail::metal_event_complete(source.completion_event, source.completion_value)) {
+            result->producer_event = source.completion_event;
+            result->producer_value = source.completion_value;
+            if (exported_sync) result->producer_sync = std::move(exported_sync);
+            result->host_ready.store(false, std::memory_order_release);
         }
     }
     return result;
@@ -610,18 +624,15 @@ RawAllocation native_allocation(State& state, uint64_t capacity) {
     } catch (const Error& error) {
         if (error.status != MS_EOOM) throw;
         // The device, not the budget, refused: free idle storage and retry once.
-        std::vector<CacheEntry> evicted;
+        std::list<CacheEntry> evicted;
         {
             std::lock_guard lock(state.mutex);
             if (state.cache.empty()) throw;
-            evicted.reserve(state.cache.size());
-            while (!state.cache.empty()) {
-                const uint64_t cap = state.cache.front().capacity();
-                if (state.cache.front().slab) state.cache.front().slab->in_idle_cache = false;
-                evicted.push_back(std::move(state.cache.front()));
-                state.cache.pop_front();
-                state.cached -= cap;
+            for (auto& entry : state.cache) {
+                if (entry.slab) entry.slab->in_idle_cache = false;
             }
+            evicted.splice(evicted.end(), state.cache);
+            state.cached = 0;
             state.cache_index.clear();
             state.idle_slabs.clear();
         }
@@ -664,11 +675,6 @@ void setup_allocation_fill(State& state, ms_context* context, Allocation& alloca
         return;
     }
     if (!allocation.arena_slab) wait_raw_in_flight(allocation.raw, context);
-    if (allocation.arena_slab && fill == Fill::unfilled) {
-        if (state.poison && logical)
-            std::memset(static_cast<uint8_t*>(allocation.host) + offset, 0xa5, static_cast<size_t>(logical));
-        return;
-    }
     state.host_fill_bytes.fetch_add(
         initialize(static_cast<uint8_t*>(allocation.host) + offset, logical, fill_capacity, fill, state.poison),
         std::memory_order_relaxed);
@@ -774,7 +780,30 @@ BufferPtr allocate_scratch(ms_context* context, uint64_t logical, Fill fill) {
     bool reused_slab = false;
     void* slice_prior_event = nullptr;
     uint64_t slice_prior_value = 0;
+    void* waited_prior_event = nullptr;
+    uint64_t waited_prior_value = 0;
     RawAllocation wrap_wait;
+
+    struct SlabSliceGuard {
+        State* state = nullptr;
+        std::shared_ptr<ArenaSlab>* slab = nullptr;
+        bool active = false;
+        ~SlabSliceGuard() noexcept {
+            if (!active || !state || !slab || !*slab) return;
+            std::shared_ptr<ArenaSlab> dead_slab;
+            {
+                std::lock_guard lock(state->mutex);
+                auto& s = *slab;
+                if (--s->active_slices == 0) {
+                    state->owned -= s->raw.capacity;
+                    auto active_it = std::find(state->active_slabs.begin(), state->active_slabs.end(), s);
+                    if (active_it != state->active_slabs.end()) state->active_slabs.erase(active_it);
+                    s->in_active_list = false;
+                    dead_slab = std::move(s);
+                }
+            }
+        }
+    } slice_guard{&state, &chosen, false};
 
     {
         std::unique_lock lock(state.mutex);
@@ -792,10 +821,12 @@ BufferPtr allocate_scratch(ms_context* context, uint64_t logical, Fill fill) {
                 slice_prior_event = slab.prior_event;
                 slice_prior_value = slab.prior_value;
             } else {
+                // Keep slab.prior_event intact until our wait completes outside
+                // the mutex so concurrent suballocators also synchronize.
                 wrap_wait.in_flight_event = slab.prior_event;
                 wrap_wait.in_flight_value = slab.prior_value;
-                slab.prior_event = nullptr;
-                slab.prior_value = 0;
+                waited_prior_event = slab.prior_event;
+                waited_prior_value = slab.prior_value;
             }
         };
         // 1. Suballocate from an already-active ArenaSlab if room remains.
@@ -806,6 +837,7 @@ BufferPtr allocate_scratch(ms_context* context, uint64_t logical, Fill fill) {
                 slice_offset = slab->bump;
                 slab->bump += slice_bytes;
                 ++slab->active_slices;
+                slice_guard.active = true;
                 claim_slab_prior(*slab);
                 reused_slab = true;
                 break;
@@ -813,6 +845,8 @@ BufferPtr allocate_scratch(ms_context* context, uint64_t logical, Fill fill) {
         }
         // 2. Otherwise check out the most recently cached idle ArenaSlab.
         if (!chosen && !state.idle_slabs.empty()) {
+            // Reserve before mutating idle_slabs / cache so push_back cannot throw.
+            state.active_slabs.reserve(state.active_slabs.size() + 1);
             chosen = state.idle_slabs.back();
             state.idle_slabs.pop_back();
             if (chosen->in_idle_cache) {
@@ -840,13 +874,17 @@ BufferPtr allocate_scratch(ms_context* context, uint64_t logical, Fill fill) {
                 chosen->raw.in_flight_sync.reset();
                 chosen->bump = 0;
             } else {
+                // Keep prior_event published on the slab until wait_raw_in_flight
+                // finishes so concurrent suballocators cannot race ahead of it.
+                chosen->prior_event = chosen->raw.in_flight_event;
+                chosen->prior_value = chosen->raw.in_flight_value;
                 wrap_wait.in_flight_event = chosen->raw.in_flight_event;
                 wrap_wait.in_flight_value = chosen->raw.in_flight_value;
                 wrap_wait.in_flight_sync = std::move(chosen->raw.in_flight_sync);
+                waited_prior_event = chosen->prior_event;
+                waited_prior_value = chosen->prior_value;
                 chosen->raw.in_flight_event = nullptr;
                 chosen->raw.in_flight_value = 0;
-                chosen->prior_event = nullptr;
-                chosen->prior_value = 0;
                 chosen->bump = 0;
             }
             slice_offset = chosen->bump;
@@ -855,6 +893,7 @@ BufferPtr allocate_scratch(ms_context* context, uint64_t logical, Fill fill) {
             chosen->in_active_list = true;
             state.active_slabs.push_back(chosen);
             state.owned += chosen->raw.capacity;
+            slice_guard.active = true;
             state.mark_peak();
             reused_slab = true;
         }
@@ -883,6 +922,7 @@ BufferPtr allocate_scratch(ms_context* context, uint64_t logical, Fill fill) {
             fresh->in_active_list = true;
 
             lock.lock();
+            state.active_slabs.reserve(state.active_slabs.size() + 1);
             state.pending -= held.bytes;
             held.bytes = 0;
             state.owned += arena_slab_bytes;
@@ -890,6 +930,7 @@ BufferPtr allocate_scratch(ms_context* context, uint64_t logical, Fill fill) {
             state.observe_owned_storage();
             state.mark_peak();
             chosen = std::move(fresh);
+            slice_guard.active = true;
             slice_offset = 0;
             reused_slab = false;
         }
@@ -912,9 +953,15 @@ BufferPtr allocate_scratch(ms_context* context, uint64_t logical, Fill fill) {
     BufferPtr buffer(new ms_buffer(allocation, slice_offset, logical));
     {
         std::lock_guard lock(state.mutex);
+        if (waited_prior_event && chosen->prior_event == waited_prior_event &&
+            chosen->prior_value == waited_prior_value) {
+            chosen->prior_event = nullptr;
+            chosen->prior_value = 0;
+        }
         register_native(state, allocation, chosen->raw.device_id);
         ++state.count;
         allocation->charged = true;
+        slice_guard.active = false;
     }
     (reused_slab ? state.cached_reuses : state.native_allocations).fetch_add(1, std::memory_order_relaxed);
     return buffer;
@@ -965,8 +1012,12 @@ BufferPtr wrap_immutable(ms_context* context, const void* bytes, uint64_t length
 }
 ReadView read(const ms_buffer* buffer, ms_context* expected) {
     check_buffer_context(buffer, expected);
+    if (!buffer->allocation->host_readable)
+        throw Error(MS_ENOTSUP, "buffer is not host-readable");
     ensure_host_ready(*buffer->allocation, expected);
     const auto* base = static_cast<const uint8_t*>(buffer->allocation->host);
+    if (!base && buffer->size)
+        throw Error(MS_ENOTSUP, "buffer has no host-readable mapping");
     return {base ? base + buffer->offset : nullptr, buffer->size};
 }
 uint64_t buffer_size(const ms_buffer* buffer, ms_context* expected) {
@@ -1006,9 +1057,28 @@ BufferResidency buffer_residency(const ms_buffer* buffer) noexcept {
     res.size = buffer->size;
     res.metal_owned = alloc.owned && alloc.metal != nullptr;
     if (!alloc.host_ready.load(std::memory_order_acquire)) {
+        std::lock_guard sync_lock(alloc.sync_mutex);
         res.async_in_flight = alloc.producer_sync != nullptr || alloc.producer_event != nullptr;
     }
     return res;
+}
+
+void rollback_gpu_batch(const PreparedGpuBatch& prepared) noexcept {
+    for (const auto& opaque : prepared.claimed) {
+        auto& alloc = *static_cast<Allocation*>(opaque.get());
+        std::lock_guard sync_lock(alloc.sync_mutex);
+        alloc.pending_fill.active = true;
+        alloc.host_ready.store(false, std::memory_order_release);
+    }
+    for (const auto& prior : prepared.cleared_priors) {
+        auto& alloc = *static_cast<Allocation*>(prior.alloc.get());
+        std::lock_guard sync_lock(alloc.sync_mutex);
+        if (!alloc.prior_event && !metal_event_complete(prior.event, prior.value)) {
+            alloc.prior_event = prior.event;
+            alloc.prior_value = prior.value;
+            alloc.host_ready.store(false, std::memory_order_release);
+        }
+    }
 }
 
 PreparedGpuBatch prepare_gpu_batch(ms_context* context, const std::vector<const ms_buffer*>& bound_buffers,
@@ -1038,32 +1108,41 @@ PreparedGpuBatch prepare_gpu_batch(ms_context* context, const std::vector<const 
     std::sort(matched.begin(), matched.end());
     matched.erase(std::unique(matched.begin(), matched.end()), matched.end());
     result.touched.reserve(matched.size());
-    for (auto& alloc : matched) {
-        std::lock_guard sync_lock(alloc->sync_mutex);
-        if (alloc->producer_event && alloc->producer_value &&
-            !metal_event_complete(alloc->producer_event, alloc->producer_value)) {
-            result.waits.push_back({alloc->producer_event, alloc->producer_value});
-        }
-        if (alloc->prior_event && alloc->prior_value) {
-            if (!metal_event_complete(alloc->prior_event, alloc->prior_value))
-                result.waits.push_back({alloc->prior_event, alloc->prior_value});
-            alloc->prior_event = nullptr;
-            alloc->prior_value = 0;
-        }
-        if (alloc->pending_fill.active) {
-            const auto& pf = alloc->pending_fill;
-            if (pf.zero_logical) {
-                if (pf.capacity) result.fills.push_back({alloc->metal, pf.offset, pf.capacity, 0x00});
-            } else {
-                if (pf.poison_logical && pf.logical)
-                    result.fills.push_back({alloc->metal, pf.offset, pf.logical, 0xa5});
-                if (pf.capacity > pf.logical)
-                    result.fills.push_back({alloc->metal, pf.offset + pf.logical, pf.capacity - pf.logical, 0x00});
+    try {
+        for (auto& alloc : matched) {
+            std::lock_guard sync_lock(alloc->sync_mutex);
+            if (alloc->producer_event && alloc->producer_value &&
+                !metal_event_complete(alloc->producer_event, alloc->producer_value)) {
+                result.waits.push_back({alloc->producer_event, alloc->producer_value});
             }
-            alloc->pending_fill.active = false;
-            result.claimed.push_back(alloc);
+            if (alloc->prior_event && alloc->prior_value) {
+                void* ev = alloc->prior_event;
+                const uint64_t val = alloc->prior_value;
+                if (!metal_event_complete(ev, val)) {
+                    result.waits.push_back({ev, val});
+                    result.cleared_priors.push_back({alloc, ev, val});
+                }
+                alloc->prior_event = nullptr;
+                alloc->prior_value = 0;
+            }
+            if (alloc->pending_fill.active) {
+                const auto& pf = alloc->pending_fill;
+                if (pf.zero_logical) {
+                    if (pf.capacity) result.fills.push_back({alloc->metal, pf.offset, pf.capacity, 0x00});
+                } else {
+                    if (pf.poison_logical && pf.logical)
+                        result.fills.push_back({alloc->metal, pf.offset, pf.logical, 0xa5});
+                    if (pf.capacity > pf.logical)
+                        result.fills.push_back({alloc->metal, pf.offset + pf.logical, pf.capacity - pf.logical, 0x00});
+                }
+                result.claimed.push_back(alloc);
+                alloc->pending_fill.active = false;
+            }
+            result.touched.push_back(alloc);
         }
-        result.touched.push_back(alloc);
+    } catch (...) {
+        rollback_gpu_batch(result);
+        throw;
     }
     if (result.waits.size() > 1) {
         std::sort(result.waits.begin(), result.waits.end(), [](const EventWait& a, const EventWait& b) {
@@ -1118,6 +1197,27 @@ void complete_sync_gpu_batch(ms_context* context, const PreparedGpuBatch& prepar
     }
 }
 
+std::vector<std::shared_ptr<void>> borrowed_pins_for_async(const PreparedGpuBatch& prepared,
+                                                           const ms_buffer* const* outputs, size_t output_count) {
+    std::vector<std::shared_ptr<void>> pins;
+    for (const auto& opaque : prepared.touched) {
+        const auto& alloc = *static_cast<const Allocation*>(opaque.get());
+        if (alloc.owned) continue;
+        bool is_output = false;
+        for (size_t i = 0; i < output_count; ++i) {
+            if (outputs[i] && outputs[i]->allocation.get() == &alloc) {
+                is_output = true;
+                break;
+            }
+        }
+        if (is_output) continue;
+        if (std::find(prepared.claimed.begin(), prepared.claimed.end(), opaque) != prepared.claimed.end())
+            continue;
+        pins.push_back(opaque);
+    }
+    return pins;
+}
+
 std::shared_ptr<void> context_state_handle(ms_context* context) {
     check_context(context);
     return context->state;
@@ -1128,6 +1228,7 @@ void attach_async_gpu_batch(ms_context* context, const PreparedGpuBatch& prepare
                             const std::shared_ptr<AsyncSync>& sync) {
     if (context && context->state && !prepared.touched.empty()) {
         std::vector<std::shared_ptr<AsyncSync>> replaced_syncs;
+        replaced_syncs.reserve(prepared.touched.size());
         {
             std::lock_guard lock(context->state->mutex);
             for (const auto& opaque : prepared.touched) {
@@ -1198,9 +1299,16 @@ void flush_async_gpu(ms_context* context) {
         std::lock_guard lock(context->state->async_mutex);
         pending.swap(context->state->async_submissions);
     }
+    std::exception_ptr first_error;
     for (auto& item : pending) {
-        if (item) item->wait(context);
+        if (!item) continue;
+        try {
+            item->wait(context);
+        } catch (...) {
+            if (!first_error) first_error = std::current_exception();
+        }
     }
+    if (first_error) std::rethrow_exception(first_error);
 }
 
 void record_host_wait(ms_context* context, uint64_t nanoseconds) noexcept {
@@ -1322,7 +1430,7 @@ ms_status ms_context_set_cache_limit(ms_context* context, uint64_t bytes) {
     return ms::detail::api(context, [&] {
         auto& state = *context->state;
         if (bytes && state.kind != MS_BUFFER_METAL) throw Error(MS_ENOTSUP, "only Metal storage caches buffers");
-        std::vector<CacheEntry> evicted;
+        std::list<CacheEntry> evicted;
         {
             std::lock_guard lock(state.mutex);
             state.explicit_cache_limit = true;
@@ -1341,8 +1449,7 @@ ms_status ms_context_set_cache_limit(ms_context* context, uint64_t bytes) {
                             break;
                         }
                 }
-                evicted.push_back(std::move(state.cache.front()));
-                state.cache.pop_front();
+                evicted.splice(evicted.end(), state.cache, state.cache.begin());
                 state.cached -= cap;
             }
         }
@@ -1350,17 +1457,14 @@ ms_status ms_context_set_cache_limit(ms_context* context, uint64_t bytes) {
 }
 ms_status ms_context_trim(ms_context* context) {
     return ms::detail::api(context, [&] {
-        std::vector<CacheEntry> evicted;
+        std::list<CacheEntry> evicted;
         {
             std::lock_guard lock(context->state->mutex);
-            evicted.reserve(context->state->cache.size());
-            while (!context->state->cache.empty()) {
-                const uint64_t cap = context->state->cache.front().capacity();
-                if (context->state->cache.front().slab) context->state->cache.front().slab->in_idle_cache = false;
-                evicted.push_back(std::move(context->state->cache.front()));
-                context->state->cache.pop_front();
-                context->state->cached -= cap;
+            for (auto& entry : context->state->cache) {
+                if (entry.slab) entry.slab->in_idle_cache = false;
             }
+            evicted.splice(evicted.end(), context->state->cache);
+            context->state->cached = 0;
             context->state->cache_index.clear();
             context->state->idle_slabs.clear();
         }
@@ -1482,6 +1586,7 @@ ms_status ms_buffer_export(const ms_buffer* buffer, ms_buffer_view* out) {
         void* completion_event = nullptr;
         uint64_t completion_value = 0;
         bool producer_complete = true;
+        std::shared_ptr<AsyncSync> completed_sync;
         {
             std::unique_lock sync_lock(allocation->sync_mutex);
             if (allocation->pending_fill.active) {
@@ -1490,9 +1595,9 @@ ms_status ms_buffer_export(const ms_buffer* buffer, ms_buffer_view* out) {
                 ensure_host_ready(*allocation, nullptr);
             } else if (allocation->producer_event && allocation->producer_value) {
                 if (ms::detail::metal_event_complete(allocation->producer_event, allocation->producer_value)) {
+                    completed_sync = std::move(allocation->producer_sync);
                     allocation->producer_event = nullptr;
                     allocation->producer_value = 0;
-                    allocation->producer_sync.reset();
                     allocation->host_ready.store(true, std::memory_order_release);
                 } else {
                     producer_complete = false;
@@ -1501,12 +1606,13 @@ ms_status ms_buffer_export(const ms_buffer* buffer, ms_buffer_view* out) {
                 }
             }
         }
+        if (completed_sync) completed_sync->wait(nullptr);
         auto owner = std::make_unique<ExportOwner>(allocation);
         ms_buffer_view result{};
         result.struct_size = sizeof(result);
         result.abi_version = MS_BUFFER_ABI_VERSION;
         result.kind = allocation->key.kind;
-        result.flags = MS_BUFFER_HOST_READABLE | MS_BUFFER_IMMUTABLE |
+        result.flags = (allocation->host_readable ? MS_BUFFER_HOST_READABLE : 0u) | MS_BUFFER_IMMUTABLE |
                        (producer_complete ? MS_BUFFER_PRODUCER_COMPLETE : 0u);
         result.allocation_id = allocation->key.id;
         result.device_id = allocation->key.device;

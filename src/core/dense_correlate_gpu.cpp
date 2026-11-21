@@ -1,7 +1,6 @@
 // GPU engine of the shared dense N-D correlation primitive.
 #include "dense_correlate.hpp"
 #include "dense_correlate_kernels.h"
-#include "ms/detail/parallel.hpp"
 #include "runtime/metal_compute.hpp"
 
 #include <algorithm>
@@ -102,7 +101,9 @@ bool gpu_supports(const StencilSpec& spec, const TapTable& taps) noexcept {
         return false;
     if (taps.is_complex_weights && !array::is_complex(spec.in_dtype)) return false;
     if (array::is_complex(spec.in_dtype) != array::is_complex(spec.out_dtype)) return false;
-    if (spec.in_shape.elements > INT32_MAX || spec.out_shape.elements > INT32_MAX) return false;
+    if ((spec.in_shape.elements == 0 && spec.out_shape.elements > 0) || spec.in_shape.elements > INT32_MAX ||
+        spec.out_shape.elements > INT32_MAX)
+        return false;
     if (taps.taps.size() > MS_DENSE_GPU_MAX_TAPS) return false;
     for (uint32_t d = 0; d < spec.in_shape.ndim; ++d) {
         if (spec.in_shape.dims[d] > MS_DENSE_GPU_MAX_EXTENT || spec.out_shape.dims[d] > MS_DENSE_GPU_MAX_EXTENT)
@@ -202,29 +203,23 @@ BufferPtr run_gpu(ms_context* ctx, const StencilSpec& spec, const TapTable& taps
         return BufferPtr{};
     }
 
-    const bool input_is_double = array::is_double(spec.in_dtype);
     const bool output_is_double = array::is_double(spec.out_dtype);
+    const bool needs_post_cast = array::is_int_or_bool(spec.out_dtype);
+    const bool need_report = (spec.in_dtype != MS_FLOAT32 && spec.in_dtype != MS_COMPLEX64);
+    const bool need_gain_check =
+        need_report || output_is_double || needs_post_cast || spec.cpu_accum == AccumMode::Double;
     array::ConvertReport report;
-    BufferPtr single_in = array::load_single(ctx, input, spec.in_shape, input_is_double ? &report : nullptr);
-    if (input_is_double || output_is_double) {
-        if (!input_is_double) {
-            const float* p = reinterpret_cast<const float*>(read(single_in.get(), ctx).data);
-            const uint64_t nscal = spec.in_shape.elements * (array::is_complex(spec.in_dtype) ? 2 : 1);
-            double lane_max[parallel::max_lanes] = {};
-            parallel::parallel_for(nscal, uint64_t{1} << 18, [&](unsigned lane, uint64_t begin, uint64_t end) {
-                float lm = 0.0f;
-                for (uint64_t i = begin; i < end; ++i) {
-                    const float v = std::fabs(p[i]);
-                    if (std::isfinite(v) && v > lm) lm = v;
-                }
-                lane_max[lane] = static_cast<double>(lm);
-            });
-            double max_fin = 0.0;
-            for (unsigned l = 0; l < parallel::max_lanes; ++l) {
-                if (lane_max[l] > max_fin) max_fin = lane_max[l];
-            }
-            report.max_finite = max_fin;
+    BufferPtr single_in = array::load_single(ctx, input, spec.in_shape, need_gain_check ? &report : nullptr,
+                                             /*raw_bool=*/true);
+    if (need_report && report.inexact_int) {
+        single_in.reset();
+        if (!allow_cpu_fallback) {
+            throw Error(MS_ENOTSUP, "integer input exceeds exact float32 range (|x| >= 2^24); forced GPU cannot fall back to CPU");
         }
+        overflow_reason = "integer input exceeds exact float32 range (|x| >= 2^24); re-routed to CPU";
+        return BufferPtr{};
+    }
+    if (need_gain_check) {
         overflow_reason = check_gain_range(spec, taps, report);
         if (!overflow_reason.empty()) {
             single_in.reset();
@@ -235,12 +230,30 @@ BufferPtr run_gpu(ms_context* ctx, const StencilSpec& spec, const TapTable& taps
         }
     }
 
+    StencilSpec gpu_spec = spec;
+    if (needs_post_cast) gpu_spec.out_dtype = MS_FLOAT32;
+
+    uint64_t gpu_out_bytes = 0;
+    if (ms_checked_mul(gpu_spec.out_shape.elements, array::dtype_size(gpu_spec.out_dtype), &gpu_out_bytes) != MS_OK)
+        throw Error(MS_EOVERFLOW, "dense_correlate: output byte size overflows");
+    uint64_t final_out_bytes = gpu_out_bytes;
+    if (needs_post_cast &&
+        ms_checked_mul(spec.out_shape.elements, array::dtype_size(spec.out_dtype), &final_out_bytes) != MS_OK)
+        throw Error(MS_EOVERFLOW, "dense_correlate: output byte size overflows");
+
     GpuOperationScope operation(ctx, true);
-    BufferPtr output = array::allocate(ctx, spec.out_shape.elements * array::dtype_size(spec.out_dtype));
+    BufferPtr output = array::allocate(ctx, gpu_out_bytes);
     gpu::Batch batch(ctx);
-    BufferPtr tap_buf = encode_gpu(ctx, batch, spec, taps, single_in.get(), output.get());
+    BufferPtr tap_buf = encode_gpu(ctx, batch, gpu_spec, taps, single_in.get(), output.get());
     batch.commit_and_wait();
     operation.complete();
+    if (needs_post_cast) {
+        BufferPtr typed_out = array::allocate(ctx, final_out_bytes);
+        array::ndimage_cast_from_float(
+            reinterpret_cast<const float*>(read(output.get(), ctx).data),
+            spec.out_dtype, mutable_data(typed_out.get()), spec.out_shape.elements, /*dense_safe=*/true);
+        return typed_out;
+    }
     return output;
 }
 

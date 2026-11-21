@@ -16,6 +16,7 @@ import scipy.fft
 
 import metal_sci
 import metal_sci.fft as mfft
+from metal_sci import _native
 
 TOLERANCE = 5e-6
 EXHAUSTIVE = os.environ.get("METAL_SCI_FFT_EXHAUSTIVE", "0") == "1"
@@ -40,6 +41,8 @@ def spread(candidates, count):
 
 @pytest.fixture(autouse=True)
 def gpu():
+    if not _native.has_metal():
+        pytest.skip("requires Metal GPU build")
     with metal_sci.device("gpu"), metal_sci.precision("fast"):
         yield
 

@@ -577,6 +577,22 @@ void arena_slab_scratch_suballocation() {
     Context tight(MS_BUFFER_METAL, 2u << 20);
     auto tight_scratch = ms::detail::allocate_scratch(tight.handle, 32, ms::detail::Fill::zero);
     CHECK(!ms::detail::is_scratch_slice(tight_scratch.get()));
+
+    // Fill::unfilled on a reused ArenaSlab slice must still zero its [len..slot_cap) tail padding.
+    {
+        Context plain(MS_BUFFER_METAL, 64 << 20, 0);
+        auto dirty = ms::detail::allocate_scratch(plain.handle, 256, ms::detail::Fill::unfilled);
+        CHECK(ms::detail::is_scratch_slice(dirty.get()));
+        std::memset(ms::detail::mutable_data(dirty.get()), 0xAA, 256);
+        dirty.reset();
+
+        auto reused = ms::detail::allocate_scratch(plain.handle, 12, ms::detail::Fill::unfilled);
+        CHECK(ms::detail::is_scratch_slice(reused.get()));
+        const auto rv = ms::detail::device_view(reused.get(), plain.handle);
+        CHECK(rv.offset == 0);
+        const auto* raw = static_cast<const unsigned char*>(ms::detail::mutable_data(reused.get()));
+        for (size_t i = 12; i < 256; ++i) CHECK(raw[i] == 0);
+    }
 }
 
 void bounded_overfit_reuse() {

@@ -7,7 +7,6 @@
 // the widened result directly, so no pass ever reads a float64 and no separate
 // conversion pass runs (probes/README.md, rules 1 and 2).
 #include "filters.hpp"
-#include "ms/detail/parallel.hpp"
 #include "ndimage_kernels.h"
 #include "runtime/metal_compute.hpp"
 
@@ -136,6 +135,16 @@ std::string check_chain_gain_range(const std::vector<Pass>& passes, const array:
         if (pass.kind == MS_NDIMAGE_UNIFORM) {
             const double w = std::fabs(static_cast<double>(static_cast<float>(1.0 / static_cast<double>(pass.size))));
             gain = static_cast<double>(pass.size) * w;
+        } else if (pass.symmetry != Symmetry::none) {
+            // Symmetric/antisymmetric kernels read weights[0..half] and multiply
+            // weights[j] (j < half) by (below +- above), even if weights[size-1-j] is NaN.
+            const uint64_t half = pass.size / 2;
+            const double center = std::fabs(static_cast<double>(static_cast<float>(pass.weights[half])));
+            if (std::isfinite(center)) gain += center;
+            for (uint64_t j = 0; j < half; ++j) {
+                const double aw = std::fabs(static_cast<double>(static_cast<float>(pass.weights[j])));
+                if (std::isfinite(aw)) gain += 2.0 * aw;
+            }
         } else {
             for (uint64_t j = 0; j < pass.size; ++j) {
                 const double aw = std::fabs(static_cast<double>(static_cast<float>(pass.weights[j])));
@@ -194,28 +203,10 @@ std::string check_composite_gain_range(const CompositePlan& plan, const array::C
     }
     return {};
 }
-
-double scan_max_finite(const ms_buffer* single_buf, ms_context* context, uint64_t elements) {
-    const float* p = reinterpret_cast<const float*>(read(single_buf, context).data);
-    double lane_max[parallel::max_lanes] = {};
-    parallel::parallel_for(elements, uint64_t{1} << 18, [&](unsigned lane, uint64_t begin, uint64_t end) {
-        float lm = 0.0f;
-        for (uint64_t i = begin; i < end; ++i) {
-            const float v = std::fabs(p[i]);
-            if (std::isfinite(v) && v > lm) lm = v;
-        }
-        lane_max[lane] = static_cast<double>(lm);
-    });
-    double max_fin = 0.0;
-    for (unsigned l = 0; l < parallel::max_lanes; ++l) {
-        if (lane_max[l] > max_fin) max_fin = lane_max[l];
-    }
-    return max_fin;
-}
 } // namespace
 
 BufferPtr run_gpu(ms_context* context, const Plan& plan, const ms_array& input, bool allow_cpu_fallback,
-                  std::string& overflow_reason) {
+                  std::string& overflow_reason, bool dense_safe) {
     static std::atomic<uint32_t> capacities[2][3] = {};
     overflow_reason = check_parameters_range(plan);
     if (!overflow_reason.empty()) {
@@ -229,23 +220,27 @@ BufferPtr run_gpu(ms_context* context, const Plan& plan, const ms_array& input, 
     const uint64_t elements = plan.shape.elements;
     const bool input_is_double = plan.dtype == MS_FLOAT64;
     const uint32_t out_dtype = plan.out_dtype ? plan.out_dtype : plan.dtype;
-    const bool widen = out_dtype == MS_FLOAT64;
+    const bool direct_f64_store = out_dtype == MS_FLOAT64;
+    const bool needs_post_cast = array::is_int_or_bool(out_dtype);
 
     array::ConvertReport report;
     BufferPtr single[2];
-    single[0] = array::load_single(context, input, plan.shape, input_is_double ? &report : nullptr);
-    if (input_is_double || widen) {
-        if (!input_is_double) {
-            report.max_finite = scan_max_finite(single[0].get(), context, elements);
+    single[0] = array::load_single(context, input, plan.shape, &report, /*raw_bool=*/true);
+    if (array::is_int_or_bool(plan.dtype) && report.inexact_int) {
+        single[0].reset();
+        if (!allow_cpu_fallback) {
+            throw Error(MS_ENOTSUP, "integer input exceeds exact float32 range (|x| >= 2^24); forced GPU cannot fall back to CPU");
         }
-        overflow_reason = check_gain_range(plan, report, input_is_double);
-        if (!overflow_reason.empty()) {
-            single[0].reset();
-            if (!allow_cpu_fallback) {
-                throw Error(MS_ENOTSUP, "values exceed single-precision range; forced GPU cannot fall back to CPU");
-            }
-            return BufferPtr{};
+        overflow_reason = "integer input exceeds exact float32 range (|x| >= 2^24); re-routed to CPU";
+        return BufferPtr{};
+    }
+    overflow_reason = check_gain_range(plan, report, input_is_double);
+    if (!overflow_reason.empty()) {
+        single[0].reset();
+        if (!allow_cpu_fallback) {
+            throw Error(MS_ENOTSUP, "values exceed single-precision range; forced GPU cannot fall back to CPU");
         }
+        return BufferPtr{};
     }
 
     GpuOperationScope operation(context, true);
@@ -267,16 +262,17 @@ BufferPtr run_gpu(ms_context* context, const Plan& plan, const ms_array& input, 
     }
 
     // Pass i reads buffer i % 2 and writes the other one; a float64 result has
-    // its own buffer, written by the last pass.
-    if (count > 1 || !widen) single[1] = array::allocate(context, elements * sizeof(float));
-    BufferPtr wide = widen ? array::allocate(context, elements * sizeof(double)) : BufferPtr();
+    // its own buffer, written by the last pass. Integer/bool results write
+    // float32 then post-cast on P-cores.
+    if (count > 1 || !direct_f64_store) single[1] = array::allocate(context, elements * sizeof(float));
+    BufferPtr wide = direct_f64_store ? array::allocate(context, elements * sizeof(double)) : BufferPtr();
 
     gpu::Batch batch(context);
     uint32_t weight_offset = 0;
     for (size_t i = 0; i < count; ++i) {
         const Pass& pass = plan.passes[i];
         const bool last = i + 1 == count;
-        const uint32_t wide_store = last && widen, order = symmetry_index(pass.symmetry);
+        const uint32_t wide_store = last && direct_f64_store, order = symmetry_index(pass.symmetry);
         const char* kernel = kernels[wide_store][order];
         const uint32_t capacity = threadgroup_capacity(kernel, capacities[wide_store][order]);
         MSNdimageCorrelateParams params{};
@@ -288,7 +284,7 @@ BufferPtr run_gpu(ms_context* context, const Plan& plan, const ms_array& input, 
         params.before = static_cast<uint32_t>(pass.before);
         params.mode = pass.mode;
         params.cval = static_cast<float>(pass.cval);
-        const ms_buffer* destination = last && widen ? wide.get() : single[(i + 1) % 2].get();
+        const ms_buffer* destination = last && direct_f64_store ? wide.get() : single[(i + 1) % 2].get();
         batch.dispatch(kernel, params,
                        {gpu::bind(single[i % 2].get(), context), gpu::bind(destination, context),
                         gpu::bind(weights.get(), context)},
@@ -297,7 +293,15 @@ BufferPtr run_gpu(ms_context* context, const Plan& plan, const ms_array& input, 
     }
     batch.commit_and_wait();
     operation.complete();
-    return widen ? std::move(wide) : std::move(single[count % 2]);
+    if (direct_f64_store) return wide;
+    if (needs_post_cast) {
+        BufferPtr out_buf = array::allocate(context, elements * array::dtype_size(out_dtype));
+        array::ndimage_cast_from_float(
+            reinterpret_cast<const float*>(read(single[count % 2].get(), context).data),
+            out_dtype, mutable_data(out_buf.get()), elements, dense_safe);
+        return out_buf;
+    }
+    return std::move(single[count % 2]);
 }
 
 BufferPtr run_gpu_composite(ms_context* context, const CompositePlan& plan, const ms_array& input,
@@ -315,22 +319,26 @@ BufferPtr run_gpu_composite(ms_context* context, const CompositePlan& plan, cons
 
     const uint64_t elements = plan.shape.elements;
     const bool input_is_double = plan.in_dtype == MS_FLOAT64;
-    const bool widen_out = plan.out_dtype == MS_FLOAT64;
+    const bool direct_f64_store = plan.out_dtype == MS_FLOAT64;
+    const bool needs_post_cast = array::is_int_or_bool(plan.out_dtype);
 
     array::ConvertReport report;
-    BufferPtr single_in = array::load_single(context, input, plan.shape, input_is_double ? &report : nullptr);
-    if (input_is_double || widen_out) {
-        if (!input_is_double) {
-            report.max_finite = scan_max_finite(single_in.get(), context, elements);
+    BufferPtr single_in = array::load_single(context, input, plan.shape, &report, /*raw_bool=*/true);
+    if (array::is_int_or_bool(plan.in_dtype) && report.inexact_int) {
+        single_in.reset();
+        if (!allow_cpu_fallback) {
+            throw Error(MS_ENOTSUP, "integer input exceeds exact float32 range (|x| >= 2^24); forced GPU cannot fall back to CPU");
         }
-        overflow_reason = check_composite_gain_range(plan, report, input_is_double);
-        if (!overflow_reason.empty()) {
-            single_in.reset();
-            if (!allow_cpu_fallback) {
-                throw Error(MS_ENOTSUP, "values exceed single-precision range; forced GPU cannot fall back to CPU");
-            }
-            return BufferPtr{};
+        overflow_reason = "integer input exceeds exact float32 range (|x| >= 2^24); re-routed to CPU";
+        return BufferPtr{};
+    }
+    overflow_reason = check_composite_gain_range(plan, report, input_is_double);
+    if (!overflow_reason.empty()) {
+        single_in.reset();
+        if (!allow_cpu_fallback) {
+            throw Error(MS_ENOTSUP, "values exceed single-precision range; forced GPU cannot fall back to CPU");
         }
+        return BufferPtr{};
     }
 
     GpuOperationScope operation(context, true);
@@ -377,7 +385,8 @@ BufferPtr run_gpu_composite(ms_context* context, const CompositePlan& plan, cons
         if (need_res1) res1 = array::allocate(context, f32_bytes);
     }
     BufferPtr acc = (k_count >= 3) ? array::allocate(context, f32_bytes) : BufferPtr();
-    BufferPtr out_buf = array::allocate(context, elements * array::dtype_size(plan.out_dtype));
+    const uint64_t gpu_out_bytes = needs_post_cast ? f32_bytes : elements * array::dtype_size(plan.out_dtype);
+    BufferPtr out_buf = array::allocate(context, gpu_out_bytes);
 
     gpu::Batch batch(context);
     uint32_t weight_offset = 0;
@@ -425,18 +434,18 @@ BufferPtr run_gpu_composite(ms_context* context, const CompositePlan& plan, cons
     if (k_count == 1) {
         if (plan.chains[0].empty()) {
             const uint32_t op = is_grad ? MS_NDIMAGE_COMBINE_OP_SQRT_SQ1 : MS_NDIMAGE_COMBINE_OP_COPY;
-            encode_combine(op, single_in.get(), single_in.get(), out_buf.get(), widen_out);
+            encode_combine(op, single_in.get(), single_in.get(), out_buf.get(), direct_f64_store);
         } else if (!is_grad) {
-            encode_chain(plan.chains[0], out_buf.get(), widen_out);
+            encode_chain(plan.chains[0], out_buf.get(), direct_f64_store);
         } else {
             const ms_buffer* buf0 = encode_chain(plan.chains[0], res0.get(), false);
-            encode_combine(MS_NDIMAGE_COMBINE_OP_SQRT_SQ1, buf0, buf0, out_buf.get(), widen_out);
+            encode_combine(MS_NDIMAGE_COMBINE_OP_SQRT_SQ1, buf0, buf0, out_buf.get(), direct_f64_store);
         }
     } else if (k_count == 2) {
         const ms_buffer* buf0 = encode_chain(plan.chains[0], res0.get(), false);
         const ms_buffer* buf1 = encode_chain(plan.chains[1], res1.get(), false);
         const uint32_t op = is_grad ? MS_NDIMAGE_COMBINE_OP_SQRT_SUM_SQ2 : MS_NDIMAGE_COMBINE_OP_SUM2;
-        encode_combine(op, buf0, buf1, out_buf.get(), widen_out);
+        encode_combine(op, buf0, buf1, out_buf.get(), direct_f64_store);
     } else {
         const ms_buffer* buf0 = encode_chain(plan.chains[0], res0.get(), false);
         const ms_buffer* buf1 = encode_chain(plan.chains[1], res1.get(), false);
@@ -449,13 +458,20 @@ BufferPtr run_gpu_composite(ms_context* context, const CompositePlan& plan, cons
                                acc.get(), bufk, acc.get(), false);
             } else {
                 encode_combine(is_grad ? MS_NDIMAGE_COMBINE_OP_SQRT_ADD_SQ : MS_NDIMAGE_COMBINE_OP_SUM2,
-                               acc.get(), bufk, out_buf.get(), widen_out);
+                               acc.get(), bufk, out_buf.get(), direct_f64_store);
             }
         }
     }
 
     batch.commit_and_wait();
     operation.complete();
+    if (needs_post_cast) {
+        BufferPtr typed_out = array::allocate(context, elements * array::dtype_size(plan.out_dtype));
+        array::ndimage_cast_from_float(
+            reinterpret_cast<const float*>(read(out_buf.get(), context).data),
+            plan.out_dtype, mutable_data(typed_out.get()), elements, /*dense_safe=*/false);
+        return typed_out;
+    }
     return out_buf;
 }
 } // namespace ms::detail::ndimage

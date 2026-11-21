@@ -20,10 +20,10 @@ wheel.packages = ["python/metal_sci"]
 # The Python side talks to the native core through ctypes, so the wheel has no
 # Python ABI dependence: one wheel serves every Python 3.
 wheel.py-api = "py3"
-build-dir = ".build/wheel"
 build.targets = ["mscore"]
 install.components = ["python"]
 cmake.build-type = "Release"
 
 [tool.scikit-build.cmake.define]
 MS_ENABLE_METAL = "ON"
+CMAKE_OSX_DEPLOYMENT_TARGET = "15.0"

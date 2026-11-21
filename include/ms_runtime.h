@@ -64,8 +64,9 @@ void ms_context_retain(ms_context*);
 void ms_context_release(ms_context*);
 /* Initialize out.struct_size and out.abi_version before calling. */
 ms_status ms_context_memory_info(ms_context*, ms_memory_info* out);
-/* Copy the context's latest diagnostic, including NUL; insufficient capacity
- * returns MS_EINVAL without modifying destination. Not a thread-local history. */
+/* Copy this thread's latest diagnostic for the context (falling back to the
+ * context's latest diagnostic), including NUL; insufficient capacity returns
+ * MS_EINVAL without modifying destination. */
 ms_status ms_context_error_copy(ms_context*, char* destination, uint64_t capacity);
 /* Monotonic per-context counters, so callers and tests can assert which route
  * ran and where storage came from. gpu_operations counts completed GPU

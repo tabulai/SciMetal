@@ -208,3 +208,16 @@ kernel void ms_fft_scale(constant MSFFTScaleParams& p [[buffer(0)]],
     data[i] *= p.scale;
   }
 }
+
+kernel void ms_fft_c2r_hermitian_fix(constant MSFFTC2RHermitianParams& p [[buffer(0)]],
+                                     device float2* data [[buffer(1)]],
+                                     uint row [[thread_position_in_grid]]) {
+  if (row >= p.rows) {
+    return;
+  }
+  const ulong base = ulong(row) * ulong(p.row_stride);
+  data[base].y = 0.0f;
+  if (p.nyquist != 0u) {
+    data[base + p.nyquist].y = 0.0f;
+  }
+}

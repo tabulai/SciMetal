@@ -11,6 +11,7 @@ from hypothesis import strategies as st
 
 import metal_sci
 import metal_sci.fft as mfft
+from metal_sci import _native
 
 TOLERANCE = 5e-6
 # Stockham, Rader, Bluestein, four-step and strided-chain lengths.
@@ -25,6 +26,8 @@ cases = settings(max_examples=60, deadline=None)
 
 @pytest.fixture(autouse=True)
 def gpu():
+    if not _native.has_metal():
+        pytest.skip("requires Metal GPU build")
     with metal_sci.device("gpu"), metal_sci.precision("fast"):
         yield
 

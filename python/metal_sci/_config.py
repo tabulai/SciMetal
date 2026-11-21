@@ -37,7 +37,7 @@ _default_device = _from_env("METAL_SCI_DEVICE", DEVICES, "auto")
 # A native call costs some 10-20 microseconds of hand-off whatever its size, so
 # below a per-function size SciPy is faster; tests of the native code turn
 # this off to reach it with small arrays.
-_small_to_scipy = os.environ.get("METAL_SCI_SMALL_INPUTS", "scipy").strip().lower() != "native"
+_small_to_scipy = _from_env("METAL_SCI_SMALL_INPUTS", ("scipy", "native"), "scipy") == "scipy"
 _precision_override = contextvars.ContextVar("metal_sci_precision", default=None)
 _device_override = contextvars.ContextVar("metal_sci_device", default=None)
 

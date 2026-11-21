@@ -28,7 +28,7 @@ import scipy.fft
 import scipy.signal._signaltools as _sp_signaltools
 
 from .. import _config, _native
-from .._dispatch import NotAccelerated, Route, accelerated, record
+from .._dispatch import NotAccelerated, Route, _caller_stacklevel, accelerated, record
 from .._config import get_precision
 from . import _native_signal as _sig
 
@@ -149,7 +149,7 @@ def _warn_fft_nonfinite_flag(has_nonfinite: bool) -> None:
             "Use of fft convolution on input with NAN or inf results in NAN or inf output. "
             "Consider using method='direct' instead.",
             category=RuntimeWarning,
-            stacklevel=3,
+            stacklevel=_caller_stacklevel(),
         )
 
 
@@ -293,6 +293,8 @@ def _convolve2d_or_correlate2d(function: str, in1, in2, mode, boundary, fillvalu
     fill_real = 0.0
     fill_imag = 0.0
     if b_code == _sig.BOUNDARY_FILL:
+        if isinstance(fillvalue, np.ndarray) and not np.can_cast(fillvalue, out_dtype, casting="safe"):
+            _decline("ndarray fillvalue cannot cast safely to output dtype")
         farr = np.asarray(fillvalue)
         if farr.ndim != 0 or farr.size != 1:
             _decline("non-scalar fillvalue goes to SciPy")
@@ -302,6 +304,12 @@ def _convolve2d_or_correlate2d(function: str, in1, in2, mode, boundary, fillvalu
             _decline("complex fillvalue with real output goes to SciPy")
         c = complex(farr.item())
         fill_real, fill_imag = float(c.real), float(c.imag)
+        if out_dtype in (np.float32, np.complex64):
+            f32_max = float(np.finfo(np.float32).max)
+            if (np.isfinite(fill_real) and abs(fill_real) > f32_max) or (
+                np.isfinite(fill_imag) and abs(fill_imag) > f32_max
+            ):
+                _decline("fillvalue overflows float32; SciPy emits overflow warning")
 
     work_est = _direct_work_estimate(in1.shape, in2.shape, mode)
     _native.decline_small(work_est, _DIRECT_BREAK_EVEN_ND)

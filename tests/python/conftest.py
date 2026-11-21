@@ -1,8 +1,10 @@
+import os
 import pathlib
 import sys
 
-# Run against the source tree: python/ on the path, native library from .build/.
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "python"))
+# Run against the source tree unless explicitly testing an installed package/wheel.
+if not os.environ.get("METAL_SCI_TEST_INSTALLED"):
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2] / "python"))
 
 import metal_sci  # noqa: E402
 

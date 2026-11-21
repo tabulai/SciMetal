@@ -54,9 +54,20 @@ struct MSFFTScaleParams {
     ms_u32 reserved;
 };
 
+// ms_fft_c2r_hermitian_fix: clears imag(X[0]) and (for even n) imag(X[n/2])
+// on each row before a four-step or strided C2R stage in a multi-axis irfftn.
+// Bindings (1-D convention): 0 parameters, 1 data (float2).
+struct MSFFTC2RHermitianParams {
+    ms_u32 rows;
+    ms_u32 row_stride; /* float2 elements per row */
+    ms_u32 nyquist;    /* n/2 when n is even, 0 when n is odd */
+    ms_u32 reserved;
+};
+
 #ifndef __METAL_VERSION__
 static_assert(sizeof(MSFFTStridedParams) == 32, "kernel parameter layouts changed: update fft_kernels.h and kernels together");
 static_assert(sizeof(MSFFTScaleParams) == 16, "kernel parameter layouts changed: update fft_kernels.h and kernels together");
+static_assert(sizeof(MSFFTC2RHermitianParams) == 16, "kernel parameter layouts changed: update fft_kernels.h and kernels together");
 #endif
 
 #endif // MS_FFT_KERNELS_H

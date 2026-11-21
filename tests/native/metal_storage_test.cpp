@@ -303,6 +303,61 @@ static void maximum_length_failure_rolls_back() {
     ms_context_release(ctx);
 }
 
+static void non_host_readable_metal_descriptor_import() {
+    auto* producer = context(MS_BUFFER_METAL, 1 << 20);
+    auto* consumer = context(MS_BUFFER_METAL, 1 << 20);
+    ms_buffer* src = nullptr;
+    CHECK(ms_buffer_zeros(producer, 256, &src) == MS_OK);
+    ms_buffer_view exported{};
+    CHECK(ms_buffer_export(src, &exported) == MS_OK);
+    CHECK(exported.kind == MS_BUFFER_METAL && (exported.flags & MS_BUFFER_HOST_READABLE) != 0);
+
+    // Wrap the underlying MTLBuffer in a foreign non-HOST_READABLE descriptor.
+    struct ForeignOwner {
+        std::atomic<int> refs{1};
+        ms_buffer_view inner;
+    };
+    auto* foreign_owner = new ForeignOwner{{1}, exported};
+    auto foreign_retain = [](void* p) noexcept {
+        static_cast<ForeignOwner*>(p)->refs.fetch_add(1, std::memory_order_relaxed);
+    };
+    auto foreign_release = [](void* p) noexcept {
+        auto* o = static_cast<ForeignOwner*>(p);
+        if (o->refs.fetch_sub(1, std::memory_order_acq_rel) == 1) {
+            o->inner.release(o->inner.owner);
+            delete o;
+        }
+    };
+
+    ms_buffer_view view = exported;
+    view.flags &= ~uint64_t{MS_BUFFER_HOST_READABLE};
+    view.host_base = nullptr;
+    view.owner = foreign_owner;
+    view.retain = foreign_retain;
+    view.release = foreign_release;
+    CHECK(ms_buffer_validate(&view, 64) == MS_OK);
+
+    ms_import_result imported{};
+    CHECK(ms_buffer_import(consumer, &view, MS_COPY_NEVER, &imported) == MS_OK);
+    CHECK(imported.buffer != nullptr && imported.copied_bytes == 0 && imported.borrowed_bytes == view.capacity);
+
+    const void* host_ptr = nullptr;
+    uint64_t host_len = 0;
+    CHECK(ms_buffer_data(imported.buffer, &host_ptr, &host_len) == MS_ENOTSUP);
+
+    ms_buffer_view reexported{};
+    CHECK(ms_buffer_export(imported.buffer, &reexported) == MS_OK);
+    CHECK(ms_buffer_validate(&reexported, 64) == MS_OK);
+    CHECK((reexported.flags & MS_BUFFER_HOST_READABLE) == 0 && reexported.host_base == nullptr);
+    reexported.release(reexported.owner);
+
+    ms_buffer_release(imported.buffer);
+    view.release(view.owner);
+    ms_buffer_release(src);
+    ms_context_release(consumer);
+    ms_context_release(producer);
+}
+
 static void disabled_backend() {
     auto* ctx = context(MS_BUFFER_METAL);
     auto* unchanged = reinterpret_cast<ms_buffer*>(uintptr_t(1));
@@ -328,6 +383,7 @@ int main(int argc, char** argv) {
     one_page_budget_accounts_for_padding();
     sliced_cpu_descriptor_imports_as_metal_snapshot();
     maximum_length_failure_rolls_back();
+    non_host_readable_metal_descriptor_import();
 #if defined(__unix__) || defined(__APPLE__)
     auto native = ms::detail::allocate_metal(64);
     child_check([&] { native.owner.reset(); });

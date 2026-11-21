@@ -113,6 +113,8 @@ Call parse(uint32_t dtype, const array::Shape& shape, const ms_fft_options* opti
         throw Error(MS_EINVAL, "a real-to-complex FFT needs a real input");
     if (options->n && !call.last_axis)
         throw Error(MS_EINVAL, "an FFT length applies to the last axis, which is not transformed");
+    if (array::is_int_or_bool(dtype))
+        throw Error(MS_ENOTSUP, "FFT takes floating-point or complex arrays");
 
     // Empty inputs and lengths are SciPy's to reject.
     if (shape.elements == 0) throw Error(MS_ENOTSUP, "empty FFT input");
@@ -120,7 +122,15 @@ Call parse(uint32_t dtype, const array::Shape& shape, const ms_fft_options* opti
     call.in_dtype = dtype;
     call.have = shape.dims[last];
     call.rows = shape.elements / call.have;
-    call.n = options->n ? options->n : (call.transform == Transform::c2r ? 2 * (call.have - 1) : call.have);
+    if (options->n) {
+        call.n = options->n;
+    } else if (call.transform == Transform::c2r) {
+        if (call.have - 1 > static_cast<uint64_t>(INT32_MAX) / 2)
+            throw Error(MS_ENOTSUP, "the FFT length exceeds the kernels' 32-bit indexing");
+        call.n = 2 * (call.have - 1);
+    } else {
+        call.n = call.have;
+    }
     if (call.n == 0) throw Error(MS_ENOTSUP, "empty FFT length");
     if (call.n > INT32_MAX) throw Error(MS_ENOTSUP, "the FFT length exceeds the kernels' 32-bit indexing");
     call.need = call.transform == Transform::c2r ? call.n / 2 + 1 : call.n;
@@ -133,6 +143,9 @@ Call parse(uint32_t dtype, const array::Shape& shape, const ms_fft_options* opti
     const bool is_double = array::is_double(dtype);
     call.out_dtype = call.transform == Transform::c2r ? (is_double ? MS_FLOAT64 : MS_FLOAT32)
                                                       : (is_double ? MS_COMPLEX128 : MS_COMPLEX64);
+    uint64_t out_bytes = 0;
+    if (ms_checked_mul(call.out_shape.elements, array::dtype_size(call.out_dtype), &out_bytes) != MS_OK)
+        throw Error(MS_EOVERFLOW, "FFT output byte size overflows");
 
     // Normalisation and router work over the transformed axes.
     const double points = static_cast<double>(call.rows) * static_cast<double>(call.n);
@@ -162,7 +175,7 @@ Call parse(uint32_t dtype, const array::Shape& shape, const ms_fft_options* opti
 }
 
 array::Shape checked_shape(uint32_t dtype, uint32_t ndim, const uint64_t* shape) {
-    (void)array::dtype_size(dtype);
+    const uint64_t width = array::dtype_size(dtype);
     if (ndim < 1 || ndim > MS_MAX_NDIM || !shape) throw Error(MS_EINVAL, "array rank must be 1 to 8");
     array::Shape result;
     result.ndim = ndim;
@@ -172,6 +185,9 @@ array::Shape checked_shape(uint32_t dtype, uint32_t ndim, const uint64_t* shape)
         if (ms_checked_mul(result.elements, shape[axis], &result.elements) != MS_OK)
             throw Error(MS_EOVERFLOW, "array element count overflows");
     }
+    uint64_t bytes = 0;
+    if (ms_checked_mul(result.elements, width, &bytes) != MS_OK)
+        throw Error(MS_EOVERFLOW, "array byte size overflows");
     return result;
 }
 
@@ -179,31 +195,47 @@ array::Shape checked_shape(uint32_t dtype, uint32_t ndim, const uint64_t* shape)
 // The plans of one call, in execution order, and what the host does around them.
 struct Staged {
     std::vector<Stage> stages;
-    bool device_real = false;     // slot 0 of the first stage holds float rows
-    uint64_t device_row = 0;      // points per row the host loads
+    std::vector<uint32_t> stage_axes;
+    bool device_real = false;          // slot 0 of the first stage holds float rows
+    uint64_t device_row = 0;           // points per row the host loads
     Load load = Load::direct;
     bool clear_dc_imag = false;
-    uint64_t result_row = 0;      // points per row in the last stage's result
+    bool clear_hermitian_imag = false;
+    uint64_t result_row = 0;           // points per row in the last stage's result
     Store store = Store::direct;
-    double applied = 1.0;         // factor the kernels apply by themselves
+    double applied = 1.0;              // factor the kernels apply by themselves
     std::string description;
 };
 
-Staged stage(const Call& call, const Limits& limits, bool with_description = true) {
-    Staged staged;
-    std::shared_ptr<const Plan> last;
-    if (call.last_axis) {
-        Request request;
-        request.transform = call.transform;
-        request.inverse = call.inverse;
-        request.n = call.n;
-        request.count = call.rows;
-        Planned planned = plan(request, limits);
-        if (!planned.plan) throw Error(MS_ENOTSUP, "no GPU plan for an FFT of length " + std::to_string(call.n) + ": " + planned.reason);
-        last = std::move(planned.plan);
-        if (last->clear_dc_imag && !call.inner.empty())
-            throw Error(MS_ENOTSUP, "the Bluestein inverse real FFT is not available together with other axes");
+void refresh_staged_metadata(const Call& call, Staged& staged, bool with_description) {
+    const std::shared_ptr<const Plan> last =
+        call.last_axis ? (call.inverse ? staged.stages.back().plan : staged.stages.front().plan)
+                       : std::shared_ptr<const Plan>{};
+    staged.device_real = last && last->input_real;
+    staged.device_row = last ? last->input_row : call.have;
+    staged.result_row = last ? last->result_row : call.have;
+    staged.load = last ? last->load : Load::direct;
+    staged.store = last ? last->store : Store::direct;
+    staged.clear_dc_imag = last && last->clear_dc_imag;
+    staged.clear_hermitian_imag = last && last->clear_hermitian_imag;
+    staged.applied = 1.0;
+    for (const Stage& each : staged.stages) {
+        if (each.plan->divides_by_n) staged.applied /= static_cast<double>(each.plan->request.n);
     }
+    staged.description.clear();
+    if (with_description) {
+        for (size_t i = 0; i < staged.stages.size(); ++i) {
+            if (i) staged.description += "; ";
+            staged.description += "axis " + std::to_string(staged.stage_axes[i]) + ": " + staged.stages[i].plan->name;
+        }
+    }
+}
+
+Staged stage_with_last(const Call& call, std::shared_ptr<const Plan> last, const Limits& limits,
+                       bool with_description = true) {
+    Staged staged;
+    if (last && last->clear_dc_imag && !call.inner.empty())
+        throw Error(MS_ENOTSUP, "the Bluestein inverse real FFT is not available together with other axes");
     // Row length of the device array while the inner axes are transformed:
     // after the last axis for a forward transform, before it for an inverse.
     const uint64_t before = last ? last->input_row : call.have;
@@ -211,7 +243,7 @@ Staged stage(const Call& call, const Limits& limits, bool with_description = tru
     const uint64_t inner_row = call.inverse ? before : after;
 
     std::vector<Stage> inner;
-    std::vector<std::string> inner_names;
+    std::vector<uint32_t> inner_axes;
     for (auto axis = call.inner.rbegin(); axis != call.inner.rend(); ++axis) {
         Request request;
         request.transform = Transform::c2c;
@@ -229,37 +261,41 @@ Staged stage(const Call& call, const Limits& limits, bool with_description = tru
         if (!planned.plan)
             throw Error(MS_ENOTSUP, "no GPU plan for an FFT of length " + std::to_string(request.n) + " along axis " +
                                         std::to_string(*axis) + ": " + planned.reason);
-        if (with_description) inner_names.push_back("axis " + std::to_string(*axis) + ": " + planned.plan->name);
         inner.push_back({std::move(planned.plan), request.count});
+        inner_axes.push_back(*axis);
     }
 
     // Forward transforms take the last axis first (a real input becomes complex
     // there); inverses take it last.
-    if (last && !call.inverse) staged.stages.push_back({last, call.rows});
+    const uint32_t last_axis_idx = call.in_shape.ndim - 1;
+    if (last && !call.inverse) {
+        staged.stages.push_back({last, call.rows});
+        staged.stage_axes.push_back(last_axis_idx);
+    }
     staged.stages.insert(staged.stages.end(), inner.begin(), inner.end());
-    if (last && call.inverse) staged.stages.push_back({last, call.rows});
+    staged.stage_axes.insert(staged.stage_axes.end(), inner_axes.begin(), inner_axes.end());
+    if (last && call.inverse) {
+        staged.stages.push_back({last, call.rows});
+        staged.stage_axes.push_back(last_axis_idx);
+    }
     if (staged.stages.empty()) throw Error(MS_ENOTSUP, "a one-point FFT is a copy");
-    if (with_description) {
-        std::vector<std::string> names;
-        const std::string last_name = last ? "axis " + std::to_string(call.in_shape.ndim - 1) + ": " + last->name : "";
-        if (last && !call.inverse) names.push_back(last_name);
-        names.insert(names.end(), inner_names.begin(), inner_names.end());
-        if (last && call.inverse) names.push_back(last_name);
-        for (const std::string& name : names) staged.description += (staged.description.empty() ? "" : "; ") + name;
-    }
-
-    staged.device_real = last && last->input_real;
-    staged.device_row = before;
-    staged.result_row = after;
-    if (last) {
-        staged.load = last->load;
-        staged.store = last->store;
-        staged.clear_dc_imag = last->clear_dc_imag;
-    }
-    for (const Stage& each : staged.stages) {
-        if (each.plan->divides_by_n) staged.applied /= static_cast<double>(each.plan->request.n);
-    }
+    refresh_staged_metadata(call, staged, with_description);
     return staged;
+}
+
+Staged stage(const Call& call, const Limits& limits, bool with_description = true) {
+    std::shared_ptr<const Plan> last;
+    if (call.last_axis) {
+        Request request;
+        request.transform = call.transform;
+        request.inverse = call.inverse;
+        request.n = call.n;
+        request.count = call.rows;
+        Planned planned = plan(request, limits);
+        if (!planned.plan) throw Error(MS_ENOTSUP, "no GPU plan for an FFT of length " + std::to_string(call.n) + ": " + planned.reason);
+        last = std::move(planned.plan);
+    }
+    return stage_with_last(call, std::move(last), limits, with_description);
 }
 
 // Runs f(lane, row, begin, end) over the points [begin, end) of every row,
@@ -301,9 +337,12 @@ constexpr uint64_t load_block = 2048;  // points
 template<class Source>
 uint64_t load_rows(const Source* __restrict__ source, bool source_complex, float* __restrict__ device,
                    bool device_complex, uint64_t rows, uint64_t have, uint64_t used, uint64_t device_row,
-                   Load load, uint64_t n, bool clear_dc_imag) {
+                   Load load, uint64_t n, bool clear_dc_imag, bool clear_hermitian_imag) {
     const uint64_t in_step = source_complex ? 2 : 1, out_step = device_complex ? 2 : 1;
-    uint64_t peaks[parallel::max_lanes] = {};
+    struct alignas(64) LanePeak {
+        uint64_t bits = 0;
+    };
+    LanePeak peaks[parallel::max_lanes] = {};
     for_row_spans(rows, device_row, [&](unsigned lane, uint64_t row, uint64_t begin, uint64_t end) {
         const Source* __restrict__ in = source + row * have * in_step;
         float* __restrict__ out = device + row * device_row * out_step;
@@ -326,7 +365,7 @@ uint64_t load_rows(const Source* __restrict__ source, bool source_complex, float
             // scan and the conversion.
             for (uint64_t from = begin; from < stop; from += load_block) {
                 const uint64_t to = std::min(stop, from + load_block);
-                peaks[lane] = std::max(peaks[lane], magnitude_bits(in + from * in_step, (to - from) * in_step));
+                peaks[lane].bits = std::max(peaks[lane].bits, magnitude_bits(in + from * in_step, (to - from) * in_step));
                 if (source_complex == device_complex) {
                     for (uint64_t i = from * out_step; i < to * out_step; ++i) out[i] = static_cast<float>(in[i]);
                 } else {
@@ -345,12 +384,18 @@ uint64_t load_rows(const Source* __restrict__ source, bool source_complex, float
                     out[2 * k + 1] *= 2.0f;
                 }
             }
-            if (clear_dc_imag && begin == 0) out[1] = 0.0f;
+            if ((clear_dc_imag || clear_hermitian_imag) && begin == 0) out[1] = 0.0f;
+            if (clear_hermitian_imag && (n % 2 == 0)) {
+                const uint64_t nyq = n / 2;
+                if (nyq >= begin && nyq < stop) out[2 * nyq + 1] = 0.0f;
+            }
         }
         const uint64_t pad = std::max(begin, used);
         if (pad < end) std::memset(out + pad * out_step, 0, (end - pad) * out_step * sizeof(float));
     });
-    return *std::max_element(std::begin(peaks), std::end(peaks));
+    uint64_t peak = 0;
+    for (const LanePeak& lp : peaks) peak = std::max(peak, lp.bits);
+    return peak;
 }
 
 // Writes the caller's rows from the device result: the leading points of each
@@ -394,6 +439,17 @@ void store_rows(const float* __restrict__ device, uint64_t device_row, Target* _
 constexpr double narrow_ceiling = 0x1p96;
 constexpr double narrow_floor = 0x1p-100;
 
+uint64_t checked_slot_bytes(uint64_t slot_scalars, uint64_t count, uint64_t tail_scalars = 0) {
+    uint64_t scalars = 0;
+    if (ms_checked_mul(slot_scalars, count, &scalars) != MS_OK ||
+        ms_checked_add(scalars, tail_scalars, &scalars) != MS_OK)
+        throw Error(MS_EOVERFLOW, "FFT device buffer byte size overflows");
+    uint64_t bytes = 0;
+    if (ms_checked_mul(scalars, sizeof(float), &bytes) != MS_OK)
+        throw Error(MS_EOVERFLOW, "FFT device buffer byte size overflows");
+    return bytes;
+}
+
 BufferPtr load(ms_context* context, const ms_array& input, const Call& call, const Staged& staged,
                Profile* profile = nullptr) {
     using Clock = std::chrono::steady_clock;
@@ -401,7 +457,8 @@ BufferPtr load(ms_context* context, const ms_array& input, const Call& call, con
         return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
     };
     const Stage& first = staged.stages.front();
-    const uint64_t bytes = first.plan->slots[0] * first.count * sizeof(float);
+    const uint64_t slot0_bytes = checked_slot_bytes(first.plan->slots[0], first.count);
+    const uint64_t bytes = checked_slot_bytes(first.plan->slots[0], first.count, first.plan->input_tail_scalars);
     Clock::time_point t0;
     if (profile) t0 = Clock::now();
     BufferPtr buffer = array::allocate(context, bytes);
@@ -415,26 +472,42 @@ BufferPtr load(ms_context* context, const ms_array& input, const Call& call, con
     const bool source_complex = array::is_complex(call.in_dtype);
     const bool device_complex = !staged.device_real;
     const uint64_t used = std::min(call.have, call.need);
-    if (call.rows * staged.device_row * (device_complex ? 2 : 1) * sizeof(float) > bytes)
+    uint64_t row_bytes = 0;
+    if (ms_checked_mul(call.rows, staged.device_row, &row_bytes) != MS_OK ||
+        ms_checked_mul(row_bytes, (device_complex ? 2 : 1) * sizeof(float), &row_bytes) != MS_OK ||
+        row_bytes > slot0_bytes)
         throw Error(MS_EBACKEND, "FFT input slot is smaller than the rows it holds");
+    const bool host_clear_hermitian = staged.clear_hermitian_imag && staged.stages.size() == 1;
     // Slack beyond the rows (a real input slot sized for the spectrum that
     // replaces it) is written by the last pass before anything reads it.
     if (!array::is_double(call.in_dtype) && source_complex == device_complex && call.have == staged.device_row &&
-        used == staged.device_row && staged.load == Load::direct && !staged.clear_dc_imag) {
+        used == staged.device_row && staged.load == Load::direct && !staged.clear_dc_imag && !host_clear_hermitian) {
         array::convert(input.data, call.in_dtype, device, call.in_dtype, call.rows * call.have);
     } else if (array::is_double(call.in_dtype)) {
         const uint64_t peak_bits = load_rows(static_cast<const double*>(input.data), source_complex, device, device_complex,
                                              call.rows, call.have, used, staged.device_row, staged.load, call.n,
-                                             staged.clear_dc_imag);
+                                             staged.clear_dc_imag, host_clear_hermitian);
         double peak;
         std::memcpy(&peak, &peak_bits, sizeof(peak));
-        if (!(peak <= narrow_ceiling) || (peak != 0.0 && peak < narrow_floor)) {
+        double max_gain = 1.0;
+        for (const Stage& each : staged.stages) {
+            const double n_val = static_cast<double>(each.plan->request.n);
+            const Kernel k = each.plan->steps.empty() ? Kernel::stockham : each.plan->steps[0].kind;
+            if (k == Kernel::bluestein) max_gain *= 4.0 * n_val * n_val;
+            else if (k == Kernel::rader) max_gain *= 2.0 * n_val * n_val;
+            else max_gain *= n_val;
+        }
+        const double ceiling = std::min(narrow_ceiling, 0x1p124 / std::max(max_gain, 1.0));
+        if (!(peak <= ceiling) || (peak != 0.0 && peak < narrow_floor)) {
             if (profile) profile->copy_in_ns = elapsed_ns(t1, Clock::now());
             throw Error(MS_ENOTSUP, "the input's magnitudes do not fit single precision; SciPy's FFT is used");
         }
     } else {
         load_rows(static_cast<const float*>(input.data), source_complex, device, device_complex, call.rows, call.have,
-                  used, staged.device_row, staged.load, call.n, staged.clear_dc_imag);
+                  used, staged.device_row, staged.load, call.n, staged.clear_dc_imag, host_clear_hermitian);
+    }
+    if (bytes > slot0_bytes) {
+        std::memset(reinterpret_cast<uint8_t*>(device) + slot0_bytes, 0, static_cast<size_t>(bytes - slot0_bytes));
     }
     if (profile) profile->copy_in_ns = elapsed_ns(t1, Clock::now());
     return buffer;
@@ -453,32 +526,61 @@ Staged fit(const Call& call, const Limits& limits, Profile* profile = nullptr, b
     if (profile) t0 = Clock::now();
     Staged staged = stage(call, limits, with_description);
     if (profile) profile->stage_ns += elapsed_ns(t0, Clock::now());
-    int32_t ceiling = limits.group_threads;
-    for (Refusal refusal;;) {
+    std::vector<int32_t> ceilings(staged.stages.size(), limits.group_threads);
+    constexpr uint32_t max_replan_iters = 64;
+    for (uint32_t iter = 0; iter < max_replan_iters; ++iter) {
+        Refusal refusal;
         Clock::time_point tr;
         if (profile) tr = Clock::now();
         const bool is_refused = refused(staged.stages, refusal);
         if (profile) profile->refused_ns += elapsed_ns(tr, Clock::now());
-        if (!is_refused) break;
-        // Each replacement was built within the ceiling and refused below it,
-        // so the ceiling falls every round.
+        if (!is_refused) return staged;
+        const size_t idx = refusal.stage;
+        const int32_t next_ceiling = refusal.granted < ceilings[idx] ? refusal.granted : ceilings[idx] / 2;
+        ceilings[idx] = next_ceiling;
         Clock::time_point tp;
         if (profile) tp = Clock::now();
-        ceiling = std::min(ceiling, refusal.granted);
-        const Stage& stage_refused = staged.stages[refusal.stage];
+        const Stage& stage_refused = staged.stages[idx];
         Request request = stage_refused.plan->request;
         request.count = stage_refused.count;
-        replan(request, limits, ceiling);
+        Planned replacement = replan(request, limits, next_ceiling);
         if (profile) {
             profile->replan_ns += elapsed_ns(tp, Clock::now());
             ++profile->replan_iters;
         }
+        if (!replacement.plan) {
+            throw Error(MS_ENOTSUP, "no GPU plan for an FFT of length " + std::to_string(request.n) + ": " +
+                                        replacement.reason);
+        }
         Clock::time_point ts;
         if (profile) ts = Clock::now();
-        staged = stage(call, limits, with_description);
+        const bool is_last =
+            call.last_axis && ((!call.inverse && idx == 0) || (call.inverse && idx + 1 == staged.stages.size()));
+        if (is_last) {
+            if (replacement.plan->clear_dc_imag && !call.inner.empty())
+                throw Error(MS_ENOTSUP, "the Bluestein inverse real FFT is not available together with other axes");
+            const uint64_t old_inner_row =
+                call.inverse ? stage_refused.plan->input_row : stage_refused.plan->result_row;
+            const uint64_t new_inner_row =
+                call.inverse ? replacement.plan->input_row : replacement.plan->result_row;
+            if (old_inner_row != new_inner_row && !call.inner.empty()) {
+                staged = stage_with_last(call, std::move(replacement.plan), limits, with_description);
+                ceilings.assign(staged.stages.size(), limits.group_threads);
+                const size_t new_last_idx = call.inverse ? staged.stages.size() - 1 : 0;
+                ceilings[new_last_idx] = next_ceiling;
+            } else {
+                staged.stages[idx].plan = std::move(replacement.plan);
+                staged.stages[idx].resolved.reset();
+                refresh_staged_metadata(call, staged, with_description);
+            }
+        } else {
+            staged.stages[idx].plan = std::move(replacement.plan);
+            staged.stages[idx].resolved.reset();
+            refresh_staged_metadata(call, staged, with_description);
+        }
         if (profile) profile->stage_ns += elapsed_ns(ts, Clock::now());
     }
-    return staged;
+    throw Error(MS_ENOTSUP, "could not fit FFT plan to device threadgroup limits");
 }
 
 BufferPtr transform(ms_context* context, const ms_array& input, const Call& call, const Limits& limits,
@@ -488,9 +590,20 @@ BufferPtr transform(ms_context* context, const ms_array& input, const Call& call
         return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(end - start).count());
     };
     const Staged staged = fit(call, limits, profile, false);
+    // Validate 32-bit dispatch limits on every stage before allocating input buffers.
+    {
+        std::vector<Dispatch> dispatches;
+        std::string reason;
+        for (const Stage& each : staged.stages) {
+            if (!instantiate(*each.plan, each.count, dispatches, reason))
+                throw Error(MS_ENOTSUP, reason);
+        }
+    }
     const uint64_t out_row = call.out_shape.dims[call.out_shape.ndim - 1];
     const bool out_complex = array::is_complex(call.out_dtype);
-    const uint64_t out_bytes = call.out_shape.elements * array::dtype_size(call.out_dtype);
+    uint64_t out_bytes = 0;
+    if (ms_checked_mul(call.out_shape.elements, array::dtype_size(call.out_dtype), &out_bytes) != MS_OK)
+        throw Error(MS_EOVERFLOW, "FFT output byte size overflows");
     const double remaining = call.scale / staged.applied;
 
     // A single-precision result that needs no cropping is the device buffer
@@ -530,22 +643,34 @@ BufferPtr transform(ms_context* context, const ms_array& input, const Call& call
 // Bytes the run holds at once: every device buffer plus a separate host result.
 uint64_t footprint(const Call& call, const Staged& staged) {
     std::vector<uint64_t> idle;
-    uint64_t total = staged.stages.front().plan->slots[0] * staged.stages.front().count * sizeof(float);
+    uint64_t carried = checked_slot_bytes(staged.stages.front().plan->slots[0], staged.stages.front().count,
+                                          staged.stages.front().plan->input_tail_scalars);
+    uint64_t total = carried;
     for (const Stage& each : staged.stages) {
-        std::vector<uint64_t> held;
+        std::vector<uint64_t> slots(each.plan->slots.size(), 0);
+        slots[0] = carried;
         for (size_t slot = 1; slot < each.plan->slots.size(); ++slot) {
-            const uint64_t bytes = each.plan->slots[slot] * each.count * sizeof(float);
+            const uint64_t bytes = checked_slot_bytes(each.plan->slots[slot], each.count);
             const auto reuse = std::find(idle.begin(), idle.end(), bytes);
             if (reuse != idle.end()) idle.erase(reuse);
             else total += bytes;
-            held.push_back(bytes);
+            slots[slot] = bytes;
         }
-        // Everything but the carried buffer is free for the next stage; sizes
-        // are all the model needs.
-        idle.insert(idle.end(), held.begin(), held.end());
+        for (const auto& table : each.plan->tables) {
+            total += table->size();
+        }
+        const uint8_t next_carried = each.plan->result_slot;
+        carried = slots[next_carried];
+        for (size_t slot = 0; slot < slots.size(); ++slot) {
+            if (slot != next_carried) idle.push_back(slots[slot]);
+        }
     }
-    if (array::is_double(call.out_dtype) || staged.store != Store::direct)
-        total += call.out_shape.elements * array::dtype_size(call.out_dtype);
+    if (array::is_double(call.out_dtype) || staged.store != Store::direct) {
+        uint64_t out_bytes = 0;
+        if (ms_checked_mul(call.out_shape.elements, array::dtype_size(call.out_dtype), &out_bytes) != MS_OK)
+            throw Error(MS_EOVERFLOW, "FFT output byte size overflows");
+        total += out_bytes;
+    }
     return total;
 }
 #endif
@@ -558,7 +683,13 @@ router::Decision route(ms_context* context, const Call& call, const ms_route_opt
             throw Error(MS_ENOTSUP, "there is no native CPU FFT; SciPy's is used");
         if (array::is_double(call.in_dtype) && options.precision == MS_PRECISION_STRICT)
             throw Error(MS_ENOTSUP, "strict precision keeps double-precision FFTs on the CPU, where SciPy's is used");
+#if !defined(MS_ENABLE_METAL)
+        throw Error(MS_ENOTSUP, "this build has no GPU engine and there is no native CPU FFT");
+#else
+        if (storage_kind(context) != MS_BUFFER_METAL)
+            throw Error(MS_ENOTSUP, "GPU execution needs a Metal-storage context; SciPy's FFT is used");
         throw Error(MS_ENOTSUP, "the FFT is below the GPU crossover; SciPy's is used");
+#endif
     }
     return decision;
 }
@@ -590,7 +721,7 @@ struct ProfileGuard {
 
         char shape_buf[128] = "null";
         const char* dtype_str = "?";
-        if (input) {
+        if (input && input->struct_size == sizeof(ms_array)) {
             switch (input->dtype) {
             case MS_FLOAT32: dtype_str = "f32"; break;
             case MS_FLOAT64: dtype_str = "f64"; break;
@@ -612,7 +743,7 @@ struct ProfileGuard {
             }
         }
         const char* kind_str = "?";
-        if (options) {
+        if (options && options->struct_size == sizeof(ms_fft_options)) {
             switch (options->kind) {
             case MS_FFT_FORWARD: kind_str = "fwd"; break;
             case MS_FFT_INVERSE: kind_str = "inv"; break;
@@ -741,10 +872,27 @@ ms_status ms_fft_plan(ms_context* context, uint32_t dtype, uint32_t ndim, const 
             // otherwise the plans are the planner's for this device's limits.
             const fft::Staged staged = prepare ? fft::fit(call, fft::device_limits()) : fft::stage(call, fft::device_limits());
             std::vector<fft::Dispatch> dispatches;
-            for (const fft::Stage& each : staged.stages) {
+            for (size_t idx = 0; idx < staged.stages.size(); ++idx) {
+                const fft::Stage& each = staged.stages[idx];
                 std::string reason;
                 if (!fft::instantiate(*each.plan, each.count, dispatches, reason)) throw Error(MS_ENOTSUP, reason);
+                if (idx > 0 && each.plan->clear_hermitian_imag) ++result.passes;
                 result.passes += static_cast<uint32_t>(each.plan->steps.size());
+            }
+            const bool publish_device = !array::is_double(call.out_dtype) && staged.store == fft::Store::direct;
+            const float device_scale = publish_device ? static_cast<float>(call.scale / staged.applied) : 1.0f;
+            if (device_scale != 1.0f) {
+                const bool amplifies = std::fabs(device_scale) > 1.0f;
+                bool later_divides = false;
+                bool fused = false;
+                for (size_t i = staged.stages.size(); i-- > 0;) {
+                    if (staged.stages[i].plan->takes_scale && !(amplifies && later_divides)) {
+                        fused = true;
+                        break;
+                    }
+                    if (staged.stages[i].plan->divides_by_n) later_divides = true;
+                }
+                if (!fused) ++result.passes;
             }
             if (prepare) fft::prepare(staged.stages);
             result.status = MS_OK;

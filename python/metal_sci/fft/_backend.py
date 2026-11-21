@@ -14,6 +14,7 @@ manager: ``with scipy.fft.set_backend(metal_sci.fft.backend): ...``.
 from __future__ import annotations
 
 import inspect
+import threading
 
 import scipy.fft
 
@@ -41,31 +42,30 @@ class _Backend:
         qualified = f"fft.{method.__name__}"
         tally = counters[qualified]
         try:
+            bound = self._signatures[method.__name__].bind(*args, **kwargs)
+        except TypeError:
+            # Arguments that do not fit the signature are SciPy's to reject.
+            tally[1] += 1
+            record(Route(qualified, "scipy", "as given", _config.get_precision(),
+                         "arguments do not match signature"))
+            return NotImplemented
+        try:
             result = route.core(*args, **kwargs)
         except _basic.Declined as why:
             tally[1] += 1
-            threads = self._threads(method.__name__, why, args, kwargs)
+            threads = self._threads(bound, why)
             if threads is None:
                 record(Route(qualified, "scipy", "as given", _config.get_precision(), str(why)))
                 return NotImplemented
             arguments, x = threads[1], threads[2]
-            result = _basic.run_threaded(route.reference, x, arguments, threads[0])
             record(Route(qualified, "scipy", "as given", _config.get_precision(),
                          f"{why}; SciPy with workers={threads[0]}"))
-            return result
-        except TypeError:
-            # Arguments that do not fit the signature are SciPy's to reject.
-            tally[1] += 1
-            return NotImplemented
+            return _basic.run_threaded(route.reference, x, arguments, threads[0])
         tally[0] += 1
         return result
 
-    def _threads(self, name, why, args, kwargs):
+    def _threads(self, bound, why):
         """(workers, positional arguments after x, x) for a threaded SciPy call, or None."""
-        try:
-            bound = self._signatures[name].bind(*args, **kwargs)
-        except TypeError:
-            return None
         bound.apply_defaults()
         values = list(bound.arguments.values())  # x, n|s, axis|axes, norm, overwrite_x, workers, plan
         x, arguments, workers, plan = values[0], tuple(values[1:5]), values[5], values[6]
@@ -80,6 +80,7 @@ backend = _Backend()
 _installed = _Backend()
 _installed.enabled = False
 _registered = False
+_reg_lock = threading.Lock()
 
 
 def register() -> None:
@@ -90,10 +91,11 @@ def register() -> None:
     SciPy's backend exactly as before.
     """
     global _registered
-    if not _registered:
-        scipy.fft.register_backend(_installed)
-        _registered = True
-    _installed.enabled = True
+    with _reg_lock:
+        if not _registered:
+            scipy.fft.register_backend(_installed)
+            _registered = True
+        _installed.enabled = True
 
 
 def unregister() -> None:
@@ -104,9 +106,11 @@ def unregister() -> None:
     stays in SciPy's list and answers ``NotImplemented`` to every call, which
     SciPy's own backend then handles.
     """
-    _installed.enabled = False
+    with _reg_lock:
+        _installed.enabled = False
 
 
 def registered() -> bool:
     """Whether ``scipy.fft`` currently routes through metal-sci."""
-    return _installed.enabled
+    with _reg_lock:
+        return _installed.enabled

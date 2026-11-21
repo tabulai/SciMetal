@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ctypes
+import threading
 
 import numpy as np
 
@@ -27,6 +28,7 @@ class PlanInfo(ctypes.Structure):
                 ("device_bytes", ctypes.c_uint64), ("description", ctypes.c_char * 256)]
 
 
+_lock = threading.Lock()
 _lib = None
 _auto_min_points = None
 
@@ -35,18 +37,22 @@ def library() -> ctypes.CDLL:
     """The native library with the FFT prototypes declared."""
     global _lib
     if _lib is None:
-        lib = _native.library()
-        lib.ms_fft_transform.argtypes = [
-            ctypes.c_void_p, ctypes.POINTER(_native.Array), ctypes.POINTER(Options),
-            ctypes.POINTER(_native.RouteOptions), ctypes.POINTER(_native.ArrayResult),
-            ctypes.POINTER(_native.RouteInfo)]
-        lib.ms_fft_plan.argtypes = [
-            ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint64),
-            ctypes.POINTER(Options), ctypes.POINTER(_native.RouteOptions), ctypes.c_uint32,
-            ctypes.POINTER(PlanInfo)]
-        lib.ms_fft_auto_min_points.argtypes = []
-        lib.ms_fft_auto_min_points.restype = ctypes.c_uint64
-        _lib = lib
+        with _lock:
+            if _lib is None:
+                lib = _native.library()
+                if not hasattr(lib, "ms_fft_transform"):
+                    raise _native.NotAccelerated("the native library was built without the fft family")
+                lib.ms_fft_transform.argtypes = [
+                    ctypes.c_void_p, ctypes.POINTER(_native.Array), ctypes.POINTER(Options),
+                    ctypes.POINTER(_native.RouteOptions), ctypes.POINTER(_native.ArrayResult),
+                    ctypes.POINTER(_native.RouteInfo)]
+                lib.ms_fft_plan.argtypes = [
+                    ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint64),
+                    ctypes.POINTER(Options), ctypes.POINTER(_native.RouteOptions), ctypes.c_uint32,
+                    ctypes.POINTER(PlanInfo)]
+                lib.ms_fft_auto_min_points.argtypes = []
+                lib.ms_fft_auto_min_points.restype = ctypes.c_uint64
+                _lib = lib
     return _lib
 
 
@@ -59,8 +65,9 @@ def auto_min_points() -> int:
 
 
 def options(kind: int, norm: int, axes, n: int = 0, host_threads: int = 1) -> Options:
+    threads = max(1, min(int(host_threads), (1 << 32) - 1))
     result = Options(struct_size=ctypes.sizeof(Options), abi_version=MS_FFT_ABI_VERSION, kind=kind,
-                     norm=norm, axis_count=len(axes), host_threads=host_threads, n=n)
+                     norm=norm, axis_count=len(axes), host_threads=threads, n=n)
     for index, axis in enumerate(axes):
         result.axes[index] = axis
     return result
@@ -76,8 +83,9 @@ def transform(x: np.ndarray, fft_options: Options, function: str) -> np.ndarray:
     _native.check(lib.ms_fft_transform(_native.context(), ctypes.byref(descriptor), ctypes.byref(fft_options),
                                        ctypes.byref(route), ctypes.byref(result), ctypes.byref(info)))
     del held
+    out = _native.to_numpy(result)
     _native.record_route(function, info, input_dtype=x.dtype)
-    return _native.to_numpy(result)
+    return out
 
 
 def plan(dtype, shape, fft_options: Options, prepare: bool = False) -> PlanInfo:
@@ -86,6 +94,8 @@ def plan(dtype, shape, fft_options: Options, prepare: bool = False) -> PlanInfo:
     code = _native.native_dtype(dtype)
     if code is None or not 1 <= len(shape) <= _native.MS_MAX_NDIM:
         raise _native.NotAccelerated(f"no native path for dtype {np.dtype(dtype)} with {len(shape)} dimensions")
+    if any(d < 0 or d >= (1 << 64) for d in shape):
+        raise _native.NotAccelerated(f"shape {tuple(shape)} exceeds uint64 extent bounds")
     extents = (ctypes.c_uint64 * len(shape))(*shape)
     route = _native.route_options()
     info = PlanInfo(struct_size=ctypes.sizeof(PlanInfo), abi_version=MS_FFT_ABI_VERSION)

@@ -53,12 +53,19 @@ def timed(function, repeats, warmup):
 
 
 def image(shape, dtype, seed=20261118):
-    """Positive, image-like data: smooth structure plus noise, in [0, 1)."""
+    """Positive, image-like data: smooth structure plus noise."""
     rng = np.random.default_rng(seed)
     grids = np.meshgrid(*[np.arange(n, dtype=np.float32) for n in shape], indexing="ij", sparse=True)
     smooth = functools.reduce(np.multiply, [np.sin(g / (61.0 + 18 * i)) for i, g in enumerate(grids)])
     smooth = 0.5 + 0.25 * smooth
-    return (smooth + 0.25 * (rng.random(shape, dtype=np.float32) - 0.5)).astype(dtype)
+    val = smooth + 0.25 * (rng.random(shape, dtype=np.float32) - 0.5)
+    dt = np.dtype(dtype)
+    if np.issubdtype(dt, np.integer):
+        info = np.iinfo(dt)
+        low = 0.0
+        high = float(min(info.max, 65535))
+        return ((high - low) * val + low).astype(dt)
+    return val.astype(dt)
 
 
 WEIGHTS = np.array([0.02, -0.05, 0.11, 0.24, 0.31, 0.22, 0.13, -0.04, 0.06])  # no symmetry
@@ -92,7 +99,12 @@ def benchmark(quick):
              f"{'strict':>8s} {'':>7s} {'engine':6s} {'identical'}"
     print(header)
     for name, shape, call in WORKLOADS:
-        for dtype in (np.float64, np.float32):
+        dtypes = [np.float64, np.float32]
+        if name == "gaussian_filter 4096x4096 sigma=3":
+            dtypes += [np.uint8, np.uint16]
+        elif name == "correlate 4096x4096 5x5 dense":
+            dtypes += [np.uint8]
+        for dtype in dtypes:
             a = image(shape, dtype)
             scipy_ms, scipy_min = timed(lambda: call(sn, a), 1 if quick else 3, 0)
             reference = call(sn, a)

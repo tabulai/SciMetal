@@ -9,6 +9,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import functools
+import math
 import os
 import pathlib
 import threading
@@ -26,6 +27,11 @@ def performance_cores() -> int:
     """Physical performance cores: the worker count handed to SciPy for batches."""
     try:
         libc = ctypes.CDLL(ctypes.util.find_library("c"), use_errno=True)
+        libc.sysctlbyname.argtypes = [
+            ctypes.c_char_p, ctypes.c_void_p, ctypes.POINTER(ctypes.c_size_t),
+            ctypes.c_void_p, ctypes.c_size_t,
+        ]
+        libc.sysctlbyname.restype = ctypes.c_int
         value, size = ctypes.c_int(0), ctypes.c_size_t(ctypes.sizeof(ctypes.c_int))
         if libc.sysctlbyname(b"hw.perflevel0.physicalcpu", ctypes.byref(value), ctypes.byref(size), None, 0) == 0 \
                 and value.value > 0:
@@ -38,11 +44,14 @@ MS_OK, MS_EINVAL, MS_ENOTSUP, MS_EOVERFLOW, MS_EOOM, MS_ETIMEOUT, MS_EBACKEND, M
 MS_BUFFER_CPU, MS_BUFFER_METAL = 1, 2
 MS_EXECUTION_CPU, MS_EXECUTION_GPU, MS_EXECUTION_AUTO = 1, 2, 3
 MS_RUNTIME_ABI_VERSION = 1
-MS_ARRAY_ABI_VERSION = 2
+MS_ARRAY_ABI_VERSION = 3
 MS_MAX_NDIM = 8
 
 _DTYPES = {np.dtype(np.float32): 1, np.dtype(np.float64): 2,
-           np.dtype(np.complex64): 3, np.dtype(np.complex128): 4}
+           np.dtype(np.complex64): 3, np.dtype(np.complex128): 4,
+           np.dtype(np.bool_): 5,
+           np.dtype(np.int8): 6, np.dtype(np.int16): 7, np.dtype(np.int32): 8, np.dtype(np.int64): 9,
+           np.dtype(np.uint8): 10, np.dtype(np.uint16): 11, np.dtype(np.uint32): 12, np.dtype(np.uint64): 13}
 _NUMPY_DTYPES = {code: dtype for dtype, code in _DTYPES.items()}
 _PRECISIONS = {"fast": 1, "refined": 2, "strict": 3}
 _EXECUTIONS = {"cpu": MS_EXECUTION_CPU, "gpu": MS_EXECUTION_GPU, "auto": MS_EXECUTION_AUTO}
@@ -100,8 +109,7 @@ def _library_path() -> pathlib.Path:
 
 _lock = threading.Lock()
 _lib = None
-_context = None
-_context_pid = None
+_context_state: tuple[int, int] | None = None
 
 
 def library() -> ctypes.CDLL:
@@ -147,7 +155,13 @@ def decline_small(elements: int, break_even: int) -> None:
 def _memory_limit() -> int:
     override = os.environ.get("METAL_SCI_MEMORY_LIMIT_GB")
     if override:
-        return int(float(override) * (1 << 30))
+        gb = float(override)
+        if not math.isfinite(gb) or gb <= 0:
+            raise ValueError(f"METAL_SCI_MEMORY_LIMIT_GB must be a positive finite number, got {override!r}")
+        limit_bytes = int(gb * (1 << 30))
+        if limit_bytes <= 0 or limit_bytes >= (1 << 64):
+            raise ValueError(f"METAL_SCI_MEMORY_LIMIT_GB out of range: {override!r}")
+        return limit_bytes
     physical = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
     return physical // 2
 
@@ -158,24 +172,32 @@ def context() -> int:
     A forked child cannot use the parent's Metal state, so there the call is
     handed back to SciPy.
     """
-    global _context, _context_pid
-    if _context is not None and _context_pid != os.getpid():
-        raise NotAccelerated("the native context is unavailable after fork")
-    if _context is None:
-        lib = library()
-        with _lock:
-            if _context is None:
-                # A build without Metal has CPU storage and the CPU engines only.
-                storage = MS_BUFFER_METAL if has_metal() else MS_BUFFER_CPU
-                options = ContextOptions(struct_size=ctypes.sizeof(ContextOptions),
-                                         abi_version=MS_RUNTIME_ABI_VERSION, storage_kind=storage,
-                                         memory_limit_bytes=_memory_limit())
-                handle = ctypes.c_void_p()
-                status = lib.ms_context_create(ctypes.byref(options), ctypes.byref(handle))
-                if status != MS_OK:
-                    raise NativeError(lib.ms_status_message(status).decode())
-                _context, _context_pid = handle.value, os.getpid()
-    return _context
+    global _context_state
+    state = _context_state
+    if state is not None:
+        handle, pid = state
+        if pid != os.getpid():
+            raise NotAccelerated("the native context is unavailable after fork")
+        return handle
+    lib = library()
+    with _lock:
+        state = _context_state
+        if state is not None:
+            handle, pid = state
+            if pid != os.getpid():
+                raise NotAccelerated("the native context is unavailable after fork")
+            return handle
+        # A build without Metal has CPU storage and the CPU engines only.
+        storage = MS_BUFFER_METAL if has_metal() else MS_BUFFER_CPU
+        options = ContextOptions(struct_size=ctypes.sizeof(ContextOptions),
+                                 abi_version=MS_RUNTIME_ABI_VERSION, storage_kind=storage,
+                                 memory_limit_bytes=_memory_limit())
+        handle = ctypes.c_void_p()
+        status = lib.ms_context_create(ctypes.byref(options), ctypes.byref(handle))
+        if status != MS_OK:
+            raise NativeError(lib.ms_status_message(status).decode())
+        _context_state = (handle.value, os.getpid())
+        return handle.value
 
 
 def check(status: int) -> None:
@@ -184,7 +206,9 @@ def check(status: int) -> None:
         return
     lib = library()
     message = ctypes.create_string_buffer(512)
-    if _context is None or lib.ms_context_error_copy(_context, message, len(message)) != MS_OK:
+    state = _context_state
+    ctx = state[0] if state is not None and state[1] == os.getpid() else None
+    if ctx is None or lib.ms_context_error_copy(ctx, message, len(message)) != MS_OK:
         text = lib.ms_status_message(status).decode()
     else:
         text = message.value.decode(errors="replace")
@@ -199,21 +223,28 @@ def check(status: int) -> None:
 
 def native_dtype(dtype) -> int | None:
     """The native dtype code for a NumPy dtype, or None when there is no native path."""
-    return _DTYPES.get(np.dtype(dtype))
+    dt = np.dtype(dtype)
+    if dt.char in ("g", "G") or not dt.isnative:
+        return None
+    return _DTYPES.get(dt)
 
 
 def as_native(array: np.ndarray) -> tuple[Array, np.ndarray]:
     """Describe a NumPy array to the native core.
 
-    Returns the descriptor and the (possibly copied) C-contiguous array that
-    must stay alive for the duration of the call.
+    Returns the descriptor and the (possibly copied) C-contiguous, aligned array
+    that must stay alive for the duration of the call.
     """
-    code = _DTYPES.get(array.dtype)
-    if code is None or not array.dtype.isnative:
+    if not isinstance(array, np.ndarray):
+        raise NotAccelerated(f"expected a NumPy ndarray, got {type(array).__name__}")
+    code = native_dtype(array.dtype)
+    if code is None:
         raise NotAccelerated(f"no native path for dtype {array.dtype}")
     if not 1 <= array.ndim <= MS_MAX_NDIM:
         raise NotAccelerated(f"no native path for {array.ndim}-dimensional arrays")
-    held = np.ascontiguousarray(array)
+    held = np.require(array, requirements=("C", "A"))
+    if held.dtype != array.dtype or not 1 <= held.ndim <= MS_MAX_NDIM:
+        raise NotAccelerated("array could not be normalized to native C-contiguous aligned storage")
     descriptor = Array(struct_size=ctypes.sizeof(Array), abi_version=MS_ARRAY_ABI_VERSION,
                        data=held.ctypes.data, dtype=code, ndim=held.ndim)
     for axis, extent in enumerate(held.shape):
@@ -224,35 +255,45 @@ def as_native(array: np.ndarray) -> tuple[Array, np.ndarray]:
 class _OwnedBuffer:
     """Keeps a native buffer alive for the NumPy arrays that view it."""
 
-    __slots__ = ("_handle", "_pid", "__array_interface__")
+    __slots__ = ("_handle", "_pid", "_getpid", "_release", "__array_interface__")
 
-    def __init__(self, handle, pointer, shape, dtype):
-        self._handle, self._pid = handle, os.getpid()
+    def __init__(self, handle, pointer, shape, dtype, release):
+        self._handle = handle
+        self._getpid = os.getpid
+        self._pid = self._getpid()
+        self._release = release
         self.__array_interface__ = {"version": 3, "data": (pointer, False), "shape": shape,
                                     "typestr": dtype.str}
 
     def __del__(self):
         # Inherited handles must not be touched in a forked child.
-        if self._handle and self._pid == os.getpid() and _lib is not None:
-            _lib.ms_buffer_release(self._handle)
+        handle = self._handle
+        if handle and self._pid == self._getpid():
             self._handle = None
+            self._release(handle)
 
 
 def to_numpy(result: ArrayResult) -> np.ndarray:
     """A NumPy array viewing a native result without copying it."""
     lib = library()
-    dtype = _NUMPY_DTYPES[result.dtype]
-    shape = tuple(int(result.shape[axis]) for axis in range(result.ndim))
-    pointer, size = ctypes.c_void_p(), ctypes.c_uint64()
+    release = lib.ms_buffer_release
+    handle = result.buffer
     try:
-        check(lib.ms_buffer_data(result.buffer, ctypes.byref(pointer), ctypes.byref(size)))
+        dtype = _NUMPY_DTYPES[result.dtype]
+        shape = tuple(int(result.shape[axis]) for axis in range(result.ndim))
+        pointer, size = ctypes.c_void_p(), ctypes.c_uint64()
+        check(lib.ms_buffer_data(handle, ctypes.byref(pointer), ctypes.byref(size)))
+        if size.value == 0:
+            release(handle)
+            handle = None
+            return np.empty(shape, dtype)
+        owner = _OwnedBuffer(handle, pointer.value, shape, dtype, release)
+        handle = None
+        return np.asarray(owner)
     except BaseException:
-        lib.ms_buffer_release(result.buffer)
+        if handle:
+            release(handle)
         raise
-    if size.value == 0:
-        lib.ms_buffer_release(result.buffer)
-        return np.empty(shape, dtype)
-    return np.asarray(_OwnedBuffer(result.buffer, pointer.value, shape, dtype))
 
 
 def route_options() -> RouteOptions:
@@ -277,7 +318,7 @@ def record_route(function: str, info: RouteInfo, reason: str = "", input_dtype=N
 
 def astype(array: np.ndarray, dtype) -> np.ndarray:
     """Threaded precision conversion in the native core (float32 <-> float64, complex64 <-> complex128)."""
-    code = _DTYPES.get(np.dtype(dtype))
+    code = native_dtype(dtype)
     if code is None:
         raise NotAccelerated(f"no native path for dtype {np.dtype(dtype)}")
     descriptor, held = as_native(np.asarray(array))

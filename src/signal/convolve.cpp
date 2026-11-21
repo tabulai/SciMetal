@@ -40,6 +40,22 @@ uint64_t saturating_mul(uint64_t a, uint64_t b) noexcept {
     return ms_checked_mul(a, b, &prod) == MS_OK ? prod : UINT64_MAX;
 }
 
+uint64_t checked_full_len(uint64_t a, uint64_t b) {
+    uint64_t out = 0;
+    if (ms_checked_add(a, b - 1, &out) != MS_OK)
+        throw Error(MS_EOVERFLOW, "convolution output dimension overflows");
+    return out;
+}
+
+uint64_t oa_step_count(uint64_t s_d, uint64_t st_d, uint64_t eff_step, uint64_t full_d) {
+    if (s_d <= st_d) return 1;
+    // ceil((s_d + 1) / st_d) without s_d + st_d wraparound: 1 + s_d / st_d.
+    uint64_t n = 1 + s_d / st_d;
+    uint64_t covered = 0;
+    if (ms_checked_mul(eff_step, n, &covered) == MS_OK && covered < full_d) ++n;
+    return n;
+}
+
 double lambert_wm1(double y) noexcept {
     double w;
     if (y < -0.15) {
@@ -65,7 +81,7 @@ double lambert_wm1(double y) noexcept {
 void calc_oa_lens(uint64_t s1, uint64_t s2, bool real_last, bool is_last, const fft::Limits& limits,
                   uint64_t& out_block, uint64_t& out_overlap, uint64_t& out_step1, uint64_t& out_step2) {
     if (s1 == s2 || s1 <= 1 || s2 <= 1) {
-        out_block = s1 + s2 - 1;
+        out_block = checked_full_len(s1, s2);
         out_overlap = 0;
         out_step1 = s1;
         out_step2 = s2;
@@ -74,23 +90,29 @@ void calc_oa_lens(uint64_t s1, uint64_t s2, bool real_last, bool is_last, const 
     const bool swapped = s2 > s1;
     const uint64_t big = swapped ? s2 : s1;
     const uint64_t small = swapped ? s1 : s2;
-    if (small >= (big + 1) / 2 && small >= big / 2) {
-        // Note: SciPy checks small >= big / 2.0 (exact real division).
-        if (static_cast<double>(small) >= static_cast<double>(big) / 2.0) {
-            out_block = s1 + s2 - 1;
-            out_overlap = 0;
-            out_step1 = s1;
-            out_step2 = s2;
-            return;
-        }
+    // Overflow-free equivalent of small >= ceil(big / 2.0): small >= big - big / 2.
+    if (small >= big - big / 2) {
+        out_block = checked_full_len(s1, s2);
+        out_overlap = 0;
+        out_step1 = s1;
+        out_step2 = s2;
+        return;
     }
     const uint64_t overlap = small - 1;
     const double y = -1.0 / (2.0 * std::numbers::e * static_cast<double>(overlap));
     const double opt_size = -static_cast<double>(overlap) * lambert_wm1(y);
-    const uint64_t target = static_cast<uint64_t>(std::ceil(opt_size));
+    if (!std::isfinite(opt_size) || opt_size >= static_cast<double>(big) ||
+        opt_size > static_cast<double>(uint64_t{1} << 62)) {
+        out_block = checked_full_len(s1, s2);
+        out_overlap = 0;
+        out_step1 = s1;
+        out_step2 = s2;
+        return;
+    }
+    const uint64_t target = std::max<uint64_t>(small, static_cast<uint64_t>(std::ceil(opt_size)));
     const uint64_t block_size = fft::next_fast_len(target, real_last, is_last, limits);
-    if (block_size >= big) {
-        out_block = s1 + s2 - 1;
+    if (block_size >= big || block_size < small) {
+        out_block = checked_full_len(s1, s2);
         out_overlap = 0;
         out_step1 = s1;
         out_step2 = s2;
@@ -126,17 +148,26 @@ void copy_kernel_weights(const ms_array& k_arr, const array::Shape& k_sh, bool c
 
     if (!correlate) {
         // Convolution reverses the kernel along all axes (no conjugation).
-        if (esize == 4) {
-            const auto* s = reinterpret_cast<const uint32_t*>(src);
-            auto* d = reinterpret_cast<uint32_t*>(dst);
+        if (k_arr.dtype == MS_FLOAT32) {
+            const auto* s = reinterpret_cast<const float*>(src);
+            auto* d = reinterpret_cast<float*>(dst);
             for (uint64_t i = 0; i < elems; ++i) d[i] = s[(elems - 1) - i];
-        } else if (esize == 8) {
-            const auto* s = reinterpret_cast<const uint64_t*>(src);
-            auto* d = reinterpret_cast<uint64_t*>(dst);
+        } else if (k_arr.dtype == MS_FLOAT64) {
+            const auto* s = reinterpret_cast<const double*>(src);
+            auto* d = reinterpret_cast<double*>(dst);
             for (uint64_t i = 0; i < elems; ++i) d[i] = s[(elems - 1) - i];
+        } else if (k_arr.dtype == MS_COMPLEX64) {
+            // MS_COMPLEX64 is aligned to alignof(float) (4 bytes), not 8 bytes.
+            const auto* s = reinterpret_cast<const float*>(src);
+            auto* d = reinterpret_cast<float*>(dst);
+            for (uint64_t i = 0; i < elems; ++i) {
+                const uint64_t j = (elems - 1) - i;
+                d[2 * i] = s[2 * j];
+                d[2 * i + 1] = s[2 * j + 1];
+            }
         } else {
-            const auto* s = reinterpret_cast<const uint64_t*>(src);
-            auto* d = reinterpret_cast<uint64_t*>(dst);
+            const auto* s = reinterpret_cast<const double*>(src);
+            auto* d = reinterpret_cast<double*>(dst);
             for (uint64_t i = 0; i < elems; ++i) {
                 const uint64_t j = (elems - 1) - i;
                 d[2 * i] = s[2 * j];
@@ -234,7 +265,7 @@ uint32_t choose_conv_method_impl(ms_context* context, uint32_t out_dtype, const 
     uint64_t out_elems = 1;
     for (uint32_t d = 0; d < ndim; ++d) {
         uint64_t od = 0;
-        if (mode == MS_SIGNAL_FULL) od = s1.dims[d] + s2.dims[d] - 1;
+        if (mode == MS_SIGNAL_FULL) od = checked_full_len(s1.dims[d], s2.dims[d]);
         else if (mode == MS_SIGNAL_SAME) od = s1.dims[d];
         else od = ok1 ? (s1.dims[d] - s2.dims[d] + 1) : (s2.dims[d] - s1.dims[d] + 1);
         out_elems = saturating_mul(out_elems, od);
@@ -299,6 +330,9 @@ uint32_t choose_conv_method_impl(ms_context* context, uint32_t out_dtype, const 
 uint32_t promote_dtype(uint32_t d1, uint32_t d2) {
     (void)array::dtype_size(d1);
     (void)array::dtype_size(d2);
+    if (array::is_int_or_bool(d1) || array::is_int_or_bool(d2)) {
+        throw Error(MS_ENOTSUP, "signal convolution takes floating-point or complex arrays");
+    }
     const bool c = array::is_complex(d1) || array::is_complex(d2);
     const bool dbl = array::is_double(d1) || array::is_double(d2);
     if (c) return dbl ? MS_COMPLEX128 : MS_COMPLEX64;
@@ -309,7 +343,7 @@ FftConvPlan plan_fft_conv(const array::Shape& s1_in, const array::Shape& s2_in,
                           uint32_t out_dtype, uint32_t mode, bool correlate,
                           bool allow_oa, bool force_oa,
                           const uint32_t* axes_in, uint32_t axis_count_in,
-                          const fft::Limits& limits) {
+                          const fft::Limits& limits, uint32_t center) {
     const uint32_t ndim = s1_in.ndim;
     if (ndim < 1 || ndim > MS_MAX_NDIM || s2_in.ndim != ndim) {
         throw Error(MS_EINVAL, "signal convolution inputs must have the same rank (1..8)");
@@ -333,6 +367,7 @@ FftConvPlan plan_fft_conv(const array::Shape& s1_in, const array::Shape& s2_in,
     plan.out_dtype = out_dtype;
     plan.is_complex = array::is_complex(out_dtype);
     plan.correlate = correlate;
+    plan.raw_axis_mask = raw_mask;
 
     // Eliminate axes where s1[d] == 1 or s2[d] == 1 (SciPy _init_freq_conv_axes).
     for (uint32_t d = 0; d < ndim; ++d) {
@@ -373,7 +408,7 @@ FftConvPlan plan_fft_conv(const array::Shape& s1_in, const array::Shape& s2_in,
         const uint64_t a = plan.s1.dims[d];
         const uint64_t b = plan.s2.dims[d];
         if (plan.axis_mask & (1u << d)) {
-            full_shape[d] = a + b - 1;
+            full_shape[d] = checked_full_len(a, b);
             if (mode == MS_SIGNAL_FULL) plan.out_shape.dims[d] = full_shape[d];
             else if (mode == MS_SIGNAL_SAME) plan.out_shape.dims[d] = a;
             else plan.out_shape.dims[d] = a - b + 1;
@@ -382,7 +417,11 @@ FftConvPlan plan_fft_conv(const array::Shape& s1_in, const array::Shape& s2_in,
             full_shape[d] = std::max(a, b);
             plan.out_shape.dims[d] = (mode == MS_SIGNAL_SAME) ? a : full_shape[d];
         }
-        plan.crop_start[d] = (full_shape[d] - plan.out_shape.dims[d]) / 2;
+        if (mode == MS_SIGNAL_SAME && correlate && center == MS_SIGNAL_CENTER_2D_CORR) {
+            plan.crop_start[d] = (full_shape[d] - plan.out_shape.dims[d] + 1) / 2;
+        } else {
+            plan.crop_start[d] = (full_shape[d] - plan.out_shape.dims[d]) / 2;
+        }
         if (ms_checked_mul(plan.out_shape.elements, plan.out_shape.dims[d], &plan.out_shape.elements) != MS_OK) {
             throw Error(MS_EOVERFLOW, "output shape overflows");
         }
@@ -429,20 +468,8 @@ FftConvPlan plan_fft_conv(const array::Shape& s1_in, const array::Shape& s2_in,
                 oa_step1[d] = st1;
                 oa_step2[d] = st2;
                 const uint64_t eff_step = bsize - ov;
-                if (plan.s1.dims[d] > st1) {
-                    uint64_t n1 = (plan.s1.dims[d] + st1) / st1; // ceil((s1 + 1) / st1)
-                    if (eff_step * n1 < full_shape[d]) ++n1;
-                    oa_n1[d] = n1;
-                } else {
-                    oa_n1[d] = 1;
-                }
-                if (plan.s2.dims[d] > st2) {
-                    uint64_t n2 = (plan.s2.dims[d] + st2) / st2;
-                    if (eff_step * n2 < full_shape[d]) ++n2;
-                    oa_n2[d] = n2;
-                } else {
-                    oa_n2[d] = 1;
-                }
+                oa_n1[d] = oa_step_count(plan.s1.dims[d], st1, eff_step, full_shape[d]);
+                oa_n2[d] = oa_step_count(plan.s2.dims[d], st2, eff_step, full_shape[d]);
                 oa_nout[d] = std::max(oa_n1[d], oa_n2[d]);
             } else {
                 oa_block[d] = single_len[d];
@@ -507,9 +534,6 @@ ms_status ms_signal_fftconvolve(ms_context* context, const ms_array* in1, const 
         const array::Shape s1 = array::checked_shape(in1);
         const array::Shape s2 = array::checked_shape(in2);
         if (s1.ndim != s2.ndim) throw Error(MS_EINVAL, "in1 and in2 must have the same dimensionality");
-        if (reinterpret_cast<uintptr_t>(in1->data) % array::dtype_size(in1->dtype) ||
-            reinterpret_cast<uintptr_t>(in2->data) % array::dtype_size(in2->dtype))
-            throw Error(MS_EINVAL, "array data is not aligned to its element size");
         if (s1.elements == 0 || s2.elements == 0) throw Error(MS_ENOTSUP, "empty signal input");
 
         const uint32_t out_dtype = sig::promote_dtype(in1->dtype, in2->dtype);
@@ -554,18 +578,31 @@ ms_status ms_signal_convolve(ms_context* context, const ms_array* in1, const ms_
         const array::Shape s1 = array::checked_shape(in1);
         const array::Shape s2 = array::checked_shape(in2);
         if (s1.ndim != s2.ndim) throw Error(MS_EINVAL, "in1 and in2 must have the same dimensionality");
-        if (reinterpret_cast<uintptr_t>(in1->data) % array::dtype_size(in1->dtype) ||
-            reinterpret_cast<uintptr_t>(in2->data) % array::dtype_size(in2->dtype))
-            throw Error(MS_EINVAL, "array data is not aligned to its element size");
         if (s1.elements == 0 || s2.elements == 0) throw Error(MS_ENOTSUP, "empty signal input");
 
         const uint32_t ndim = s1.ndim;
         const uint32_t out_dtype = sig::promote_dtype(in1->dtype, in2->dtype);
 
-        const bool has_custom_boundary = options->boundary != MS_SIGNAL_BOUNDARY_FILL ||
-                                         options->fillvalue_real != 0.0 || options->fillvalue_imag != 0.0;
+        if (options->boundary == MS_SIGNAL_BOUNDARY_FILL && !array::is_complex(out_dtype) &&
+            options->fillvalue_imag != 0.0) {
+            throw Error(MS_EINVAL, "real convolution cannot use a complex fillvalue");
+        }
+        const bool has_custom_boundary =
+            options->boundary != MS_SIGNAL_BOUNDARY_FILL ||
+            options->fillvalue_real != 0.0 || options->fillvalue_imag != 0.0;
         if (has_custom_boundary && options->method == MS_SIGNAL_METHOD_FFT) {
             throw Error(MS_EINVAL, "FFT method requires zero-fill boundary");
+        }
+
+        // Validate all-dimension dominance for VALID mode ahead of method dispatch
+        // (for both Metal and CPU-only builds, and both FFT and direct methods).
+        bool ok1 = true, ok2 = true;
+        for (uint32_t d = 0; d < ndim; ++d) {
+            if (s1.dims[d] < s2.dims[d]) ok1 = false;
+            if (s2.dims[d] < s1.dims[d]) ok2 = false;
+        }
+        if (options->mode == MS_SIGNAL_VALID && !ok1 && !ok2) {
+            throw Error(MS_EINVAL, "for valid mode, one input must be at least as large as the other in every dimension");
         }
 
         uint32_t method = options->method;
@@ -584,46 +621,38 @@ ms_status ms_signal_convolve(ms_context* context, const ms_array* in1, const ms_
             const bool allow_oa = (options->method == MS_SIGNAL_METHOD_AUTO);
             sig::FftConvPlan plan = sig::plan_fft_conv(
                 s1, s2, out_dtype, options->mode, options->correlate != 0,
-                allow_oa, /*force_oa=*/false, nullptr, 0, limits);
-            if (plan.axis_count > 0) {
-                uint32_t compute_dtype = array::single_of(out_dtype);
-                bool has_nonfinite = false;
-                ms::detail::BufferPtr result = sig::run_fft_conv_gpu(
-                    context, *in1, *in2, plan, *route_options, compute_dtype, &has_nonfinite);
-                if (has_nonfinite && plan.use_oa) {
-                    // SciPy convolve/correlate(..., method='auto') routes to single-FFT,
-                    // propagating NaN/Inf across the full output rather than isolating to an OA block.
-                    result.reset();
-                    plan = sig::plan_fft_conv(
-                        s1, s2, out_dtype, options->mode, options->correlate != 0,
-                        /*allow_oa=*/false, /*force_oa=*/false, nullptr, 0, limits);
-                    has_nonfinite = false;
-                    result = sig::run_fft_conv_gpu(
-                        context, *in1, *in2, plan, *route_options, compute_dtype, &has_nonfinite);
-                }
-                array::publish(out, std::move(result), out_dtype, plan.out_shape);
-                array::report(info, MS_EXECUTION_GPU, compute_dtype, "");
-                if (info) {
-                    info->reserved[0] = MS_SIGNAL_ROUTE_FFT | (has_nonfinite ? MS_SIGNAL_ROUTE_NONFINITE : 0ull);
-                }
-                return;
+                allow_oa, /*force_oa=*/false, nullptr, 0, limits, options->center);
+            if (plan.axis_count == 0) {
+                throw Error(MS_ENOTSUP, "no axes to transform with FFT; SciPy is used");
             }
-            // All axes are length 1: fall through to 1-tap direct path below.
+            uint32_t compute_dtype = array::single_of(out_dtype);
+            uint32_t nf_flags = 0;
+            ms::detail::BufferPtr result = sig::run_fft_conv_gpu(
+                context, *in1, *in2, plan, *route_options, compute_dtype, &nf_flags);
+            if (nf_flags != 0 && plan.use_oa) {
+                // SciPy convolve/correlate(..., method='auto') routes to single-FFT,
+                // propagating NaN/Inf across the full output rather than isolating to an OA block.
+                result.reset();
+                plan = sig::plan_fft_conv(
+                    s1, s2, out_dtype, options->mode, options->correlate != 0,
+                    /*allow_oa=*/false, /*force_oa=*/false, nullptr, 0, limits, options->center);
+                nf_flags = 0;
+                result = sig::run_fft_conv_gpu(
+                    context, *in1, *in2, plan, *route_options, compute_dtype, &nf_flags);
+            }
+            const bool out_nonfinite = (nf_flags & 4u) != 0;
+            array::publish(out, std::move(result), out_dtype, plan.out_shape);
+            array::report(info, MS_EXECUTION_GPU, compute_dtype, "");
+            if (info) {
+                info->reserved[0] = MS_SIGNAL_ROUTE_FFT | (out_nonfinite ? MS_SIGNAL_ROUTE_NONFINITE : 0ull);
+            }
+            return;
 #else
             throw Error(MS_ENOTSUP, "this build has no GPU engine and there is no native CPU FFT convolution");
 #endif
         }
 
         // Direct path via shared dense_correlate primitive.
-        bool ok1 = true, ok2 = true;
-        for (uint32_t d = 0; d < ndim; ++d) {
-            if (s1.dims[d] < s2.dims[d]) ok1 = false;
-            if (s2.dims[d] < s1.dims[d]) ok2 = false;
-        }
-        if (options->mode == MS_SIGNAL_VALID && !ok1 && !ok2) {
-            throw Error(MS_EINVAL, "for valid mode, one input must be at least as large as the other in every dimension");
-        }
-
         bool swap = false;
         if (options->mode == MS_SIGNAL_VALID) {
             swap = !ok1;
@@ -670,7 +699,7 @@ ms_status ms_signal_convolve(ms_context* context, const ms_array* in1, const ms_
             }
             spec.wshape[d] = static_cast<uint32_t>(k_sh.dims[d]);
             if (options->mode == MS_SIGNAL_FULL) {
-                out_shape.dims[d] = in_sh.dims[d] + k_sh.dims[d] - 1;
+                out_shape.dims[d] = sig::checked_full_len(in_sh.dims[d], k_sh.dims[d]);
                 spec.start[d] = -static_cast<int64_t>(k_sh.dims[d] - 1);
             } else if (options->mode == MS_SIGNAL_VALID) {
                 out_shape.dims[d] = in_sh.dims[d] - k_sh.dims[d] + 1;
@@ -695,7 +724,7 @@ ms_status ms_signal_convolve(ms_context* context, const ms_array* in1, const ms_
         const bool real_in_complex_out = array::is_complex(out_dtype) && !array::is_complex(in_arr.dtype);
         std::vector<uint8_t> promoted_in_buf;
         ms_array cpu_in_arr = in_arr;
-        if (real_in_complex_out && options->fillvalue_imag != 0.0) {
+        if (options->boundary == MS_SIGNAL_BOUNDARY_FILL && real_in_complex_out && options->fillvalue_imag != 0.0) {
             const uint32_t target_in_dtype = array::is_double(in_arr.dtype) ? MS_COMPLEX128 : MS_COMPLEX64;
             promoted_in_buf.resize(in_sh.elements * array::dtype_size(target_in_dtype));
             if (in_arr.dtype == MS_FLOAT32) {

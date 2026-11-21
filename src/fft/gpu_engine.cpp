@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <deque>
@@ -88,6 +89,22 @@ MTL::ComputePipelineState* scale_pipeline() {
     static MTL::ComputePipelineState* const state = gpu::resolve_pipeline("ms_fft_scale");
     return state;
 }
+
+MTL::ComputePipelineState* c2r_hermitian_pipeline() {
+    static MTL::ComputePipelineState* const state = gpu::resolve_pipeline("ms_fft_c2r_hermitian_fix");
+    return state;
+}
+
+uint64_t checked_slot_bytes(uint64_t slot_scalars, uint64_t count, uint64_t tail_scalars = 0) {
+    uint64_t scalars = 0;
+    if (ms_checked_mul(slot_scalars, count, &scalars) != MS_OK ||
+        ms_checked_add(scalars, tail_scalars, &scalars) != MS_OK)
+        throw Error(MS_EOVERFLOW, "FFT device buffer byte size overflows");
+    uint64_t bytes = 0;
+    if (ms_checked_mul(scalars, scalar_bytes, &bytes) != MS_OK)
+        throw Error(MS_EOVERFLOW, "FFT device buffer byte size overflows");
+    return bytes;
+}
 } // namespace
 
 Limits device_limits() {
@@ -106,6 +123,12 @@ Limits device_limits() {
 void prepare(const std::vector<Stage>& stages) {
     for (const Stage& stage : stages) (void)resolve_plan(*stage.plan);
     (void)scale_pipeline();
+    for (size_t i = 1; i < stages.size(); ++i) {
+        if (stages[i].plan->clear_hermitian_imag) {
+            (void)c2r_hermitian_pipeline();
+            break;
+        }
+    }
 }
 
 bool refused(std::vector<Stage>& stages, Refusal& refusal) {
@@ -182,14 +205,18 @@ ms_buffer* encode(ms_context* context, gpu::Batch& batch, Scratch& scratch,
     ms_buffer* carried = input;
 
     // A plan whose last pass is ours applies the factor there for free; the
-    // last such stage does it.
+    // last such stage does it — except never fuse scale > 1.0f ahead of a later
+    // stage that divides by n (multiplying early can overflow float32).
     size_t scaling_stage = stages.size();
     if (scale != 1.0f) {
+        const bool amplifies = std::fabs(scale) > 1.0f;
+        bool later_divides = false;
         for (size_t i = stages.size(); i-- > 0;) {
-            if (stages[i].plan->takes_scale) {
+            if (stages[i].plan->takes_scale && !(amplifies && later_divides)) {
                 scaling_stage = i;
                 break;
             }
+            if (stages[i].plan->divides_by_n) later_divides = true;
         }
     }
 
@@ -211,11 +238,11 @@ ms_buffer* encode(ms_context* context, gpu::Batch& batch, Scratch& scratch,
         if (!instantiate(plan, count, dispatches, reason)) throw Error(MS_ENOTSUP, reason);
 
         slots.assign(plan.slots.size(), nullptr);
-        if (buffer_size(carried, context) < plan.slots[0] * count * scalar_bytes)
+        if (buffer_size(carried, context) < checked_slot_bytes(plan.slots[0], count, plan.input_tail_scalars))
             throw Error(MS_EBACKEND, "FFT input buffer is smaller than its plan's input slot");
         slots[0] = carried;
         for (size_t slot = 1; slot < plan.slots.size(); ++slot)
-            slots[slot] = scratch.acquire(plan.slots[slot] * count * scalar_bytes);
+            slots[slot] = scratch.acquire(checked_slot_bytes(plan.slots[slot], count));
         tables.clear();
         for (const auto& table : plan.tables) {
             BufferPtr device = allocate_scratch(context, table->size(), Fill::unfilled);
@@ -226,6 +253,15 @@ ms_buffer* encode(ms_context* context, gpu::Batch& batch, Scratch& scratch,
         if (profile) {
             t_enc = Clock::now();
             profile->alloc_scratch_ns += elapsed_ns(t_alloc, t_enc);
+        }
+
+        if (index > 0 && plan.clear_hermitian_imag) {
+            MSFFTC2RHermitianParams hparams{};
+            hparams.rows = static_cast<ms_u32>(count);
+            hparams.row_stride = static_cast<ms_u32>(plan.slots[0] / 2);
+            hparams.nyquist = (plan.request.n % 2 == 0) ? static_cast<ms_u32>(plan.request.n / 2) : 0u;
+            const uint64_t groups = (count + MS_GPU_THREADS - 1) / MS_GPU_THREADS;
+            batch.dispatch(c2r_hermitian_pipeline(), hparams, {bind(slots[0], context)}, groups);
         }
 
         for (size_t i = 0; i < plan.steps.size(); ++i) {

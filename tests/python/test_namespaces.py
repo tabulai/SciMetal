@@ -121,3 +121,29 @@ def test_accelerated_functions_pickle_as_themselves():
 
     for function in (metal_sci.ndimage.gaussian_filter, metal_sci.fft.fft):
         assert pickle.loads(pickle.dumps(function)) is function
+
+
+def test_alias_preserves_scipy_metadata_and_handles_private_submodules_and_all():
+    import importlib.resources
+
+    orig_spec = scipy.stats.__spec__
+    orig_loader = scipy.stats.__loader__
+    orig_pkg = scipy.stats.__package__
+
+    mstats = importlib.import_module("metal_sci.stats")
+    assert mstats is scipy.stats
+    assert scipy.stats.__spec__ is orig_spec
+    assert scipy.stats.__loader__ is orig_loader
+    assert scipy.stats.__package__ is orig_pkg
+    assert importlib.resources.files(scipy.stats) is not None
+
+    import scipy.stats._constants as sp_consts
+    m_consts = importlib.import_module("metal_sci.stats._constants")
+    assert m_consts is sp_consts
+
+    import metal_sci.ndimage as mnd
+    import metal_sci.signal as msig
+
+    assert "butter" in msig.__all__
+    assert "label" in mnd.__all__
+    assert {"stats", "optimize", "ndimage", "fft", "signal"} <= set(dir(metal_sci))

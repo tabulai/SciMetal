@@ -205,8 +205,11 @@ def array(shape, dtype, seed=0):
 
 def assert_identical(ours, reference, context=""):
     assert ours.dtype == reference.dtype and ours.shape == reference.shape, context
-    assert ours.tobytes() == reference.tobytes(), (
-        f"{context}: not bit-identical, max difference {np.abs(ours - reference).max():.3g}")
+    if ours.tobytes() != reference.tobytes():
+        diff = (f"mismatched bytes {int(np.count_nonzero(ours.view(np.uint8) != reference.view(np.uint8)))}"
+                if ours.dtype == np.bool_
+                else f"max difference {np.abs(ours.astype(np.float64) - reference.astype(np.float64)).max():.3g}")
+        pytest.fail(f"{context}: not bit-identical, {diff}")
 
 
 def check(call, a, expect_engine):
@@ -487,7 +490,10 @@ def test_explain_reports_the_route(gpu):
         assert "copied" in metal_sci.explain() and metal_sci.last_route().engine == "cpu"
         mn.sobel(a.astype(np.int32))
         route = metal_sci.last_route()
-        assert route.engine == "scipy" and "int32" in route.reason
+        assert route.engine == "cpu" and route.compute_dtype == "float64"
+        mn.sobel(a.astype(np.complex128))
+        route = metal_sci.last_route()
+        assert route.engine == "scipy" and "complex128" in route.reason
 
 
 # ---- output argument --------------------------------------------------------------------------
@@ -539,8 +545,17 @@ def test_output_argument(function, args, dtype):
         returned = ours(a, *args, output=wide_other[:, ::2])
         assert metal_sci.last_route().engine == "cpu"
         assert_identical(np.ascontiguousarray(returned), ref_other)
-        # Non-float32/float64 output dtypes, another shape, and partial/cross-dtype overlap decline to SciPy.
-        for bad_dtype in (np.int32, np.uint8, bool, np.float16, np.longdouble, np.complex64, np.dtype(">f4")):
+        # Integer and boolean output dtypes run natively on CPU in strict mode, bit-identical to SciPy.
+        for int_dtype in (np.int32, np.uint8, bool):
+            ref_int = theirs(a, *args, output=int_dtype)
+            assert_identical(ours(a, *args, output=int_dtype), ref_int)
+            assert metal_sci.last_route().engine == "cpu"
+            target_int = np.zeros(a.shape, int_dtype)
+            returned_int = ours(a, *args, output=target_int)
+            assert returned_int is target_int and metal_sci.last_route().engine == "cpu"
+            assert_identical(target_int, ref_int)
+        # Non-real output dtypes, another shape, and partial/cross-dtype overlap decline to SciPy.
+        for bad_dtype in (np.float16, np.longdouble, np.complex64, np.dtype(">f4")):
             assert_declined_like_scipy(function, a, *args, output=bad_dtype)
             assert_declined_like_scipy(function, a, *args, output=np.zeros(a.shape, bad_dtype))
         raw = np.zeros((30, 80), dtype=np.float32)
@@ -589,7 +604,7 @@ def test_unsupported_inputs_fall_through_to_scipy():
     for function, args in (("correlate1d", ([1.0, 2.0, 1.0],)), ("convolve1d", ([1.0, 2.0, 1.0],)),
                            ("gaussian_filter1d", (1.0,)), ("gaussian_filter", (1.0,)), ("uniform_filter1d", (3,)),
                            ("uniform_filter", (3,)), ("prewitt", ()), ("sobel", ())):
-        for unusual in (a.astype(np.int32), a.astype(np.uint8), a > 0, a.astype(np.float16), a.astype(np.longdouble),
+        for unusual in (a.astype(np.float16), a.astype(np.longdouble),
                         a.astype(np.complex128), a.astype(">f8"), a.tolist(), np.ma.masked_array(a),
                         np.empty((0, 4)), np.empty((3, 0), np.float32), np.float64(2.0), np.zeros((2,) * 9)):
             assert_declined_like_scipy(function, unusual, *args)
@@ -983,19 +998,35 @@ def test_a3_declines_and_errors():
     ]:
         assert_declined_like_scipy(fn, a, *args, **kwargs)
     assert_declined_like_scipy("correlate", a.astype(np.complex128), np.ones((3, 3)))
-    assert_declined_like_scipy("laplace", a.astype(np.int32))
-    assert_declined_like_scipy("gaussian_laplace", a.astype(np.int32), 1.0)
-    assert_declined_like_scipy("gaussian_gradient_magnitude", a.astype(np.int32), 1.0)
+    assert_declined_like_scipy("laplace", a.astype(np.complex128))
+    assert_declined_like_scipy("gaussian_laplace", a.astype(np.complex128), 1.0)
+    assert_declined_like_scipy("gaussian_gradient_magnitude", a.astype(np.float16), 1.0)
 
     # In-place and output= target array work on A3 routes.
     with metal_sci.precision("strict"):
-        for fn, args in [("correlate", (np.ones((3, 3)),)), ("convolve", (np.ones((2, 2)),)),
-                         ("laplace", ()), ("gaussian_laplace", (1.0,)), ("gaussian_gradient_magnitude", (1.0,))]:
+        for fn, args in [("correlate", (np.ones((3, 3)),)), ("convolve", (np.ones((2, 2)),))]:
             work = a.copy()
-            ref = getattr(sn, fn)(a, *args)
+            ref_work = a.copy()
+            getattr(sn, fn)(ref_work, *args, output=ref_work)
             ret = getattr(mn, fn)(work, *args, output=work)
             assert ret is work and metal_sci.last_route().engine == "cpu"
-            assert_identical(work, ref)
+            assert_identical(work, ref_work)
+
+        # Out-of-place output= target array runs natively on composite filters, while
+        # multi-axis in-place output=input declines to match SciPy's sequential aliasing.
+        for fn, args in [("laplace", ()), ("gaussian_laplace", (1.0,)), ("gaussian_gradient_magnitude", (1.0,))]:
+            dest = np.empty_like(a)
+            ref = getattr(sn, fn)(a, *args)
+            ret = getattr(mn, fn)(a, *args, output=dest)
+            assert ret is dest and metal_sci.last_route().engine == "cpu"
+            assert_identical(dest, ref)
+
+            work = a.copy()
+            ref_work = a.copy()
+            getattr(sn, fn)(ref_work, *args, output=ref_work)
+            ret = getattr(mn, fn)(work, *args, output=work)
+            assert ret is work and metal_sci.last_route().engine == "scipy"
+            assert_identical(work, ref_work)
 
 
 @st.composite
@@ -1732,5 +1763,235 @@ def test_mixed_precision_float32_to_float64_overflow_guard(gpu):
             ref_sp = sn.correlate(sp, np.full((3, 3), 0.25, np.float64), mode="reflect", output=np.float64)
             np.testing.assert_array_equal(np.isnan(got_sp), np.isnan(ref_sp))
             np.testing.assert_array_equal(np.isinf(got_sp), np.isinf(ref_sp))
+
+
+# ---- A6: integer and boolean dtypes -----------------------------------------------------------
+
+_INT_BOOL_DTYPES = (
+    np.bool_, np.int8, np.int16, np.int32, np.int64,
+    np.uint8, np.uint16, np.uint32, np.uint64,
+)
+
+
+def _int_bool_array(shape, dtype, seed=20261119):
+    if dtype is np.bool_:
+        rng = np.random.default_rng(seed)
+        return (rng.integers(0, 4, size=shape, dtype=np.uint8) != 0)
+    info = np.iinfo(dtype)
+    rng = np.random.default_rng(seed)
+    low = -40 if info.min < 0 else 0
+    high = min(60, info.max)
+    return rng.integers(low, high + 1, size=shape, dtype=dtype)
+
+
+@pytest.mark.parametrize("dtype", _INT_BOOL_DTYPES)
+def test_a6_all_15_filters_integer_bool_strict_bit_identical(dtype):
+    a = _int_bool_array((19, 23), dtype, seed=10 + int(np.dtype(dtype).num))
+    w1d = np.array([-0.5, 1.25, -0.5], dtype=np.float64)
+    w2d = np.array([[0.0, -0.5, 0.25], [0.5, 1.0, -0.25], [0.0, 0.5, -0.5]], dtype=np.float64)
+    calls = (
+        ("correlate1d", (w1d,), dict(axis=-1, mode="reflect")),
+        ("convolve1d", (w1d,), dict(axis=0, mode="constant", cval=1.0)),
+        ("correlate", (w2d,), dict(mode="reflect")),
+        ("convolve", (w2d,), dict(mode="constant", cval=2.0)),
+        ("gaussian_filter1d", (1.2,), dict(axis=-1)),
+        ("gaussian_filter", (1.2,), dict()),
+        ("uniform_filter1d", (5,), dict(axis=0)),
+        ("uniform_filter", (4,), dict(mode="nearest")),
+        ("prewitt", (), dict(mode="reflect")),
+        ("sobel", (), dict(mode="constant", cval=1.0)),
+        ("laplace", (), dict(mode="reflect")),
+        ("gaussian_laplace", (1.2,), dict(mode="reflect")),
+        ("gaussian_gradient_magnitude", (1.2,), dict(mode="reflect")),
+        ("generic_laplace", (_gl_deriv2,), dict(extra_arguments=(1.2,))),
+        ("generic_gradient_magnitude", (_ggm_deriv,), dict(extra_arguments=(1.2,))),
+    )
+    with metal_sci.precision("strict"), metal_sci.device("auto"):
+        for fn, args, kw in calls:
+            ours = getattr(mn, fn)(a, *args, **kw)
+            assert metal_sci.last_route().engine == "cpu", f"{fn} {dtype}: {metal_sci.last_route()}"
+            if fn == "generic_laplace":
+                ref = sn.generic_laplace(a, _gl_deriv2_scipy, **kw)
+            elif fn == "generic_gradient_magnitude":
+                ref = sn.generic_gradient_magnitude(a, _ggm_deriv_scipy, **kw)
+            else:
+                ref = getattr(sn, fn)(a, *args, **kw)
+            assert_identical(ours, ref, f"strict {fn} {dtype}")
+
+
+def test_a6_bool_raw_bytes_and_cross_dtype_outputs():
+    # Multi-byte raw bool view (values 0, 2, 5) matches SciPy's raw-byte NI_ArrayToLineBuffer semantics.
+    raw = np.arange(15 * 19, dtype=np.uint8).reshape(15, 19) % 5
+    b_raw = raw.view(np.bool_)
+    with metal_sci.precision("strict"), metal_sci.device("cpu"):
+        for fn, args in (("correlate1d", (np.array([0.25, 0.5, 0.25]),)),
+                         ("correlate", (np.array([[1.0, -1.0], [0.5, 0.5]]),)),
+                         ("gaussian_filter", (1.0,)),
+                         ("laplace", ()),
+                         ("uniform_filter", (3,))):
+            ours = getattr(mn, fn)(b_raw, *args)
+            ref = getattr(sn, fn)(b_raw, *args)
+            assert metal_sci.last_route().engine == "cpu"
+            assert_identical(ours, ref, f"raw bool {fn}")
+
+    # Cross-dtype output= combinations across separable, dense, and composite filters.
+    combos = [
+        (np.uint8, np.float64),
+        (np.uint8, np.int16),
+        (np.float64, np.int32),
+        (np.bool_, np.uint8),
+        (np.int32, np.float32),
+    ]
+    w2d = np.array([[0.25, -0.5], [1.0, 0.25]], dtype=np.float64)
+    for in_dt, out_dt in combos:
+        a = _int_bool_array((17, 21), in_dt, seed=55) if in_dt in _INT_BOOL_DTYPES else array((17, 21), in_dt, seed=55)
+        with metal_sci.precision("strict"), metal_sci.device("cpu"):
+            for fn, args, ref_fn in (
+                ("correlate1d", (np.array([0.25, 0.5, 0.25]),), sn.correlate1d),
+                ("gaussian_filter", (1.1,), sn.gaussian_filter),
+                ("uniform_filter", (3,), sn.uniform_filter),
+                ("sobel", (), sn.sobel),
+                ("prewitt", (), sn.prewitt),
+                ("correlate", (w2d,), sn.correlate),
+                ("convolve", (w2d,), sn.convolve),
+                ("laplace", (), sn.laplace),
+                ("gaussian_laplace", (1.1,), sn.gaussian_laplace),
+                ("gaussian_gradient_magnitude", (1.1,), sn.gaussian_gradient_magnitude),
+                ("generic_laplace", (_gl_deriv2,), None),
+                ("generic_gradient_magnitude", (_ggm_deriv,), None),
+            ):
+                ours = getattr(mn, fn)(a, *args, output=out_dt)
+                assert metal_sci.last_route().engine == "cpu"
+                if fn == "generic_laplace":
+                    ref = sn.generic_laplace(a, _gl_deriv2_scipy, output=out_dt)
+                elif fn == "generic_gradient_magnitude":
+                    ref = sn.generic_gradient_magnitude(a, _ggm_deriv_scipy, output=out_dt)
+                else:
+                    ref = ref_fn(a, *args, output=out_dt)
+                assert_identical(ours, ref, f"cross {fn} {in_dt}->{out_dt}")
+
+
+def test_a6_gpu_fast_uint8_int16_and_large_int_guard(gpu):
+    # GPU fast mode runs uint8 and int16 accurately.
+    for dt in (np.uint8, np.int16):
+        a = _int_bool_array((128, 128), dt, seed=77)
+        with metal_sci.precision("fast"), metal_sci.device("gpu"):
+            for fn, args in (("gaussian_filter", (1.5,)),
+                             ("uniform_filter", (5,)),
+                             ("correlate", (np.full((3, 3), 1.0 / 9.0),))):
+                ours = getattr(mn, fn)(a, *args)
+                rt = metal_sci.last_route()
+                assert rt.engine == "gpu" and rt.compute_dtype == "float32"
+                ref = getattr(sn, fn)(a, *args)
+                assert np.abs(ours.astype(np.float64) - ref.astype(np.float64)).max() <= 1.0
+            if dt is np.int16:
+                for fn, args in (("laplace", ()), ("gaussian_laplace", (1.2,)), ("gaussian_gradient_magnitude", (1.2,))):
+                    ours = getattr(mn, fn)(a, *args)
+                    rt = metal_sci.last_route()
+                    assert rt.engine == "gpu" and rt.compute_dtype == "float32"
+                    ref = getattr(sn, fn)(a, *args)
+                    ref_f64 = np.trunc(getattr(sn, fn)(a.astype(np.float64), *args)).astype(dt)
+                    assert np.abs(ours.astype(np.float64) - ref_f64.astype(np.float64)).max() <= 1.0
+                    assert np.abs(ours.astype(np.float64) - ref.astype(np.float64)).max() <= 3.0
+
+    # |x| >= 2^24 guard rail re-routes AUTO -> CPU and declines under forced GPU.
+    shape = (2048, 2048)
+    for dt in (np.int32, np.uint32, np.int64, np.uint64):
+        arr = np.full(shape, 7, dtype=dt)
+        with metal_sci.precision("fast"):
+            if dt is np.int32:
+                arr[0, 0] = (1 << 24) - 1
+                with metal_sci.device("auto"):
+                    mn.gaussian_filter(arr, 1.0)
+                    rt_ok = metal_sci.last_route()
+                    assert rt_ok.engine == "gpu" and rt_ok.compute_dtype == "float32"
+
+            bad_values = (1 << 24, -(1 << 24)) if np.issubdtype(dt, np.signedinteger) else (1 << 24,)
+            for bad in bad_values:
+                arr[10, 20] = bad
+                ref = sn.gaussian_filter(arr, 1.0)
+                with metal_sci.device("auto"):
+                    got = mn.gaussian_filter(arr, 1.0)
+                    rt = metal_sci.last_route()
+                    assert rt.engine == "cpu" and rt.compute_dtype == "float64" and rt.reason
+                    assert "cpu" in metal_sci.explain().lower() and rt.reason in metal_sci.explain()
+                    assert_identical(got, ref, f"auto guard {dt} {bad}")
+                with metal_sci.device("gpu"):
+                    sub = arr[:64, :64]
+                    got_g = mn.gaussian_filter(sub, 1.0)
+                    assert metal_sci.last_route().engine == "scipy"
+                    assert_identical(got_g, sn.gaussian_filter(sub, 1.0), f"gpu guard {dt} {bad}")
+
+
+def test_review_regressions():
+    a = array((10, 12), np.float64, seed=123)
+
+    # 1. _TraceToken handed to non-separable metal_sci.ndimage routes declines cleanly to SciPy.
+    def dense_deriv(inp, axis, output, mode, cval):
+        w = np.ones((3, 3), dtype=np.float64) / 9.0
+        return mn.correlate(inp, w, output=output, mode=mode, cval=cval)
+
+    def dense_deriv_scipy(inp, axis, output, mode, cval):
+        w = np.ones((3, 3), dtype=np.float64) / 9.0
+        return sn.correlate(inp, w, output=output, mode=mode, cval=cval)
+
+    from metal_sci._dispatch import counters
+
+    before_gl_fall = counters["ndimage.generic_laplace"][1]
+    got_gl = mn.generic_laplace(a, dense_deriv)
+    assert counters["ndimage.generic_laplace"][1] == before_gl_fall + 1
+    assert_identical(got_gl, sn.generic_laplace(a, dense_deriv_scipy))
+
+    # 2. Negative and out-of-range scalar axes in gaussian_laplace / gaussian_gradient_magnitude.
+    with metal_sci.precision("strict"), metal_sci.device("cpu"):
+        for fn in ("gaussian_laplace", "gaussian_gradient_magnitude"):
+            got = getattr(mn, fn)(a, 1.0, axes=-1)
+            assert metal_sci.last_route().engine == "cpu"
+            assert_identical(got, getattr(sn, fn)(a, 1.0, axes=-1))
+            assert_declined_like_scipy(fn, a, 1.0, axes=5)
+            assert_declined_like_scipy(fn, a, 1.0, axes=-5)
+
+    # 3. String non-numeric output dtype "bool" raises RuntimeError like SciPy.
+    assert_declined_like_scipy("gaussian_filter", a, 1.0, output="bool")
+
+    # 4. Self-overlapping strided output view declines cleanly to SciPy.
+    base = np.zeros(20, dtype=np.float64)
+    overlap = np.lib.stride_tricks.as_strided(base, shape=(10, 12), strides=(8, 0))
+    base_ref = np.zeros(20, dtype=np.float64)
+    overlap_ref = np.lib.stride_tricks.as_strided(base_ref, shape=(10, 12), strides=(8, 0))
+    mn.gaussian_filter(a, 1.0, output=overlap)
+    assert metal_sci.last_route().engine == "scipy"
+    sn.gaussian_filter(a, 1.0, output=overlap_ref)
+    assert_identical(base, base_ref)
+
+    # 5. Generator extra_arguments in generic_laplace / generic_gradient_magnitude declines to SciPy
+    #    so iterator exhaustion matches SciPy's TypeError on the second axis.
+    def scale_deriv(inp, axis, output, mode, cval, factor):
+        return mn.correlate1d(inp, [factor, -2.0 * factor, factor], axis=axis, output=output, mode=mode, cval=cval)
+
+    def scale_deriv_scipy(inp, axis, output, mode, cval, factor):
+        return sn.correlate1d(inp, [factor, -2.0 * factor, factor], axis=axis, output=output, mode=mode, cval=cval)
+
+    with pytest.raises(TypeError):
+        sn.generic_laplace(a, scale_deriv_scipy, extra_arguments=(x for x in (2.5,)))
+    before_gen_fall = counters["ndimage.generic_laplace"][1]
+    with pytest.raises(TypeError):
+        mn.generic_laplace(a, scale_deriv, extra_arguments=(x for x in (2.5,)))
+    assert counters["ndimage.generic_laplace"][1] == before_gen_fall + 1
+
+    # 6. Unaligned float64 weights work cleanly in correlate1d and correlate.
+    raw_w = bytearray(9 * 8 + 1)
+    unaligned_w1 = np.frombuffer(raw_w, dtype=np.float64, count=3, offset=1)
+    unaligned_w1[:] = [0.25, 0.5, 0.25]
+    assert not unaligned_w1.flags.aligned
+    unaligned_w2 = np.frombuffer(raw_w, dtype=np.float64, count=9, offset=1).reshape(3, 3)
+    unaligned_w2[:] = 1.0 / 9.0
+    assert not unaligned_w2.flags.aligned
+    with metal_sci.precision("strict"), metal_sci.device("cpu"):
+        assert_identical(mn.correlate1d(a, unaligned_w1), sn.correlate1d(a, unaligned_w1))
+        assert metal_sci.last_route().engine == "cpu"
+        assert_identical(mn.correlate(a, unaligned_w2), sn.correlate(a, unaligned_w2))
+        assert metal_sci.last_route().engine == "cpu"
+
 
 
