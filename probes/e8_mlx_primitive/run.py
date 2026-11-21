@@ -3,7 +3,7 @@
 
 Usage (builds first, then measures, prints one final ``RESULT {json}`` line):
 
-    /Users/tunguz/Programming/metal-sci/.venv/bin/python run.py [--no-build] [--quick]
+    /Users/tunguz/Programming/SciMetal/.venv/bin/python run.py [--no-build] [--quick]
 
 Sections
   verify        standalone == MLX bit for bit, both ~= scipy.ndimage.correlate1d

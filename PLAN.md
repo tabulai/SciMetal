@@ -51,7 +51,7 @@ mirrors SciPy's namespaces.
 | float64 policy | **Speed first.** By default float64 inputs are computed in float32 on the GPU and returned as float64 arrays with about 7 significant digits. A strict mode gives SciPy's exact results. |
 | Priorities | **Signal, FFT and image** first, then **linear algebra and sparse**. |
 | Audience | **The user's own machines first** (M1 Ultra, macOS 26, one pinned MLX version). Generalise later. |
-| Name and place | Project name **SciMetal**: install and import name `scimetal`, C prefix `sm_`, library `libscimetal.dylib`, environment variables `SCIMETAL_*`. Renamed on 2026-11-21 from `metal-sci` (import `metal_sci`, prefix `ms_`): one word for install and import, and METAL-SCI is already the name of a public Apple Silicon Metal benchmark. The folder on disk is still `/Users/tunguz/Programming/metal-sci`. |
+| Name and place | Project name **SciMetal**: install and import name `scimetal`, C prefix `sm_`, library `libscimetal.dylib`, environment variables `SCIMETAL_*`. Renamed on 2026-11-21 from `metal-sci` (import `metal_sci`, prefix `ms_`): one word for install and import, and METAL-SCI is already the name of a public Apple Silicon Metal benchmark. The folder is `/Users/tunguz/Programming/SciMetal` (renamed from `metal-sci` the same day). |
 
 ### 1.3 Hard constraints
 
@@ -83,7 +83,7 @@ mirrors SciPy's namespaces.
 | MLX pin | 0.31.1. It was built with nanobind 2.10.2; a C++ bridge must use that version (nanobind 3.x cannot share `mx.array`). |
 
 `PATH` must contain `.venv/bin` for cmake to find ninja:
-`export PATH=/Users/tunguz/Programming/metal-sci/.venv/bin:$PATH`.
+`export PATH=/Users/tunguz/Programming/SciMetal/.venv/bin:$PATH`.
 
 The machine is shared with other work; load averages of 3–11 were common while this was
 written. See the benchmark protocol (6.9).
@@ -208,7 +208,7 @@ if the caller keeps every result it is about 53×.
 ### 5.1 Layout
 
 ```
-metal-sci/
+SciMetal/
   PLAN.md                     this document
   CMakeLists.txt              targets sm_contract (static), smcore (shared, libscimetal.dylib), tests
   CMakePresets.json           presets: metal, metal-asan-ubsan, metal-tsan, cpu-only
@@ -550,7 +550,7 @@ Run the entire C++ and Python ladder (both `metal` and `cpu-only`) in one comman
 Or run each step individually:
 
 ```bash
-cd /Users/tunguz/Programming/metal-sci
+cd /Users/tunguz/Programming/SciMetal
 export PATH=$PWD/.venv/bin:$PATH
 cmake --preset metal && cmake --build --preset metal && ctest --preset metal --output-on-failure
 cmake --preset cpu-only && cmake --build --preset cpu-only && ctest --preset cpu-only --output-on-failure
@@ -1449,7 +1449,7 @@ of this document, and report to the user with the gates that passed and failed.
 ### 10.1 Commands
 
 ```bash
-cd /Users/tunguz/Programming/metal-sci && export PATH=$PWD/.venv/bin:$PATH
+cd /Users/tunguz/Programming/SciMetal && export PATH=$PWD/.venv/bin:$PATH
 
 # build and native tests
 cmake --preset metal && cmake --build --preset metal && ctest --preset metal
