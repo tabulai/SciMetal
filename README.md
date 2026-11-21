@@ -88,12 +88,13 @@ and setters (`set_precision`, `set_device`, `set_small_inputs`) scope per-thread
 
 ## Accelerated coverage (`scimetal.accelerated()`)
 
-- **`ndimage`** (15 filters): `convolve1d`, `correlate1d`, `gaussian_filter1d`,
+- **`ndimage`** (13 filters): `convolve1d`, `correlate1d`, `gaussian_filter1d`,
   `gaussian_filter`, `uniform_filter1d`, `uniform_filter`, `prewitt`, `sobel`,
   `convolve`, `correlate`, `laplace`, `gaussian_laplace`,
-  `gaussian_gradient_magnitude`, `generic_laplace`, `generic_gradient_magnitude`
+  `gaussian_gradient_magnitude`
   (supports `float32`, `float64`, `bool`, `int8`–`int64`, `uint8`–`uint64`, plus cross-dtype
   `output=` among real dtypes; CPU `strict` is bit-identical to SciPy 1.18.1 arm64).
+  SciPy runs the derivative callbacks for `generic_laplace` and `generic_gradient_magnitude`.
 - **`fft`** (12 transforms + backend + `prepare`): `fft`, `ifft`, `rfft`, `irfft`,
   `fft2`, `ifft2`, `fftn`, `ifftn`, `rfft2`, `irfft2`, `rfftn`, `irfftn`, plus
   `scimetal.fft.register()` / `unregister()` and `scimetal.fft.prepare()`.
@@ -109,16 +110,18 @@ and setters (`set_precision`, `set_device`, `set_small_inputs`) scope per-thread
   silence with `warnings.filterwarnings("ignore", category=scimetal.PrecisionWarning)`.
 - **`refined`**: single-precision compute plus a double-precision correction where one
   exists; otherwise behaves as `fast`.
-- **`strict`**: exact arithmetic in the input's native semantics (`double` accumulation on
-  CPU for `ndimage` & `convolve2d`, bit-identical to SciPy; double-precision `fft` and
-  large signal FFT convolutions stay in single-worker SciPy).
+- **`strict`** keeps double-precision work on the CPU. Native `ndimage` uses double
+  accumulation. `signal.convolve2d` delegates to the installed SciPy to preserve its
+  summation order. Double-precision FFTs delegate with the caller's worker settings.
+  Large signal FFT convolutions can delegate to multithreaded SciPy.
 - **Guard rails (`auto` re-routing / forced `gpu` decline)**:
-  - Inputs or predicted filter gains (`max|x|`, `cval`, pass gain sums, or FFT `2^96` /
-    `2^-100` bounds) that would overflow or lose finite representability in `float32`
-    automatically re-route to CPU/SciPy with a descriptive `last_route().reason` / `explain()`
-    message (and return `scipy` decline under forced `device("gpu")`).
-  - 32/64-bit integer inputs containing `|x| >= 2^24` automatically re-route to the CPU
-    engine (`SM_ENOTSUP` / SciPy fallback under forced `gpu`).
+  - Double-precision inputs and predicted filter gains outside the GPU's supported
+    range can reroute to the native CPU engine or SciPy with a reason in `last_route()`.
+    Native `ndimage` filters also reroute when the largest finite input magnitude is
+    nonzero and below the smallest normal float32 value.
+  - For 32/64-bit integer inputs containing `|x| >= 2^24`, `ndimage` uses the native
+    CPU engine or SciPy, and FFTs delegate to SciPy before converting the input.
+    Forced `device("gpu")` calls that hit these guards delegate to SciPy.
 
 ## Benchmarks and accuracy (Apple M1 Ultra, 16 P-cores, 64-core GPU, 128 GB)
 
@@ -138,7 +141,7 @@ Measured standalone on macOS 26.5.1 (SciPy 1.18.1, NumPy 2.5.5; median times in 
 | `fft` | `fft` 1024×65536 (`complex128`) | 644.8 / 52.4 ms | 20.61 ms | **31.3× / 2.5×** | SciPy | 6.7e-07 |
 | `signal` | `fftconvolve` 4096² × 4096² (`float64`) | 1393.9 / 176.6 ms | 25.21 ms | **55.3× / 7.0×** | SciPy | 1.3e-06 |
 | `signal` | `convolve` 2^24 × 1025 (`float64`) | 518.7 / 129.4 ms | 3.97 ms | **130.7× / 32.6×** | SciPy (threaded) | 1.1e-06 |
-| `signal` | `convolve2d` 4096² × 5² (`float64`) | 572.5 ms | 3.35 ms | **171.1×** | 4.46 ms (**128.3×**, 0.0) | 1.9e-07 |
+| `signal` | `convolve2d` 4096² × 5² (`float64`) | 572.5 ms | 3.35 ms | **171.1×** | SciPy | 1.9e-07 |
 
 ## Provenance
 

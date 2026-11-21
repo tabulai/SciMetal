@@ -1,4 +1,4 @@
-"""Work Package A5 fast-mode guard rails: overflow re-routing, explain() reasons, and PrecisionWarning."""
+"""Fast-mode range guards, explain() reasons, and PrecisionWarning."""
 from __future__ import annotations
 
 import os
@@ -37,7 +37,7 @@ def _make_1e39_array(shape, seed=0):
     return a
 
 
-# ---- 1. ndimage fast-mode overflow guard rails (all 8 routes) ---------------------------------
+# ---- 1. ndimage fast-mode range guards -------------------------------------------------------
 
 NDIMAGE_AUTO_GPU_CASES = [
     ("correlate1d", (3072, 3072), (np.ones(9, dtype=np.float64) / 9.0,), {"axis": 0}),
@@ -53,12 +53,6 @@ NDIMAGE_AUTO_GPU_CASES = [
     ("laplace", (2896, 2896), (), {}),
     ("gaussian_laplace", (2048, 2048), (3.0,), {}),
     ("gaussian_gradient_magnitude", (2048, 2048), (3.0,), {}),
-    ("generic_laplace", (2048, 2048),
-     (lambda inp, ax, out, mode, cval: mn.gaussian_filter(inp, 3.0, [2 if i == ax else 0 for i in range(inp.ndim)], out, mode, cval),),
-     {}),
-    ("generic_gradient_magnitude", (2048, 2048),
-     (lambda inp, ax, out, mode, cval: mn.gaussian_filter(inp, 3.0, [1 if i == ax else 0 for i in range(inp.ndim)], out, mode, cval),),
-     {}),
 ]
 
 
@@ -123,6 +117,44 @@ def test_ndimage_forced_gpu_1e39_declines_to_scipy(gpu, name, args, kwargs):
     assert route.reason in explanation
     assert np.all(np.isfinite(got))
     np.testing.assert_array_equal(got, ref)
+
+
+@pytest.mark.parametrize("dtype, value", [(np.float64, 1e-80), (np.float32, -1e-38)])
+def test_ndimage_auto_preserves_tiny_image(gpu, dtype, value):
+    image = np.full((2048, 2048), value, dtype=dtype)
+    with scimetal.device("auto"):
+        result = mn.gaussian_filter(image, 3)
+    route = scimetal.last_route()
+    assert route.engine == "cpu" and "underflow" in route.reason
+    reference = sn.gaussian_filter(image, 3)
+    assert np.all(reference != 0)
+    np.testing.assert_array_equal(result, reference)
+
+
+@pytest.mark.parametrize("output_dtype", [np.float32, np.float64])
+@pytest.mark.parametrize("name, args", [
+    ("gaussian_filter", (1,)),
+    ("correlate", (np.array([[1.0, 2.0], [0.0, 1.0]]),)),
+    ("correlate", (np.ones((3, 3)),)),
+    ("laplace", ()),
+])
+def test_ndimage_forced_gpu_declines_subnormal_image(gpu, name, args, output_dtype):
+    image = np.zeros((32, 32), dtype=np.float32)
+    image[::2, ::2] = 1e-38
+    result = getattr(mn, name)(image, *args, output=output_dtype)
+    route = scimetal.last_route()
+    assert route.engine == "scipy" and "underflow" in route.reason
+    reference = getattr(sn, name)(image, *args, output=output_dtype)
+    assert reference.dtype == result.dtype and np.any(reference != 0)
+    np.testing.assert_array_equal(result, reference)
+
+
+def test_ndimage_float32_input_floor_excludes_zero_and_normal_values(gpu):
+    for value in (0.0, np.finfo(np.float32).tiny):
+        image = np.full((16, 16), value, dtype=np.float32)
+        result = mn.correlate1d(image, [1.0])
+        assert scimetal.last_route().engine == "gpu"
+        np.testing.assert_array_equal(result, image)
 
 
 def test_ndimage_gain_amplified_1e38_and_cval_guard(gpu):

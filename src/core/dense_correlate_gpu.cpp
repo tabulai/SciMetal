@@ -40,9 +40,6 @@ std::string check_parameters_range(const StencilSpec& spec, const TapTable& taps
 }
 
 std::string check_gain_range(const StencilSpec& spec, const TapTable& taps, const array::ConvertReport& report) {
-    if (report.overflowed) {
-        return "float64 input overflowed float32; re-routed to CPU";
-    }
     constexpr double u = 0x1p-24;
     double m = std::fabs(static_cast<double>(static_cast<float>(report.max_finite)));
     double e = u * m;
@@ -211,12 +208,9 @@ BufferPtr run_gpu(sm_context* ctx, const StencilSpec& spec, const TapTable& taps
     array::ConvertReport report;
     BufferPtr single_in = array::load_single(ctx, input, spec.in_shape, need_gain_check ? &report : nullptr,
                                              /*raw_bool=*/true);
-    if (need_report && report.inexact_int) {
-        single_in.reset();
-        if (!allow_cpu_fallback) {
-            throw Error(SM_ENOTSUP, "integer input exceeds exact float32 range (|x| >= 2^24); forced GPU cannot fall back to CPU");
-        }
-        overflow_reason = "integer input exceeds exact float32 range (|x| >= 2^24); re-routed to CPU";
+    if (const char* error = report.filter_input_range_error()) {
+        if (!allow_cpu_fallback) throw Error(SM_ENOTSUP, error);
+        overflow_reason = error;
         return BufferPtr{};
     }
     if (need_gain_check) {

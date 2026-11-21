@@ -124,7 +124,7 @@ def test_convolve2d_correlate2d_even_center_and_boundaries(gpu):
         for mode in ("full", "same", "valid"):
             fill = -1.25 if boundary in ("fill", "pad") else 123.0
             for func in ("convolve2d", "correlate2d"):
-                with scimetal.precision("strict"), scimetal.device("cpu"):
+                with scimetal.precision("fast"), scimetal.device("cpu"):
                     ours = getattr(msig, func)(a, b, mode=mode, boundary=boundary, fillvalue=fill)
                     assert scimetal.last_route().engine == "cpu"
                 ref = getattr(ss, func)(a, b, mode=mode, boundary=boundary, fillvalue=fill)
@@ -134,6 +134,29 @@ def test_convolve2d_correlate2d_even_center_and_boundaries(gpu):
                     ours_g = getattr(msig, func)(a, b, mode=mode, boundary=boundary, fillvalue=fill)
                     assert scimetal.last_route().engine == "gpu"
                 assert_close_direct(ours_g, ref, a, b, "gpu", cval=fill if boundary in ("fill", "pad") else 0.0)
+
+
+@pytest.mark.parametrize("device", ["auto", "cpu", "gpu"])
+def test_strict_convolve2d_cancellation(device):
+    image = np.ones((128, 128), dtype=np.float64)
+    kernel = np.array([[1e16, -1e16, 1.0]])
+    with scimetal.precision("strict"), scimetal.device(device):
+        got = msig.convolve2d(image, kernel, mode="valid")
+        assert scimetal.last_route().engine == "scipy"
+    expected = ss.convolve2d(image, kernel, mode="valid")
+    assert got.tobytes() == expected.tobytes()
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64, np.complex64, np.complex128])
+@pytest.mark.parametrize("mode,boundary", [("full", "symm"), ("same", "fill"), ("valid", "wrap")])
+def test_strict_convolve2d_matches_scipy_bits(dtype, mode, boundary):
+    image = rand_arr((37, 31), dtype, seed=112)[:, ::-1]
+    kernel = rand_arr((4, 7), dtype, seed=24)
+    with scimetal.precision("strict"):
+        got = msig.convolve2d(image, kernel, mode=mode, boundary=boundary, fillvalue=-1.75)
+    expected = ss.convolve2d(image, kernel, mode=mode, boundary=boundary, fillvalue=-1.75)
+    assert (got.shape, got.dtype) == (expected.shape, expected.dtype)
+    assert got.tobytes() == expected.tobytes()
 
 
 def test_correlate2d_complex_swapped_valid_parity():
@@ -676,7 +699,9 @@ def _run_mixed_real_complex_nan_matrix(policy, dev, big_n, side2d):
                 if nf != complex(np.inf, np.inf):
                     for fn2d in ("convolve2d", "correlate2d"):
                         g2d = getattr(msig, fn2d)(a2c, b2r, mode=mode, boundary="fill", fillvalue=0.0)
-                        if dev != "auto":
+                        if policy == "strict" and fn2d == "convolve2d":
+                            assert scimetal.last_route().engine == "scipy"
+                        elif dev != "auto":
                             assert scimetal.last_route().engine == dev
                         r2d = getattr(ss, fn2d)(a2c, b2r, mode=mode, boundary="fill", fillvalue=0.0)
                         _assert_complex_nan_inf_parity(g2d, r2d)
@@ -689,7 +714,9 @@ def _run_mixed_real_complex_nan_matrix(policy, dev, big_n, side2d):
             for mode in ("full", "same", "valid"):
                 for fn2d in ("convolve2d", "correlate2d"):
                     g2d = getattr(msig, fn2d)(a2r, b2c, mode=mode, boundary="fill", fillvalue=0.0)
-                    if dev != "auto":
+                    if policy == "strict" and fn2d == "convolve2d":
+                        assert scimetal.last_route().engine == "scipy"
+                    elif dev != "auto":
                         assert scimetal.last_route().engine == dev
                     r2d = getattr(ss, fn2d)(a2r, b2c, mode=mode, boundary="fill", fillvalue=0.0)
                     _assert_complex_nan_inf_parity(g2d, r2d)
@@ -736,7 +763,9 @@ def test_convolve2d_correlate2d_full_no_swap_nan_inf_parity(gpu, dtype1, dtype2)
                         with scimetal.precision(policy), scimetal.device(dev):
                             for fn_name in ("convolve2d", "correlate2d"):
                                 got = getattr(msig, fn_name)(a, b, mode="full", boundary="fill", fillvalue=fill)
-                                if dev != "auto":
+                                if policy == "strict" and fn_name == "convolve2d":
+                                    assert scimetal.last_route().engine == "scipy"
+                                elif dev != "auto":
                                     assert scimetal.last_route().engine == dev
                                 ref = getattr(ss, fn_name)(a, b, mode="full", boundary="fill", fillvalue=fill)
                                 _assert_complex_nan_inf_parity(got, ref) if got.dtype.kind == "c" else (

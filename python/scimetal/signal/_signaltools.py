@@ -7,7 +7,8 @@ and ``complex128`` (ranks 1 to 8). Integer, boolean, ``float16``,
 ``longdouble``, empty, 0-D, non-NumPy, subclass, or invalid inputs decline to
 SciPy.
 
-Under ``strict`` precision, double-precision FFT convolution (and
+Under ``strict`` precision, ``convolve2d`` delegates to the installed SciPy to
+preserve its summation order and rounding. Double-precision FFT convolution (and
 ``fftconvolve``/``oaconvolve``) declines to SciPy wrapped in
 ``scipy.fft.set_workers(performance_cores())`` for large calls (``>= 2^17``
 elements when ``scipy.fft.get_workers() == 1`` and
@@ -325,6 +326,10 @@ def _convolve2d_or_correlate2d(function: str, in1, in2, mode, boundary, fillvalu
 
 @accelerated("signal.convolve2d")
 def convolve2d(in1, in2, mode="full", boundary="fill", fillvalue=0):
+    if get_precision() == "strict":
+        # SciPy's FIR summation changed across releases. Matching the output
+        # dtype alone cannot reproduce its rounding for cancelling terms.
+        _decline("strict convolve2d preserves the installed SciPy's accumulation order")
     return _convolve2d_or_correlate2d("signal.convolve2d", in1, in2, mode, boundary, fillvalue, False)
 
 

@@ -74,8 +74,10 @@ typedef struct sm_ndimage_pass {
  * after raising m to |cval| and e to u * |cval| if its boundary is constant;
  * the last e bounds the absolute error of the float32 intermediate result. For
  * unit gains that is u * max|input, cval| * (1 + sum_i(size_i + 2)). Results
- * below the smallest normal float32, 1.2e-38, may be flushed to zero. A uniform
- * pass is a direct sum over its window, so a non-finite value affects only the
+ * below the smallest normal float32, 2^-126, may be flushed to zero. The GPU
+ * declines inputs whose peak finite magnitude is nonzero and below that
+ * threshold. AUTO sends these inputs to the CPU. A uniform pass is a direct
+ * sum over its window, so a non-finite value affects only the
  * windows that contain it, where the CPU engine's (and SciPy's) running sum
  * carries it to the end of the line.
  *
@@ -147,9 +149,9 @@ typedef struct sm_ndimage_chain {
 } sm_ndimage_chain;
 
 /* Evaluates 1 <= chain_count <= SM_MAX_NDIM chains on `input` and combines
- * them via `combine_op` (laplace, gaussian_laplace, gaussian_gradient_magnitude,
- * generic_laplace, generic_gradient_magnitude). out_dtype may be 0 (same as
- * input) or any real sm_dtype.
+ * them via `combine_op`. SciMetal uses this for laplace, gaussian_laplace, and
+ * gaussian_gradient_magnitude. out_dtype may be 0 (same as input) or any real
+ * sm_dtype.
  *
  * CPU engine: runs each chain in double precision, fusing combination and sqrt
  * into the final pass store loop (bit-identical to SciPy).
