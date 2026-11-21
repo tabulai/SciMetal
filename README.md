@@ -1,5 +1,7 @@
 # SciMetal
 
+[![PyPI version](https://img.shields.io/pypi/v/scimetal)](https://pypi.org/project/scimetal/)
+
 SciPy's API, accelerated on Apple Silicon: Metal compute kernels and a multithreaded
 Accelerate/NEON CPU engine behind a versioned C ABI (`SM_ARRAY_ABI_VERSION` 3), with
 Python namespaces mirroring `scipy`.
@@ -7,6 +9,15 @@ Python namespaces mirroring `scipy`.
 Three families have native routes today (`scimetal.accelerated()`). Every other function
 and declined call delegates transparently to SciPy with caller arguments untouched.
 Design rationale, probes, and milestones live in [PLAN.md](PLAN.md).
+
+## Install from PyPI
+
+The wheel supports Apple Silicon Macs running macOS 15 or later with Python 3.11
+or later. pip installs NumPy and SciPy as dependencies.
+
+```sh
+pip install scimetal
+```
 
 ## Requirements
 
