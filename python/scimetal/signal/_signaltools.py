@@ -56,6 +56,30 @@ _FFT_BREAK_EVEN_ELEMENTS = 1 << 15
 
 _THREADED_MIN_POINTS = 1 << 17
 
+# SHA-256 of the installed _sigtools extension from each official SciPy
+# 1.18.1 macOS arm64 wheel. The float32 and float64 FIR routines use the
+# same instructions in all twelve wheels. Each pair lists macOS 12 then 14.
+_SCIPY_1181_ARM64_FIR_DIGESTS = frozenset({
+    # CPython 3.12
+    "51edeef002aa415e015882fc498044837be6b0b75cf834c03804350f36a31e5f",
+    "ef178698287fc0ff2cd4ded9308aba9b34cd50abc426efc18eee9bae4d693099",
+    # CPython 3.13
+    "a4bda3f5285544c9c2eabca277ce0475e3d6b39e1bcf9eacbeb85fd3d76dec53",
+    "23bbb20ffcb33e9fb96e401d2c831316cf233eebadb108b95ce0e53431070f4b",
+    # CPython 3.14
+    "a68153427d3dfd93edb1d261165e2831574a7d72e890c9cf606ca791b5fecfa2",
+    "e797f8bbff36ed1a462962046dedc0e986fac07c4ea02c931f6d0ebdb44f402e",
+    # CPython 3.14 free-threaded
+    "4856bc3ad053aff447149583904eb63ca3f1ab90245e0f7b52dcca4bbadd179a",
+    "a5e5cf5f313a2ad2b8cbacff6fbad4ca317500df55ecf42ac08d09567d6ad07c",
+    # CPython 3.15
+    "0df1e099a4d3aefbb0e68d6249e44202748700b73fb8b8e307f22803d1242acf",
+    "c068313e73cdc148b7531fe239ef5010da4d66beb76b81a4c1f94a7271016486",
+    # CPython 3.15 free-threaded
+    "dee9ba461b92ebc6d048f94c64a1b67d1a67df559417df2dbf0f875fc792e543",
+    "2f4dc5c8962360f254120a888866560beb83ebfba30dc8c2ac55309fe6834e5a",
+})
+
 
 @functools.cache
 def _verified_scipy_fir() -> bool:
@@ -64,12 +88,10 @@ def _verified_scipy_fir() -> bool:
         return False
     try:
         with open(_sp_signaltools._sigtools.__file__, "rb") as binary:
-            # Official SciPy 1.18.1 cp314 macosx_14_0_arm64 wheel.
-            return hashlib.file_digest(binary, "sha256").hexdigest() == (
-                "e797f8bbff36ed1a462962046dedc0e986fac07c4ea02c931f6d0ebdb44f402e"
-            )
+            digest = hashlib.file_digest(binary, "sha256").hexdigest()
     except (AttributeError, OSError, TypeError):
         return False
+    return digest in _SCIPY_1181_ARM64_FIR_DIGESTS
 
 
 def _decline(reason: str, *, context=None):

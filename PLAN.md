@@ -371,11 +371,18 @@ complex float arrays (`float32`, `float64`, `complex64`, `complex128`, rank 1–
   crossover `128·2^20`). The CPU path preserves `0.0 * NaN = NaN`. The GPU
   uses single precision (`float32` / `complex64`). Its range and gain checks reroute
   automatic calls to the CPU when needed and set `sm_route_info::reason`.
-- Strict Python `convolve2d` verifies the installed SciPy 1.18.1 CPython 3.14 macOS
-  arm64 FIR binary before selecting `sm_signal_convolve_scipy_fir`. That CPU path
-  groups each kernel row in the same order with the same FMA contractions and
-  vectorizes over independent output pixels. SciPy handles unsupported inputs,
-  unverified builds, nondefault floating-point settings, and nonfinite results.
+- Strict Python `convolve2d` checks the installed `_sigtools` SHA-256 before selecting
+  `sm_signal_convolve_scipy_fir`. The allowlist covers all 12 official SciPy 1.18.1
+  macOS arm64 wheels, with macOS 12 and 14 tags for each published CPython ABI.
+  The wheel archive hashes matched PyPI, and the extracted extensions matched
+  the wheels' `RECORD` entries. The Python wrappers, float32 and float64 FIR
+  routines, and dtype dispatch tables matched across the wheels. The FIR driver's
+  instructions matched after accounting for relocation addresses. On the M1 Ultra,
+  all 12 wheels passed 216 native and 168 fallback byte comparisons per wheel.
+  Each free-threaded wheel also passed 36 native comparisons with four concurrent
+  threads and the GIL disabled. SciPy handles unsupported inputs, unverified builds,
+  nondefault floating-point settings, and nonfinite results.
+  [PyPI release inventory](https://pypi.org/pypi/scipy/1.18.1/json)
 - FFT & overlap-add GPU path (`sm_signal_fftconvolve`, `fft_gpu_min_elements = 2^15`):
   single precision (`fast` / `refined` only); in one `gpu::Batch` per call, pads/chunks
   inputs (`fft::next_fast_len` and Lambert-W OA block sizing), runs forward FFTs via

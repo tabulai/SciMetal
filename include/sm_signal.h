@@ -96,8 +96,8 @@ sm_status sm_signal_convolve(sm_context* context, const sm_array* in1, const sm_
                              const sm_signal_conv_options* options, const sm_route_options* route_options,
                              sm_array_result* out, sm_route_info* info);
 
-/* Direct 2-D convolution with the accumulation order from the verified
- * SciPy 1.18.1 macOS arm64 _sigtools build. Both inputs must have the same
+/* Direct 2-D convolution with the accumulation order from the official
+ * SciPy 1.18.1 macOS arm64 _sigtools builds. Both inputs must have the same
  * dtype (SM_FLOAT32 or SM_FLOAT64). Use strict precision, CPU or AUTO
  * execution, and SM_SIGNAL_CENTER_2D_CORR for the 2-D modes. The caller
  * verifies the reference build. Nondefault FPCR or nonfinite output returns
