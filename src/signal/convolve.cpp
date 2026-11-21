@@ -557,9 +557,9 @@ sm_status sm_signal_fftconvolve(sm_context* context, const sm_array* in1, const 
     });
 }
 
-sm_status sm_signal_convolve(sm_context* context, const sm_array* in1, const sm_array* in2,
-                             const sm_signal_conv_options* options, const sm_route_options* route_options,
-                             sm_array_result* out, sm_route_info* info) {
+static sm_status signal_convolve(sm_context* context, const sm_array* in1, const sm_array* in2,
+                                const sm_signal_conv_options* options, const sm_route_options* route_options,
+                                sm_array_result* out, sm_route_info* info, bool scipy_fir) {
     return sm::detail::api(context, [&] {
         if (!out) throw Error(SM_EINVAL, "null output");
         array::check_route_info(info);
@@ -582,6 +582,13 @@ sm_status sm_signal_convolve(sm_context* context, const sm_array* in1, const sm_
 
         const uint32_t ndim = s1.ndim;
         const uint32_t out_dtype = sig::promote_dtype(in1->dtype, in2->dtype);
+        if (scipy_fir &&
+            (ndim != 2 || in1->dtype != in2->dtype || (out_dtype != SM_FLOAT32 && out_dtype != SM_FLOAT64) ||
+             options->center != SM_SIGNAL_CENTER_2D_CORR || options->method != SM_SIGNAL_METHOD_DIRECT ||
+             options->correlate || route_options->precision != SM_PRECISION_STRICT ||
+             route_options->execution == SM_EXECUTION_GPU)) {
+            throw Error(SM_ENOTSUP, "strict FIR requires a direct CPU convolution of same-dtype real 2-D inputs");
+        }
 
         if (options->boundary == SM_SIGNAL_BOUNDARY_FILL && !array::is_complex(out_dtype) &&
             options->fillvalue_imag != 0.0) {
@@ -671,9 +678,6 @@ sm_status sm_signal_convolve(sm_context* context, const sm_array* in1, const sm_
         out_shape.ndim = ndim;
         out_shape.elements = 1;
 
-        std::vector<uint8_t> weight_buf;
-        sig::copy_kernel_weights(k_arr, k_sh, options->correlate != 0, weight_buf);
-
         dense::StencilSpec spec;
         spec.in_shape = in_sh;
         spec.in_dtype = in_arr.dtype;
@@ -691,7 +695,6 @@ sm_status sm_signal_convolve(sm_context* context, const sm_array* in1, const sm_
                         (options->mode == SM_SIGNAL_FULL ||
                          (options->mode == SM_SIGNAL_SAME && s1.dims[0] >= s2.dims[0]));
         spec.weights_dtype = k_arr.dtype;
-        spec.weights = weight_buf.data();
 
         for (uint32_t d = 0; d < ndim; ++d) {
             if (k_sh.dims[d] > UINT32_MAX) {
@@ -718,6 +721,17 @@ sm_status sm_signal_convolve(sm_context* context, const sm_array* in1, const sm_
         }
         spec.out_shape = out_shape;
 
+        if (scipy_fir) {
+            spec.weights = k_arr.data;
+            auto result = dense::run_scipy_fir(context, spec, in_arr.data);
+            array::publish(out, std::move(result), out_dtype, out_shape);
+            array::report(info, SM_EXECUTION_CPU, out_dtype, "verified SciPy arm64 FIR accumulation order");
+            return;
+        }
+
+        std::vector<uint8_t> weight_buf;
+        sig::copy_kernel_weights(k_arr, k_sh, options->correlate != 0, weight_buf);
+        spec.weights = weight_buf.data();
         const dense::TapTable taps = dense::build_taps(spec);
         // If complex output with real input, GPU path converts real input -> complex64;
         // CPU path also needs complex input if fillvalue has non-zero imaginary part.
@@ -957,6 +971,18 @@ sm_status sm_signal_convolve(sm_context* context, const sm_array* in1, const sm_
         array::publish(out, std::move(result), out_dtype, out_shape);
         array::report(info, engine, compute_dtype, reason.c_str());
     });
+}
+
+sm_status sm_signal_convolve(sm_context* context, const sm_array* in1, const sm_array* in2,
+                             const sm_signal_conv_options* options, const sm_route_options* route_options,
+                             sm_array_result* out, sm_route_info* info) {
+    return signal_convolve(context, in1, in2, options, route_options, out, info, false);
+}
+
+sm_status sm_signal_convolve_scipy_fir(sm_context* context, const sm_array* in1, const sm_array* in2,
+                                       const sm_signal_conv_options* options, const sm_route_options* route_options,
+                                       sm_array_result* out, sm_route_info* info) {
+    return signal_convolve(context, in1, in2, options, route_options, out, info, true);
 }
 
 sm_status sm_signal_choose_conv_method(sm_context* context, uint32_t dtype1, uint32_t ndim1, const uint64_t* shape1,

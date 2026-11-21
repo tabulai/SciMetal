@@ -82,6 +82,113 @@ inline int64_t extend(int64_t position, int64_t length, uint32_t mode) noexcept 
 inline double fma_step(double a, double b, double c) noexcept { return __builtin_fma(a, b, c); }
 inline float fma_step(float a, float b, float c) noexcept { return __builtin_fmaf(a, b, c); }
 
+#if defined(__APPLE__) && defined(__aarch64__)
+void check_fir_fpcr() {
+    uint64_t fpcr;
+    __asm__ volatile("mrs %0, fpcr" : "=r"(fpcr));
+    if (fpcr != 0) throw Error(SM_ENOTSUP, "strict convolution requires the default arm64 floating-point environment");
+}
+
+// The verified SciPy wheel rounds term 1, fuses terms 0, 2, and 3 into
+// that product, then adds the group to the accumulator separately.
+template<class T>
+inline T scipy_fir_four(const T* w, T x0, T x1, T x2, T x3) noexcept {
+    T group = w[1] * x1;
+    group = fma_step(w[0], x0, group);
+    group = fma_step(w[2], x2, group);
+    return fma_step(w[3], x3, group);
+}
+
+template<class T>
+void run_scipy_fir_rows(const StencilSpec& spec, const T* input, T* output) {
+    const int64_t in_height = static_cast<int64_t>(spec.in_shape.dims[0]);
+    const int64_t in_width = static_cast<int64_t>(spec.in_shape.dims[1]);
+    const int64_t out_width = static_cast<int64_t>(spec.out_shape.dims[1]);
+    const int64_t kernel_height = spec.wshape[0];
+    const int64_t kernel_width = spec.wshape[1];
+    const int64_t first_row = spec.start[0] + kernel_height - 1;
+    const int64_t first_col = spec.start[1] + kernel_width - 1;
+    const int64_t interior_begin = std::clamp(-spec.start[1], int64_t{0}, out_width);
+    const int64_t interior_end = std::clamp(in_width - first_col, interior_begin, out_width);
+    const T* weights = static_cast<const T*>(spec.weights);
+    const T fill = static_cast<T>(spec.cval_real);
+    const unsigned lanes = lanes_for(spec.out_shape.elements, uint64_t{spec.wshape[0]} * spec.wshape[1]);
+    for_each_item(spec.out_shape.dims[0], 4, lanes, [&] {
+        check_fir_fpcr();
+        return std::vector<const T*>(kernel_height);
+    }, [&](uint64_t out_row, auto& rows) {
+        for (int64_t j = 0; j < kernel_height; ++j) {
+            const int64_t y = extend(static_cast<int64_t>(out_row) + first_row - j, in_height, spec.mode[0]);
+            rows[j] = y >= 0 ? input + y * in_width : nullptr;
+        }
+
+        T* dst = output + out_row * out_width;
+        auto border = [&](int64_t begin, int64_t end) {
+            for (int64_t c = begin; c < end; ++c) {
+                T sum = 0;
+                for (int64_t j = 0; j < kernel_height; ++j) {
+                    const T* row = rows[j];
+                    const T* w = weights + j * kernel_width;
+                    const auto pixel = [&](int64_t k) {
+                        const int64_t x = extend(c + first_col - k, in_width, spec.mode[1]);
+                        return row && x >= 0 ? row[x] : fill;
+                    };
+                    int64_t k = 0;
+                    for (; k + 4 <= kernel_width; k += 4) {
+                        sum += scipy_fir_four(w + k, pixel(k), pixel(k + 1), pixel(k + 2), pixel(k + 3));
+                    }
+                    for (; k < kernel_width; ++k) sum = fma_step(w[k], pixel(k), sum);
+                }
+                dst[c] = sum;
+            }
+        };
+        border(0, interior_begin);
+        border(interior_end, out_width);
+
+        // Tile the contiguous columns so the same outputs stay in cache
+        // while sweeping over the taps. Each loop can vectorize across pixels.
+        constexpr int64_t tile_width = 1024;
+        for (int64_t begin = interior_begin; begin < interior_end; begin += tile_width) {
+            const int64_t end = std::min(begin + tile_width, interior_end);
+            std::fill(dst + begin, dst + end, T{0});
+            for (int64_t j = 0; j < kernel_height; ++j) {
+                const T* row = rows[j];
+                const T* w = weights + j * kernel_width;
+                int64_t k = 0;
+                for (; k + 4 <= kernel_width; k += 4) {
+                    if (row) {
+                        const T* x = row + (first_col - k + begin);
+                        T* __restrict sums = dst + begin;
+                        for (int64_t c = 0; c < end - begin; ++c) {
+                            sums[c] += scipy_fir_four(w + k, x[c], x[c - 1], x[c - 2], x[c - 3]);
+                        }
+                    } else {
+                        const T group = scipy_fir_four(w + k, fill, fill, fill, fill);
+                        for (int64_t c = begin; c < end; ++c) dst[c] += group;
+                    }
+                }
+                for (; k < kernel_width; ++k) {
+                    if (row) {
+                        const T* x = row + (first_col - k + begin);
+                        T* __restrict sums = dst + begin;
+                        const T weight = w[k];
+                        for (int64_t c = 0; c < end - begin; ++c) sums[c] = fma_step(weight, x[c], sums[c]);
+                    } else {
+                        for (int64_t c = begin; c < end; ++c) dst[c] = fma_step(w[k], fill, dst[c]);
+                    }
+                }
+            }
+        }
+
+        // SIMD can select a different NaN payload. Let SciPy handle any
+        // nonfinite result, including overflow from entirely finite inputs.
+        bool finite = true;
+        for (int64_t c = 0; c < out_width; ++c) finite &= std::isfinite(dst[c]);
+        if (!finite) throw Error(SM_ENOTSUP, "strict convolution delegates nonfinite results to SciPy");
+    });
+}
+#endif
+
 template<class AccumT, class SrcT>
 void sweep_interior_real(AccumT* __restrict acc, const SrcT* const* ptrs, const AccumT* w,
                          size_t num_taps, size_t n, AccumT cval, bool omit_oob) {
@@ -685,6 +792,27 @@ TapTable build_taps(const StencilSpec& spec) {
         if (lo != 0 || hi != out_d) table.all_interior = false;
     }
     return table;
+}
+
+BufferPtr run_scipy_fir(sm_context* ctx, const StencilSpec& spec, const void* input) {
+#if defined(__APPLE__) && defined(__aarch64__)
+    check_fir_fpcr();
+    uint64_t out_bytes = 0;
+    if (sm_checked_mul(spec.out_shape.elements, array::dtype_size(spec.out_dtype), &out_bytes) != SM_OK)
+        throw Error(SM_EOVERFLOW, "strict convolution output byte size overflows");
+    auto result = array::allocate(ctx, out_bytes);
+    void* out = mutable_data(result.get());
+    if (spec.out_dtype == SM_FLOAT32)
+        run_scipy_fir_rows(spec, static_cast<const float*>(input), static_cast<float*>(out));
+    else
+        run_scipy_fir_rows(spec, static_cast<const double*>(input), static_cast<double*>(out));
+    return result;
+#else
+    (void)ctx;
+    (void)spec;
+    (void)input;
+    throw Error(SM_ENOTSUP, "strict convolution requires the verified macOS arm64 arithmetic");
+#endif
 }
 
 BufferPtr run_cpu(sm_context* ctx, const StencilSpec& spec, const TapTable& taps, const void* input) {

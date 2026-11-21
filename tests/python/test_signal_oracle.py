@@ -75,6 +75,8 @@ def native_signal():
 
 
 def test_scipys_signal_tests_pass_in_strict_mode(native_signal):
+    from scimetal.signal._signaltools import _verified_scipy_fir
+
     # Note: TestOAConvolve non-slow subset is run here for speed; full suite runs in integration gate.
     code, output, counters = run_oracle(
         extra_args=["-m", "not slow"],
@@ -86,8 +88,9 @@ def test_scipys_signal_tests_pass_in_strict_mode(native_signal):
     # Direct N-D convolution and correlation can run natively in strict mode.
     for name in ("convolve", "correlate", "correlate2d", "choose_conv_method"):
         assert counters[name][0] > 0, f"{name} never ran natively:\n{summary(output)}"
-    # Strict convolve2d delegates every call to preserve the installed FIR implementation's rounding.
-    assert counters["convolve2d"][0] == 0 and counters["convolve2d"][1] > 0, summary(output)
+    native, declined = counters["convolve2d"]
+    assert (native > 0) == _verified_scipy_fir(), summary(output)
+    assert declined > 0, summary(output)
     for name in ("fftconvolve", "oaconvolve"):
         assert sum(counters[name]) > 0, f"{name} never invoked:\n{summary(output)}"
 

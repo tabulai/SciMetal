@@ -111,8 +111,12 @@ and setters (`set_precision`, `set_device`, `set_small_inputs`) scope per-thread
 - **`refined`**: single-precision compute plus a double-precision correction where one
   exists; otherwise behaves as `fast`.
 - **`strict`** keeps double-precision work on the CPU. Native `ndimage` uses double
-  accumulation. `signal.convolve2d` delegates to the installed SciPy to preserve its
-  summation order. Double-precision FFTs delegate with the caller's worker settings.
+  accumulation. `signal.convolve2d` can use the native CPU engine for matching
+  `float32` or `float64` NumPy inputs. SciMetal verifies the FIR binary from the
+  official SciPy 1.18.1 CPython 3.14 macOS arm64 wheel before selecting this route.
+  Unverified builds, unsupported arguments, nondefault floating-point settings,
+  and nonfinite results go through SciPy. Double-precision FFTs delegate with the
+  caller's worker settings.
   Large signal FFT convolutions can delegate to multithreaded SciPy.
 - **Guard rails (`auto` re-routing / forced `gpu` decline)**:
   - Double-precision inputs and predicted filter gains outside the GPU's supported
@@ -141,7 +145,11 @@ Measured standalone on macOS 26.5.1 (SciPy 1.18.1, NumPy 2.5.5; median times in 
 | `fft` | `fft` 1024×65536 (`complex128`) | 644.8 / 52.4 ms | 20.61 ms | **31.3× / 2.5×** | SciPy | 6.7e-07 |
 | `signal` | `fftconvolve` 4096² × 4096² (`float64`) | 1393.9 / 176.6 ms | 25.21 ms | **55.3× / 7.0×** | SciPy | 1.3e-06 |
 | `signal` | `convolve` 2^24 × 1025 (`float64`) | 518.7 / 129.4 ms | 3.97 ms | **130.7× / 32.6×** | SciPy (threaded) | 1.1e-06 |
-| `signal` | `convolve2d` 4096² × 5² (`float64`) | 572.5 ms | 3.35 ms | **171.1×** | SciPy | 1.9e-07 |
+| `signal` | `convolve2d` 4096² × 5² (`float64`) | 572.5 ms | 3.35 ms | **171.1×** | See below | 1.9e-07 |
+
+A separate warm run of the same `convolve2d` workload on the M1 Ultra measured
+**4.77 ms** for the verified strict CPU route and **588 ms** for SciPy. The outputs
+were byte-identical.
 
 ## Provenance
 

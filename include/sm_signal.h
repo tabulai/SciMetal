@@ -15,8 +15,8 @@ extern "C" {
  * Engines and error bounds:
  * - Direct CPU: computes in input precision when both inputs are single
  *   precision (float32/complex64) and in double precision otherwise. Its
- *   dense tap order can round differently from SciPy's convolve2d. The Python
- *   strict policy delegates that function to the installed SciPy.
+ *   dense tap order can round differently from SciPy's convolve2d. See
+ *   sm_signal_convolve_scipy_fir for the verified arm64 accumulation order.
  * - Direct GPU: computes in single precision (float32/complex64). For finite
  *   inputs and weights, error is bounded by <= u * M * max|in1, fill| * max|in2|
  *   (u = 2^-24, M = kernel elements), with subnormals below ~1.2e-38 flushed
@@ -95,6 +95,16 @@ typedef struct sm_signal_fftconv_options {
 sm_status sm_signal_convolve(sm_context* context, const sm_array* in1, const sm_array* in2,
                              const sm_signal_conv_options* options, const sm_route_options* route_options,
                              sm_array_result* out, sm_route_info* info);
+
+/* Direct 2-D convolution with the accumulation order from the verified
+ * SciPy 1.18.1 macOS arm64 _sigtools build. Both inputs must have the same
+ * dtype (SM_FLOAT32 or SM_FLOAT64). Use strict precision, CPU or AUTO
+ * execution, and SM_SIGNAL_CENTER_2D_CORR for the 2-D modes. The caller
+ * verifies the reference build. Nondefault FPCR or nonfinite output returns
+ * SM_ENOTSUP so the caller can delegate to SciPy. */
+sm_status sm_signal_convolve_scipy_fir(sm_context* context, const sm_array* in1, const sm_array* in2,
+                                       const sm_signal_conv_options* options, const sm_route_options* route_options,
+                                       sm_array_result* out, sm_route_info* info);
 
 sm_status sm_signal_fftconvolve(sm_context* context, const sm_array* in1, const sm_array* in2,
                                 const sm_signal_fftconv_options* options, const sm_route_options* route_options,
