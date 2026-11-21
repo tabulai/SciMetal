@@ -7,8 +7,9 @@ and ``complex128`` (ranks 1 to 8). Integer, boolean, ``float16``,
 ``longdouble``, empty, 0-D, non-NumPy, subclass, or invalid inputs decline to
 SciPy.
 
-Under ``strict`` precision, ``convolve2d`` delegates to the installed SciPy to
-preserve its summation order and rounding. Double-precision FFT convolution (and
+Under ``strict`` precision, ``convolve2d`` uses a native CPU implementation for
+verified SciPy builds and same-dtype real inputs. Other calls delegate to the
+installed SciPy to preserve its summation order. Double-precision FFT convolution (and
 ``fftconvolve``/``oaconvolve``) declines to SciPy wrapped in
 ``scipy.fft.set_workers(performance_cores())`` for large calls (``>= 2^17``
 elements when ``scipy.fft.get_workers() == 1`` and
@@ -20,6 +21,8 @@ typically ``O(u * max|output|)`` with ``u = 2^-24``) and emits
 """
 from __future__ import annotations
 
+import functools
+import hashlib
 import operator
 import os
 import warnings
@@ -52,6 +55,21 @@ _DIRECT_BREAK_EVEN_ND = 1 << 12
 _FFT_BREAK_EVEN_ELEMENTS = 1 << 15
 
 _THREADED_MIN_POINTS = 1 << 17
+
+
+@functools.cache
+def _verified_scipy_fir() -> bool:
+    """Check the loaded FIR binary because the compiler affects its rounding."""
+    if scipy.__version__ != "1.18.1":
+        return False
+    try:
+        with open(_sp_signaltools._sigtools.__file__, "rb") as binary:
+            # Official SciPy 1.18.1 cp314 macosx_14_0_arm64 wheel.
+            return hashlib.file_digest(binary, "sha256").hexdigest() == (
+                "e797f8bbff36ed1a462962046dedc0e986fac07c4ea02c931f6d0ebdb44f402e"
+            )
+    except (AttributeError, OSError, TypeError):
+        return False
 
 
 def _decline(reason: str, *, context=None):
@@ -291,6 +309,17 @@ def _convolve2d_or_correlate2d(function: str, in1, in2, mode, boundary, fillvalu
         # SciPy 1.18.1 correlate2d reverses without conjugating when swapped in 'valid' mode.
         _decline("complex swapped valid correlate2d uses SciPy parity")
 
+    scipy_fir = not is_correlate and get_precision() == "strict"
+    if scipy_fir:
+        if _config.get_device() == "gpu":
+            _decline("strict convolve2d requires CPU accumulation")
+        if in1.dtype != in2.dtype or out_dtype.kind != "f":
+            _decline("strict native convolve2d requires same-dtype real inputs")
+        if b_code == _sig.BOUNDARY_FILL and (
+            type(fillvalue) not in (int, float) or (type(fillvalue) is int and abs(fillvalue) > 2**53)
+        ):
+            _decline("strict native convolve2d requires a plain scalar fillvalue")
+
     fill_real = 0.0
     fill_imag = 0.0
     if b_code == _sig.BOUNDARY_FILL:
@@ -314,22 +343,20 @@ def _convolve2d_or_correlate2d(function: str, in1, in2, mode, boundary, fillvalu
 
     work_est = _direct_work_estimate(in1.shape, in2.shape, mode)
     _native.decline_small(work_est, _DIRECT_BREAK_EVEN_ND)
+    if scipy_fir and not _verified_scipy_fir():
+        _decline("strict native convolve2d requires a verified SciPy FIR binary")
 
     # convolve2d and correlate2d never swap in 'full' mode; convolve.cpp only
     # shifts 'same' centering to (k - 1) // 2 when options->correlate != 0.
     center = _sig.CENTER_2D_CORR
     return _sig.convolve(
         function, in1, in2, mode_code, _sig.METHOD_DIRECT, is_correlate,
-        b_code, center, fill_real, fill_imag, 1,
+        b_code, center, fill_real, fill_imag, 1, scipy_fir=scipy_fir,
     )
 
 
 @accelerated("signal.convolve2d")
 def convolve2d(in1, in2, mode="full", boundary="fill", fillvalue=0):
-    if get_precision() == "strict":
-        # SciPy's FIR summation changed across releases. Matching the output
-        # dtype alone cannot reproduce its rounding for cancelling terms.
-        _decline("strict convolve2d preserves the installed SciPy's accumulation order")
     return _convolve2d_or_correlate2d("signal.convolve2d", in1, in2, mode, boundary, fillvalue, False)
 
 

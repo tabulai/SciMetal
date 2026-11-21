@@ -17,6 +17,7 @@ from hypothesis import strategies as st
 
 import scimetal
 import scimetal.signal as msig
+from scimetal.signal._signaltools import _verified_scipy_fir
 
 FUNCTIONS = (
     "convolve",
@@ -142,7 +143,8 @@ def test_strict_convolve2d_cancellation(device):
     kernel = np.array([[1e16, -1e16, 1.0]])
     with scimetal.precision("strict"), scimetal.device(device):
         got = msig.convolve2d(image, kernel, mode="valid")
-        assert scimetal.last_route().engine == "scipy"
+        engine = "cpu" if _verified_scipy_fir() and device != "gpu" else "scipy"
+        assert scimetal.last_route().engine == engine
     expected = ss.convolve2d(image, kernel, mode="valid")
     assert got.tobytes() == expected.tobytes()
 
@@ -157,6 +159,67 @@ def test_strict_convolve2d_matches_scipy_bits(dtype, mode, boundary):
     expected = ss.convolve2d(image, kernel, mode=mode, boundary=boundary, fillvalue=-1.75)
     assert (got.shape, got.dtype) == (expected.shape, expected.dtype)
     assert got.tobytes() == expected.tobytes()
+
+
+@pytest.mark.parametrize("dtype", [np.float32, np.float64])
+@pytest.mark.parametrize("width", [1, 3, 4, 5, 7, 8, 9, 12])
+def test_strict_native_convolve2d_groups_reset_per_row(dtype, width):
+    if not _verified_scipy_fir():
+        pytest.skip("requires the verified SciPy FIR build")
+    overhang = width == 12
+    image = rand_arr((2, 7) if overhang else (21, 33), dtype, seed=112)[:, ::-1]
+    kernel = rand_arr((3, width), dtype, seed=24)[::-1]
+    with scimetal.precision("strict"), scimetal.device("auto"):
+        for mode in ("full", "same", "valid"):
+            for boundary in ("fill", "wrap", "symm"):
+                # Exercise valid mode's operand swap. The other modes retain
+                # input order even when the kernel overhangs the image.
+                a, b = (kernel, image) if mode == "valid" and not overhang else (image, kernel)
+                got = msig.convolve2d(a, b, mode=mode, boundary=boundary, fillvalue=-1.75)
+                assert scimetal.last_route().engine == "cpu"
+                expected = ss.convolve2d(a, b, mode=mode, boundary=boundary, fillvalue=-1.75)
+                assert got.shape == expected.shape and got.dtype == expected.dtype
+                assert got.tobytes() == expected.tobytes()
+
+
+def test_strict_native_convolve2d_signed_zeros_and_subnormals():
+    if not _verified_scipy_fir():
+        pytest.skip("requires the verified SciPy FIR build")
+    tiny = np.nextafter(0.0, 1.0)
+    image = np.tile([tiny, -tiny, -0.0, 0.0], (12, 21))
+    for kernel in (np.array([[0.1]]), np.array([[0.1, -0.0, 1.5, -0.5, 0.2]])):
+        with scimetal.precision("strict"):
+            got = msig.convolve2d(image, kernel, mode="same", fillvalue=-0.0)
+        assert scimetal.last_route().engine == "cpu"
+        expected = ss.convolve2d(image, kernel, mode="same", fillvalue=-0.0)
+        assert got.tobytes() == expected.tobytes()
+
+
+@pytest.mark.parametrize("image_value,kernel_value", [
+    (1e308, 2.0),
+    (np.array(0xFFF8000000001234, dtype=np.uint64).view(np.float64).item(), 1.0),
+])
+def test_strict_convolve2d_falls_back_for_nonfinite_results(image_value, kernel_value):
+    image = np.full((64, 65), image_value)
+    kernel = np.full((3, 5), kernel_value)
+    with scimetal.precision("strict"):
+        got = msig.convolve2d(image, kernel, mode="same")
+    route = scimetal.last_route()
+    assert route.engine == "scipy"
+    if _verified_scipy_fir():
+        assert "nonfinite" in route.reason
+    expected = ss.convolve2d(image, kernel, mode="same")
+    assert got.tobytes() == expected.tobytes()
+
+
+def test_strict_convolve2d_falls_back_for_unknown_scipy_fir(monkeypatch):
+    monkeypatch.setattr(msig._signaltools, "_verified_scipy_fir", lambda: False)
+    image = rand_arr((63, 65), np.float64)
+    kernel = rand_arr((5, 5), np.float64, seed=4)
+    with scimetal.precision("strict"):
+        got = msig.convolve2d(image, kernel, mode="same")
+    assert scimetal.last_route().engine == "scipy"
+    assert got.tobytes() == ss.convolve2d(image, kernel, mode="same").tobytes()
 
 
 def test_correlate2d_complex_swapped_valid_parity():

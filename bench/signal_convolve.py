@@ -109,10 +109,11 @@ def benchmark(quick: bool):
                 fast_ms, fast_min = timed(lambda: ours(a, b, **kw), repeats, warmup)
 
             ref = theirs(a, b, **kw)
-            res = ours(a, b, **kw)
+            with scimetal.precision("fast"):
+                res = ours(a, b, **kw)
             scale = max(1.0, float(np.abs(ref).max()))
             rel_err = float(np.abs(res - ref).max()) / scale
-            del res, ref
+            del res
 
             row = {
                 "workload": label,
@@ -133,10 +134,19 @@ def benchmark(quick: bool):
                 with scimetal.precision("strict"):
                     strict_ms, _ = timed(lambda: ours(a, b, **kw), scipy_repeats if func == "convolve2d" else repeats, warmup)
                     s_route = scimetal.last_route()
+                    if func == "convolve2d":
+                        strict_out = ours(a, b, **kw)
+                        if strict_out.dtype != ref.dtype or not np.array_equal(
+                            strict_out.view(np.uint8), ref.view(np.uint8)
+                        ):
+                            raise AssertionError("strict convolve2d differs from SciPy at the byte level")
+                        del strict_out
+                        row["strict_bit_identical"] = True
                 row["strict_ms"] = round(strict_ms, 2)
                 row["strict_engine"] = s_route.engine
                 row["strict_speedup_vs_w1"] = round(scipy_1_ms / strict_ms, 2)
 
+            del ref
             rows.append(row)
             w16_str = f"w16 {scipy_w16_ms:7.1f}ms ({row['speedup_vs_w16']:5.1f}x)" if scipy_w16_ms else ""
             print(

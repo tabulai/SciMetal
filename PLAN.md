@@ -368,10 +368,14 @@ its own `gpu::Batch`.
 2-D `boundary` (`fill`/`wrap`/`symm`) / `fillvalue` for plain C-contiguous real and
 complex float arrays (`float32`, `float64`, `complex64`, `complex128`, rank 1–8).
 - Direct path (`sm_signal_convolve`): reuses `sm::detail::dense_correlate` (`signal.convolve.direct`
-  crossover `128·2^20`). The CPU path preserves `0.0 * NaN = NaN`. Strict Python
-  `convolve2d` calls the installed SciPy to preserve its accumulation order. The GPU
+  crossover `128·2^20`). The CPU path preserves `0.0 * NaN = NaN`. The GPU
   uses single precision (`float32` / `complex64`). Its range and gain checks reroute
   automatic calls to the CPU when needed and set `sm_route_info::reason`.
+- Strict Python `convolve2d` verifies the installed SciPy 1.18.1 CPython 3.14 macOS
+  arm64 FIR binary before selecting `sm_signal_convolve_scipy_fir`. That CPU path
+  groups each kernel row in the same order with the same FMA contractions and
+  vectorizes over independent output pixels. SciPy handles unsupported inputs,
+  unverified builds, nondefault floating-point settings, and nonfinite results.
 - FFT & overlap-add GPU path (`sm_signal_fftconvolve`, `fft_gpu_min_elements = 2^15`):
   single precision (`fast` / `refined` only); in one `gpu::Batch` per call, pads/chunks
   inputs (`fft::next_fast_len` and Lambert-W OA block sizing), runs forward FFTs via
@@ -498,10 +502,11 @@ before `1.97 1.91 2.41`, after `2.85 2.11 2.47`), float64 in and out:
 | `convolve` 2^24 × 1025 (`same`) | 518.7 | 129.4 | 3.97 | 130.7 | 32.6 | 128.34 (`scipy`) | 1.1e-06 |
 | `oaconvolve` 2^24 × 1025 (`same`) | 299.0 | 44.6 | 3.93 | 76.2 | 11.4 | — (SciPy) | 1.1e-06 |
 | `oaconvolve` 4096² × 65² (`same`) | 234.3 | 67.6 | 7.04 | 33.3 | 9.6 | — (SciPy) | 1.8e-06 |
-| `convolve2d` 4096² × 5² (`same`) | 572.5 | — | 3.35 | 171.1 | — | SciPy | 1.9e-07 |
+| `convolve2d` 4096² × 5² (`same`) | 572.5 | — | 3.35 | 171.1 | — | See below | 1.9e-07 |
 
-The archived `convolve2d` timings include the original native strict run. The strict
-Python route now delegates to SciPy to preserve its summation order.
+On the same `convolve2d` workload, the verified strict CPU route delivered
+byte-identical results in 4.77 ms median versus 588 ms for SciPy, measured in a
+separate warm run.
 
 **SciPy's own tests through the oracle** (integrated build):
 

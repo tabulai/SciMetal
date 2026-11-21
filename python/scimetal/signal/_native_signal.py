@@ -83,6 +83,8 @@ def library() -> ctypes.CDLL:
                     ctypes.POINTER(_native.ArrayResult),
                     ctypes.POINTER(_native.RouteInfo),
                 ]
+                if hasattr(lib, "sm_signal_convolve_scipy_fir"):
+                    lib.sm_signal_convolve_scipy_fir.argtypes = lib.sm_signal_convolve.argtypes
                 lib.sm_signal_fftconvolve.argtypes = [
                     ctypes.c_void_p,
                     ctypes.POINTER(_native.Array),
@@ -116,8 +118,14 @@ def _clamp_threads(host_threads: int) -> int:
 def convolve(function: str, in1: np.ndarray, in2: np.ndarray, mode: int, method: int,
              correlate: bool, boundary: int, center: int,
              fill_real: float = 0.0, fill_imag: float = 0.0, host_threads: int = 1,
-             return_route_flags: bool = False) -> np.ndarray | tuple[np.ndarray, int]:
+             return_route_flags: bool = False, *,
+             scipy_fir: bool = False) -> np.ndarray | tuple[np.ndarray, int]:
     lib = library()
+    entry = lib.sm_signal_convolve
+    if scipy_fir:
+        entry = getattr(lib, "sm_signal_convolve_scipy_fir", None)
+        if entry is None:
+            raise _native.NotAccelerated("this native build lacks the strict SciPy FIR convolution")
     d1, h1 = _native.as_native(in1)
     d2, h2 = _native.as_native(in2)
     opts = ConvOptions(
@@ -136,7 +144,7 @@ def convolve(function: str, in1: np.ndarray, in2: np.ndarray, mode: int, method:
     info = _native.new_route_info()
     result = _native.ArrayResult()
     try:
-        _native.check(lib.sm_signal_convolve(
+        _native.check(entry(
             _native.context(), ctypes.byref(d1), ctypes.byref(d2), ctypes.byref(opts),
             ctypes.byref(route), ctypes.byref(result), ctypes.byref(info)))
     except (ValueError, MemoryError) as refusal:

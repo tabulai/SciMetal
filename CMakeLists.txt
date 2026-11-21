@@ -29,6 +29,9 @@ set_target_properties(mscore_obj PROPERTIES POSITION_INDEPENDENT_CODE ON)
 target_include_directories(mscore_obj PUBLIC include)
 target_include_directories(mscore_obj PRIVATE src)
 target_compile_options(mscore_obj PRIVATE -Wall -Wextra -Wpedantic)
+# The CPU FIR kernel reproduces an explicit sequence of rounded operations.
+set_property(SOURCE src/core/dense_correlate.cpp APPEND PROPERTY COMPILE_OPTIONS
+    -fno-fast-math -ffp-contract=off)
 if(APPLE)
   # New LAPACK/CBLAS interface (macOS 13.3+).
   target_compile_definitions(mscore_obj PRIVATE ACCELERATE_NEW_LAPACK=1)
