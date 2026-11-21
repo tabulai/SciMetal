@@ -86,11 +86,12 @@ def test_scipys_signal_tests_pass_in_strict_mode(native_signal):
     assert code == 0 and re.search(r"\b\d+ passed", output), summary(output)
     assert set(counters) == set(FUNCTIONS), summary(output)
     # Direct N-D convolution and correlation can run natively in strict mode.
-    for name in ("convolve", "correlate", "correlate2d", "choose_conv_method"):
+    for name in ("convolve", "correlate", "choose_conv_method"):
         assert counters[name][0] > 0, f"{name} never ran natively:\n{summary(output)}"
-    native, declined = counters["convolve2d"]
-    assert (native > 0) == _verified_scipy_fir(), summary(output)
-    assert declined > 0, summary(output)
+    for name in ("convolve2d", "correlate2d"):
+        native, declined = counters[name]
+        assert (native > 0) == _verified_scipy_fir(), (name, summary(output))
+        assert declined > 0, (name, summary(output))
     for name in ("fftconvolve", "oaconvolve"):
         assert sum(counters[name]) > 0, f"{name} never invoked:\n{summary(output)}"
 

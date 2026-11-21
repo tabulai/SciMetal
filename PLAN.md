@@ -371,17 +371,19 @@ complex float arrays (`float32`, `float64`, `complex64`, `complex128`, rank 1–
   crossover `128·2^20`). The CPU path preserves `0.0 * NaN = NaN`. The GPU
   uses single precision (`float32` / `complex64`). Its range and gain checks reroute
   automatic calls to the CPU when needed and set `sm_route_info::reason`.
-- Strict Python `convolve2d` checks the installed `_sigtools` SHA-256 before selecting
-  `sm_signal_convolve_scipy_fir`. The allowlist covers all 12 official SciPy 1.18.1
+- Strict Python `convolve2d` and `correlate2d` check the installed `_sigtools` SHA-256
+  before selecting `sm_signal_convolve_scipy_fir`. The allowlist covers all 12 official SciPy 1.18.1
   macOS arm64 wheels, with macOS 12 and 14 tags for each published CPython ABI.
   The wheel archive hashes matched PyPI, and the extracted extensions matched
   the wheels' `RECORD` entries. The Python wrappers, float32 and float64 FIR
   routines, and dtype dispatch tables matched across the wheels. The FIR driver's
   instructions matched after accounting for relocation addresses. On the M1 Ultra,
-  all 12 wheels passed 216 native and 168 fallback byte comparisons per wheel.
-  Each free-threaded wheel also passed 36 native comparisons with four concurrent
-  threads and the GIL disabled. SciPy handles unsupported inputs, unverified builds,
-  nondefault floating-point settings, and nonfinite results.
+  all 12 wheels passed 216 native and 168 fallback byte comparisons per wheel for
+  `convolve2d`, and 222 native and 180 fallback comparisons per wheel for
+  `correlate2d`. Swapped valid correlation also matched SciPy's reversed strides.
+  On each free-threaded wheel, 36 convolution and 24 correlation comparisons
+  passed with four concurrent callers and the GIL disabled. SciPy handles unsupported
+  inputs, unverified builds, nondefault floating-point settings, and nonfinite results.
   [PyPI release inventory](https://pypi.org/pypi/scipy/1.18.1/json)
 - FFT & overlap-add GPU path (`sm_signal_fftconvolve`, `fft_gpu_min_elements = 2^15`):
   single precision (`fast` / `refined` only); in one `gpu::Batch` per call, pads/chunks
@@ -514,6 +516,11 @@ before `1.97 1.91 2.41`, after `2.85 2.11 2.47`), float64 in and out:
 On the same `convolve2d` workload, the verified strict CPU route delivered
 byte-identical results in 4.77 ms median versus 588 ms for SciPy, measured in a
 separate warm run.
+
+The `correlate2d` strict CPU route took 5.34 ms versus 588 ms in SciPy for a
+4096² float64 image and a 5² kernel in `same` mode. Outputs were byte-identical.
+Medians are from five warm calls on the M1 Ultra with a one-minute system load
+average of 5.29 before and 5.43 after.
 
 **SciPy's own tests through the oracle** (integrated build):
 

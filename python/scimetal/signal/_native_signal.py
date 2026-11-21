@@ -125,7 +125,7 @@ def convolve(function: str, in1: np.ndarray, in2: np.ndarray, mode: int, method:
     if scipy_fir:
         entry = getattr(lib, "sm_signal_convolve_scipy_fir", None)
         if entry is None:
-            raise _native.NotAccelerated("this native build lacks the strict SciPy FIR convolution")
+            raise _native.NotAccelerated("strict SciPy FIR requires native support")
     d1, h1 = _native.as_native(in1)
     d2, h2 = _native.as_native(in2)
     opts = ConvOptions(

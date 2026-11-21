@@ -7,10 +7,11 @@ and ``complex128`` (ranks 1 to 8). Integer, boolean, ``float16``,
 ``longdouble``, empty, 0-D, non-NumPy, subclass, or invalid inputs decline to
 SciPy.
 
-Under ``strict`` precision, ``convolve2d`` uses a native CPU implementation for
-verified SciPy builds and same-dtype real inputs. Other calls delegate to the
-installed SciPy to preserve its summation order. Double-precision FFT convolution (and
-``fftconvolve``/``oaconvolve``) declines to SciPy wrapped in
+Under ``strict`` precision, ``convolve2d`` and ``correlate2d`` use a native CPU
+implementation for verified SciPy builds and same-dtype real inputs. Other calls
+delegate to the installed SciPy to preserve its summation order.
+
+Double-precision FFT convolution (and ``fftconvolve``/``oaconvolve``) declines to SciPy wrapped in
 ``scipy.fft.set_workers(performance_cores())`` for large calls (``>= 2^17``
 elements when ``scipy.fft.get_workers() == 1`` and
 ``SCIMETAL_FFT_THREADED_FALLBACK != 0``). Note that multi-threaded pocketfft
@@ -331,16 +332,16 @@ def _convolve2d_or_correlate2d(function: str, in1, in2, mode, boundary, fillvalu
         # SciPy 1.18.1 correlate2d reverses without conjugating when swapped in 'valid' mode.
         _decline("complex swapped valid correlate2d uses SciPy parity")
 
-    scipy_fir = not is_correlate and get_precision() == "strict"
+    scipy_fir = get_precision() == "strict"
     if scipy_fir:
         if _config.get_device() == "gpu":
-            _decline("strict convolve2d requires CPU accumulation")
+            _decline(f"strict {function} requires CPU accumulation")
         if in1.dtype != in2.dtype or out_dtype.kind != "f":
-            _decline("strict native convolve2d requires same-dtype real inputs")
+            _decline(f"strict native {function} requires same-dtype real inputs")
         if b_code == _sig.BOUNDARY_FILL and (
             type(fillvalue) not in (int, float) or (type(fillvalue) is int and abs(fillvalue) > 2**53)
         ):
-            _decline("strict native convolve2d requires a plain scalar fillvalue")
+            _decline(f"strict native {function} requires a plain scalar fillvalue")
 
     fill_real = 0.0
     fill_imag = 0.0
@@ -366,15 +367,21 @@ def _convolve2d_or_correlate2d(function: str, in1, in2, mode, boundary, fillvalu
     work_est = _direct_work_estimate(in1.shape, in2.shape, mode)
     _native.decline_small(work_est, _DIRECT_BREAK_EVEN_ND)
     if scipy_fir and not _verified_scipy_fir():
-        _decline("strict native convolve2d requires a verified SciPy FIR binary")
+        _decline(f"strict native {function} requires a verified SciPy FIR binary")
 
     # convolve2d and correlate2d never swap in 'full' mode; convolve.cpp only
     # shifts 'same' centering to (k - 1) // 2 when options->correlate != 0.
     center = _sig.CENTER_2D_CORR
-    return _sig.convolve(
+    # SciPy returns a reversed view for swapped valid correlation. Pass the
+    # inputs already swapped so the C ABI returns the underlying contiguous result.
+    reverse_output = scipy_fir and is_correlate and swapped
+    if reverse_output:
+        in1, in2 = in2, in1
+    result = _sig.convolve(
         function, in1, in2, mode_code, _sig.METHOD_DIRECT, is_correlate,
         b_code, center, fill_real, fill_imag, 1, scipy_fir=scipy_fir,
     )
+    return result[::-1, ::-1] if reverse_output else result
 
 
 @accelerated("signal.convolve2d")

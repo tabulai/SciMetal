@@ -585,9 +585,9 @@ static sm_status signal_convolve(sm_context* context, const sm_array* in1, const
         if (scipy_fir &&
             (ndim != 2 || in1->dtype != in2->dtype || (out_dtype != SM_FLOAT32 && out_dtype != SM_FLOAT64) ||
              options->center != SM_SIGNAL_CENTER_2D_CORR || options->method != SM_SIGNAL_METHOD_DIRECT ||
-             options->correlate || route_options->precision != SM_PRECISION_STRICT ||
+             route_options->precision != SM_PRECISION_STRICT ||
              route_options->execution == SM_EXECUTION_GPU)) {
-            throw Error(SM_ENOTSUP, "strict FIR requires a direct CPU convolution of same-dtype real 2-D inputs");
+            throw Error(SM_ENOTSUP, "strict FIR requires direct CPU execution for same-dtype real 2-D inputs");
         }
 
         if (options->boundary == SM_SIGNAL_BOUNDARY_FILL && !array::is_complex(out_dtype) &&
@@ -723,7 +723,9 @@ static sm_status signal_convolve(sm_context* context, const sm_array* in1, const
 
         if (scipy_fir) {
             spec.weights = k_arr.data;
-            auto result = dense::run_scipy_fir(context, spec, in_arr.data);
+            auto result = dense::run_scipy_fir(context, spec, in_arr.data, options->correlate != 0);
+            if (rev_conj_out)
+                sig::reverse_conj_cpu(sm::detail::mutable_data(result.get()), out_shape.elements, out_dtype, false);
             array::publish(out, std::move(result), out_dtype, out_shape);
             array::report(info, SM_EXECUTION_CPU, out_dtype, "verified SciPy arm64 FIR accumulation order");
             return;

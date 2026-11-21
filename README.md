@@ -111,8 +111,8 @@ and setters (`set_precision`, `set_device`, `set_small_inputs`) scope per-thread
 - **`refined`**: single-precision compute plus a double-precision correction where one
   exists; otherwise behaves as `fast`.
 - **`strict`** keeps double-precision work on the CPU. Native `ndimage` uses double
-  accumulation. `signal.convolve2d` can use the native CPU engine for matching
-  `float32` or `float64` NumPy inputs. SciMetal recognizes the FIR binaries from
+  accumulation. `signal.convolve2d` and `signal.correlate2d` can use the native CPU
+  engine for matching `float32` or `float64` NumPy inputs. SciMetal recognizes the FIR binaries from
   all 12 official SciPy 1.18.1 macOS arm64 wheels, including free-threaded
   CPython builds. SciMetal requires macOS 15 or later.
   Unverified builds, unsupported arguments, nondefault floating-point settings,
@@ -152,6 +152,11 @@ Measured standalone on macOS 26.5.1 (SciPy 1.18.1, NumPy 2.5.5; median times in 
 A separate warm run of the same `convolve2d` workload on the M1 Ultra measured
 **4.77 ms** for the verified strict CPU route and **588 ms** for SciPy. The outputs
 were byte-identical.
+
+For `correlate2d` with the same shapes and dtype, the strict CPU route measured
+**5.34 ms** versus **588 ms** in SciPy (**110×**), with byte-identical output.
+These medians are from five warm calls under a concurrent system load (one-minute
+load average 5.29–5.43).
 
 ## Provenance
 
