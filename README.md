@@ -12,7 +12,7 @@ Design rationale, probes, and milestones live in [PLAN.md](PLAN.md).
 
 - Apple Silicon (`arm64`), macOS 15 or later
 - Xcode / Metal toolchain, CMake, Ninja (for building from source)
-- Python 3.10+, NumPy, SciPy
+- Python 3.11+, NumPy 2+, SciPy 1.15+
 
 ## Build, install, and verify
 
