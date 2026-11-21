@@ -281,6 +281,20 @@ def test_dtypes_follow_scipy(gpu):
     declined("fft", x.astype(object))
 
 
+@pytest.mark.parametrize("dtype,value", [
+    (np.int32, -(1 << 24)), (np.uint32, 1 << 24),
+    (np.int64, np.iinfo(np.int64).min), (np.uint64, np.iinfo(np.uint64).max),
+])
+def test_integer_fft_range_boundaries(gpu, dtype, value):
+    x = np.zeros(32, dtype=dtype)
+    # Impulses test the exact cutoffs in both directions. Values just inside
+    # the guard retain their native path.
+    x[0] = -(2**24 - 1) if value < 0 else 2**24 - 1
+    check("fft", x)
+    x[0] = value
+    assert "2^24" in declined("fft", x).reason
+
+
 def test_double_inputs_outside_single_precision_range_fall_through(gpu):
     x = random((4, 1000), np.complex128)
     for scale in (1e-25, 1e-9, 1.0, 1e9, 1e25):          # within range: any scale gives the same relative accuracy

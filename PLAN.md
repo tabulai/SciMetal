@@ -279,9 +279,8 @@ default (naming `set_precision('strict')` and `warnings.filterwarnings`), and
 **`ndimage` filters** — separable (`correlate1d`, `convolve1d`, `gaussian_filter1d`,
 `gaussian_filter` of any order, `uniform_filter1d`, `uniform_filter`, `prewitt`,
 `sobel`), dense N-D (`correlate`, `convolve`), and composite (`laplace`,
-`gaussian_laplace`, `gaussian_gradient_magnitude`, plus `generic_laplace` /
-`generic_gradient_magnitude` when the derivative callback reduces to supported native
-passes via `ContextVar` symbolic tracing).
+`gaussian_laplace`, `gaussian_gradient_magnitude`). SciPy runs the callbacks for
+`generic_laplace` and `generic_gradient_magnitude` on real arrays.
 - Three C primitives: `sm_ndimage_separable_filter[_to]`, `sm_ndimage_dense_filter`, and
   `sm_ndimage_composite_filter` across all 11 real dtypes (`float32`, `float64`, `bool`,
   `int8`–`int64`, `uint8`–`uint64`), including cross-dtype `output=` among real dtypes.
@@ -297,17 +296,18 @@ passes via `ContextVar` symbolic tracing).
   single-`Batch` composite combine kernel. Float64 widening and threaded P-core post-cast
   (`ndimage_cast_from_float`) convert output to any real `out_dtype`.
 - Guard rails (A5, A6): `AUTO` double inputs whose narrowing or filter gain overflows float32,
-  or 32/64-bit integers with `|x| >= 2^24`, re-route to the CPU engine in `float64` with
-  the reason recorded in `sm_route_info::reason`; forced `GPU` declines (`SM_ENOTSUP`).
+  floating inputs whose peak finite magnitude is nonzero and below the float32 normal
+  range, or 32/64-bit integers with `|x| >= 2^24` re-route to the CPU engine in
+  `float64` with the reason in `sm_route_info::reason`. Forced `GPU` declines
+  with `SM_ENOTSUP`.
 - Routing: separable work = elements × CPU operations over all passes (GPU from `80·2^20`);
   dense work = elements × non-zero taps (GPU from `128·2^20`). `strict` with `auto`
   always uses the CPU engine, float32 and int/bool included.
 - Declines: anything that is not a plain aligned native real `ndarray` (`float32`, `float64`,
   `bool`, `int8`–`int64`, `uint8`–`uint64`) of rank 1–8; `output` of a complex/`float16`/
   `longdouble`/non-native-endian dtype, wrong shape, read-only, or partly overlapping;
-  complex or non-1-D/rank-incompatible weights; general non-traceable callbacks in
-  `generic_*`; anything SciPy would reject; fewer than 16384 elements (unless
-  `scimetal.set_small_inputs('native')`).
+  complex or non-1-D/rank-incompatible weights; anything SciPy would reject;
+  fewer than 16384 elements (unless `scimetal.set_small_inputs('native')`).
 
 **`fft`** — `fft`, `ifft`, `rfft`, `irfft`, `fft2`, `ifft2`, `fftn`, `ifftn`, `rfft2`,
 `irfft2`, `rfftn`, `irfftn`, plus `scimetal.fft.register()` (the `scipy.fft` uarray
@@ -368,10 +368,10 @@ its own `gpu::Batch`.
 2-D `boundary` (`fill`/`wrap`/`symm`) / `fillvalue` for plain C-contiguous real and
 complex float arrays (`float32`, `float64`, `complex64`, `complex128`, rank 1–8).
 - Direct path (`sm_signal_convolve`): reuses `sm::detail::dense_correlate` (`signal.convolve.direct`
-  crossover `128·2^20`). CPU matches SciPy's `_correlate_nd.cc` / `_firfilter.cc`
-  accumulation (preserving `0.0 * NaN = NaN`); GPU runs single precision (`float32` /
-  `complex64`) and checks overflow/gain so `AUTO` double inputs that overflow float32
-  re-route to CPU with the reason in `sm_route_info::reason`.
+  crossover `128·2^20`). The CPU path preserves `0.0 * NaN = NaN`. Strict Python
+  `convolve2d` calls the installed SciPy to preserve its accumulation order. The GPU
+  uses single precision (`float32` / `complex64`). Its range and gain checks reroute
+  automatic calls to the CPU when needed and set `sm_route_info::reason`.
 - FFT & overlap-add GPU path (`sm_signal_fftconvolve`, `fft_gpu_min_elements = 2^15`):
   single precision (`fast` / `refined` only); in one `gpu::Batch` per call, pads/chunks
   inputs (`fft::next_fast_len` and Lambert-W OA block sizing), runs forward FFTs via
@@ -498,7 +498,10 @@ before `1.97 1.91 2.41`, after `2.85 2.11 2.47`), float64 in and out:
 | `convolve` 2^24 × 1025 (`same`) | 518.7 | 129.4 | 3.97 | 130.7 | 32.6 | 128.34 (`scipy`) | 1.1e-06 |
 | `oaconvolve` 2^24 × 1025 (`same`) | 299.0 | 44.6 | 3.93 | 76.2 | 11.4 | — (SciPy) | 1.1e-06 |
 | `oaconvolve` 4096² × 65² (`same`) | 234.3 | 67.6 | 7.04 | 33.3 | 9.6 | — (SciPy) | 1.8e-06 |
-| `convolve2d` 4096² × 5² (`same`) | 572.5 | — | 3.35 | 171.1 | — | 4.46 (`cpu`, 128.3×) | 1.9e-07 |
+| `convolve2d` 4096² × 5² (`same`) | 572.5 | — | 3.35 | 171.1 | — | SciPy | 1.9e-07 |
+
+The archived `convolve2d` timings include the original native strict run. The strict
+Python route now delegates to SciPy to preserve its summation order.
 
 **SciPy's own tests through the oracle** (integrated build):
 
@@ -724,9 +727,9 @@ Follow the two existing families; `ndimage` is the model for a family with both 
 
 - The policy decides only whether a double-precision input may go to the GPU. The CPU
   engine always computes in the precision SciPy uses.
-- Under `fast`, a double input whose values single precision cannot carry must not go
-  to the GPU. The FFT route checks magnitudes; the ndimage route **does not yet** (work
-  package A5).
+- Under `fast`, the FFT and ndimage routes use magnitude checks to decline inputs
+  outside the supported single-precision range. FFT promotion checks 32/64-bit integer
+  bounds before casting.
 - Under `strict`, forced GPU with a double input is a decline, never a silent downgrade.
 - Solve-type functions get a double-precision residual check and refinement (Phase 3);
   when refinement stalls, fall back to the double-precision CPU path and say so in the

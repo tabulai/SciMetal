@@ -12,8 +12,9 @@ What runs natively (GPU, single precision, see include/sm_fft.h):
 - ``fftn`` / ``ifftn`` / ``fft2`` / ``ifft2`` over any axes, and
   ``rfftn`` / ``irfftn`` / ``rfft2`` / ``irfft2`` when the half-spectrum axis
   is the array's last, with ``s`` resizing along the last axis only;
-- float32, float64, complex64 and complex128 arrays (integers and float16
-  are promoted as SciPy promotes them). A double-precision input whose
+- float32, float64, complex64 and complex128 arrays (float16 and integers
+  with magnitude below 2^24 are promoted as SciPy promotes them).
+  A double-precision input whose
   magnitudes single precision cannot carry (above 2^96 or all below 2^-100,
   infinities, NaNs) is declined.
 
@@ -119,6 +120,13 @@ def _input(x, norm, workers, plan, overwrite_x=False):
     double = np.dtype(promoted or x.dtype).itemsize // (2 if kind == "c" else 1) == 8
     if double and _config.get_precision() == "strict":
         raise Declined("strict precision keeps double-precision FFTs exact, on SciPy", threaded=True)
+    if kind in "iu" and x.dtype.itemsize >= 4 and x.size:
+        # Check before promotion while values retain their integer semantics.
+        # Separate extrema avoid overflowing abs(INT_MIN) and allocating a mask.
+        integers = np.asarray(x)
+        limit = 1 << 24
+        if integers.max() >= limit or (kind == "i" and integers.min() <= -limit):
+            raise Declined("integer FFT input reaches the float32 guard (|x| >= 2^24)")
     if promoted is not None:
         x = np.asarray(x, promoted)
     elif not (x.dtype.isnative and x.flags.aligned):

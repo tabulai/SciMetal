@@ -124,6 +124,23 @@ def test_declined_calls_continue_to_scipy(registered):
         assert "workers=" not in scimetal.last_route().reason
 
 
+@pytest.mark.parametrize("device", ["auto", "gpu"])
+def test_large_integer_fft_preserves_low_bits(registered, device):
+    # Adjacent integers around 2^24 collapse to the same float32, erasing
+    # the entire Nyquist component when the GPU operates on the narrowed input.
+    x = np.full(1 << 17, 1 << 24, dtype=np.int64)
+    x[::2] += 1
+    with scipy.fft.set_backend("scipy", only=True):
+        expected = scipy.fft.rfft(x)
+    assert expected[-1] == x.size // 2
+    with scimetal.device(device):
+        for transform in (mfft.rfft, scipy.fft.rfft):
+            got = transform(x)
+            route = scimetal.last_route()
+            assert route.engine == "scipy" and "2^24" in route.reason
+            np.testing.assert_array_equal(got, expected, strict=True)
+
+
 def test_errors_and_other_functions_are_scipys(registered):
     x, r = arrays(3)
     with pytest.raises(ValueError, match="invalid number of data points"):

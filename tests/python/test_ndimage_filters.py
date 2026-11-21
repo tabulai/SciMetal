@@ -800,31 +800,7 @@ def test_small_inputs_go_to_scipy_by_default():
 # ---- A3: dense & composite filters ------------------------------------------------------------
 
 A3_FUNCTIONS = ("correlate", "convolve", "laplace", "gaussian_laplace",
-                "gaussian_gradient_magnitude", "generic_laplace", "generic_gradient_magnitude")
-
-
-def _gl_deriv2(inp, axis, output, mode, cval, sigma=1.2):
-    order = [0] * inp.ndim
-    order[axis] = 2
-    return mn.gaussian_filter(inp, sigma, order=order, output=output, mode=mode, cval=cval)
-
-
-def _ggm_deriv(inp, axis, output, mode, cval, sigma=1.2):
-    order = [0] * inp.ndim
-    order[axis] = 1
-    return mn.gaussian_filter(inp, sigma, order=order, output=output, mode=mode, cval=cval)
-
-
-def _gl_deriv2_scipy(inp, axis, output, mode, cval, sigma=1.2):
-    order = [0] * inp.ndim
-    order[axis] = 2
-    return sn.gaussian_filter(inp, sigma, order=order, output=output, mode=mode, cval=cval)
-
-
-def _ggm_deriv_scipy(inp, axis, output, mode, cval, sigma=1.2):
-    order = [0] * inp.ndim
-    order[axis] = 1
-    return sn.gaussian_filter(inp, sigma, order=order, output=output, mode=mode, cval=cval)
+                "gaussian_gradient_magnitude")
 
 
 def test_a3_wrappers_keep_scipys_signatures_and_are_registered():
@@ -882,13 +858,6 @@ def test_a3_cpu_engine_is_bit_identical_to_scipy(dtype, policy, device):
                 assert_identical(mn.gaussian_laplace(a, 1.1, axes=()),
                                  sn.gaussian_laplace(a, 1.1, axes=()))
 
-            assert_identical(mn.generic_laplace(a, _gl_deriv2, extra_arguments=(1.2,)),
-                             sn.generic_laplace(a, _gl_deriv2_scipy, extra_arguments=(1.2,)))
-            assert scimetal.last_route().engine == "cpu"
-            assert_identical(mn.generic_gradient_magnitude(a, _ggm_deriv, extra_arguments=(1.2,)),
-                             sn.generic_gradient_magnitude(a, _ggm_deriv_scipy, extra_arguments=(1.2,)))
-            assert scimetal.last_route().engine == "cpu"
-
 
 @pytest.mark.parametrize("dtype", [np.float64, np.float32])
 def test_a3_gpu_engine_and_rank1_separable(gpu, dtype):
@@ -925,60 +894,63 @@ def test_a3_gpu_engine_and_rank1_separable(gpu, dtype):
                     assert scimetal.last_route().engine == "gpu"
                     assert np.abs(ours - ref).max() <= 5e-4 * scale
 
-            assert np.abs(mn.generic_laplace(a, _gl_deriv2) - sn.generic_laplace(a, _gl_deriv2_scipy)).max() <= 5e-4 * scale
-            assert scimetal.last_route().engine == "gpu"
-            assert np.abs(mn.generic_gradient_magnitude(a, _ggm_deriv) -
-                          sn.generic_gradient_magnitude(a, _ggm_deriv_scipy)).max() <= 5e-4 * scale
-            assert scimetal.last_route().engine == "gpu"
 
 
-def test_a3_generic_callbacks_and_fallbacks():
-    a = array((15, 20), np.float64, seed=41)
-    with scimetal.precision("strict"):
-        # Void in-place callback on first axis + chained calls.
-        def void_first_deriv(inp, axis, output, mode, cval):
-            t = mn.gaussian_filter1d(inp, 1.0, axis=axis, mode=mode, cval=cval)
-            if isinstance(output, np.ndarray) or not isinstance(output, np.dtype):
-                mn.correlate1d(t, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
-                return None
-            return mn.correlate1d(t, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
 
-        def void_first_deriv_scipy(inp, axis, output, mode, cval):
-            t = sn.gaussian_filter1d(inp, 1.0, axis=axis, mode=mode, cval=cval)
+@pytest.mark.parametrize("name", ["generic_laplace", "generic_gradient_magnitude"])
+@pytest.mark.parametrize("policy", ["strict", "fast"])
+def test_generic_filters_run_stateful_callbacks_once_per_axis(name, policy):
+    x = np.ones((128, 128))
+    native = getattr(mn, name)
+    reference = getattr(sn, name)
+
+    def run(function):
+        axes_called = []
+        target = np.empty_like(x)
+
+        def derivative(input, axis, output, mode, cval):
+            axes_called.append(axis)
+            scaled = input * len(axes_called)
             if isinstance(output, np.ndarray):
-                sn.correlate1d(t, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
+                output[...] = scaled
                 return None
-            return sn.correlate1d(t, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
+            return scaled.astype(output, copy=False)
 
-        assert_identical(mn.generic_laplace(a, void_first_deriv),
-                         sn.generic_laplace(a, void_first_deriv_scipy))
-        assert scimetal.last_route().engine == "cpu"
+        result = function(x, derivative, output=target, axes=(1, 0))
+        assert result is target
+        return result, axes_called
 
-        # Callback using prewitt / sobel natively.
-        def sobel_deriv(inp, axis, output, mode, cval):
-            return mn.sobel(inp, axis=axis, output=output, mode=mode, cval=cval)
+    expected, expected_axes = run(reference)
+    with scimetal.precision(policy):
+        actual, actual_axes = run(native)
+    assert actual_axes == expected_axes == [1, 0]
+    assert_identical(actual, expected)
+    assert name not in scimetal.accelerated()["ndimage"]
 
-        def sobel_deriv_scipy(inp, axis, output, mode, cval):
-            return sn.sobel(inp, axis=axis, output=output, mode=mode, cval=cval)
 
-        assert_identical(mn.generic_gradient_magnitude(a, sobel_deriv),
-                         sn.generic_gradient_magnitude(a, sobel_deriv_scipy))
-        assert scimetal.last_route().engine == "cpu"
+@pytest.mark.parametrize("name", ["generic_laplace", "generic_gradient_magnitude"])
+def test_generic_filters_propagate_callback_exception_once(name):
+    x = np.ones((128, 128))
+    calls = []
+    error = RuntimeError("derivative failed")
 
-        # Non-traceable callbacks must fall back cleanly to SciPy!
-        def non_native(inp, axis, output, mode, cval):
-            return sn.maximum_filter1d(inp, 3, axis=axis, output=output, mode=mode, cval=cval)
+    def derivative(input, axis, output, mode, cval):
+        calls.append(axis)
+        raise error
 
-        out = mn.generic_laplace(a, non_native)
-        assert scimetal.last_route().engine == "scipy"
-        assert_identical(out, sn.generic_laplace(a, non_native))
+    with pytest.raises(RuntimeError) as caught:
+        getattr(mn, name)(x, derivative)
+    assert caught.value is error
+    assert calls == [0]
 
-        def custom_math(inp, axis, output, mode, cval):
-            return sn.correlate1d(inp, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval) * 2.0
 
-        out2 = mn.generic_gradient_magnitude(a, custom_math)
-        assert scimetal.last_route().engine == "scipy"
-        assert_identical(out2, sn.generic_gradient_magnitude(a, custom_math))
+def test_generic_callback_can_use_a_native_filter():
+    x = array((128, 128), np.float64, seed=41)
+    with scimetal.precision("strict"):
+        actual = mn.generic_gradient_magnitude(x, mn.sobel)
+    assert_identical(actual, sn.generic_gradient_magnitude(x, sn.sobel))
+    route = scimetal.last_route()
+    assert route.function == "ndimage.sobel" and route.engine == "cpu"
 
 
 def test_a3_declines_and_errors():
@@ -1075,19 +1047,13 @@ def test_a3_gradient_magnitude_single_axis_multipass_gpu(gpu, dtype):
     """Regression: K=1 multi-pass SQRT_SUM_SQ must not alias ping/res0 on GPU."""
     rng = np.random.default_rng(777)
     a = rng.standard_normal((2048, 2048)).astype(dtype)
-    for fn, args in [
-        ("gaussian_gradient_magnitude", (3.0,)),
-        ("generic_gradient_magnitude", (_ggm_deriv,)),
-    ]:
-        ref_fn = sn.gaussian_gradient_magnitude if fn == "gaussian_gradient_magnitude" else sn.generic_gradient_magnitude
-        ref_args = (3.0,) if fn == "gaussian_gradient_magnitude" else (_ggm_deriv_scipy,)
-        ref = ref_fn(a, *ref_args, axes=(0,))
-        with scimetal.precision("fast"), scimetal.device("auto"):
-            got1 = getattr(mn, fn)(a, *args, axes=(0,))
-            assert scimetal.last_route().engine == "gpu"
-            got2 = getattr(mn, fn)(a, *args, axes=(0,))
-        assert np.array_equal(got1, got2)
-        assert np.abs(got1 - ref).max() <= 1e-4 * max(float(np.abs(ref).max()), 1.0)
+    ref = sn.gaussian_gradient_magnitude(a, 3.0, axes=(0,))
+    with scimetal.precision("fast"), scimetal.device("auto"):
+        got1 = mn.gaussian_gradient_magnitude(a, 3.0, axes=(0,))
+        assert scimetal.last_route().engine == "gpu"
+        got2 = mn.gaussian_gradient_magnitude(a, 3.0, axes=(0,))
+    assert np.array_equal(got1, got2)
+    assert np.abs(got1 - ref).max() <= 1e-4 * max(float(np.abs(ref).max()), 1.0)
 
 
 def test_a3_rank1_dynamic_range_and_zero_tap_nan(gpu):
@@ -1120,21 +1086,6 @@ def test_a3_rank1_dynamic_range_and_zero_tap_nan(gpu):
             assert np.abs(ours[finite] - theirs[finite]).max() <= 1e-5
 
 
-def test_a3_generic_axis0_without_output_write_declines():
-    """Callbacks that do not write to axis-0 output fall back to SciPy."""
-    a = array((15, 20), np.float64, seed=43)
-
-    def ignore_output_deriv(inp, axis, output, mode, cval):
-        return mn.sobel(inp, axis=axis, mode=mode, cval=cval)
-
-    before = list(scimetal._dispatch.counters["ndimage.generic_gradient_magnitude"])
-    with scimetal.precision("strict"):
-        out = mn.generic_gradient_magnitude(a, ignore_output_deriv)
-    after = scimetal._dispatch.counters["ndimage.generic_gradient_magnitude"]
-    assert after == [before[0], before[1] + 1]
-    assert out.shape == a.shape and out.dtype == a.dtype
-
-
 # ---- A4: cross-float output=, NEON uniform_filter, GPU overhanging windows ------------------
 
 def test_a4_cross_float_output_all_routes_and_guard_rails(gpu):
@@ -1154,18 +1105,10 @@ def test_a4_cross_float_output_all_routes_and_guard_rails(gpu):
             ("laplace", (), dict(axes=())),
             ("gaussian_laplace", (1.2,), {}),
             ("gaussian_gradient_magnitude", (1.2,), {}),
-            ("generic_laplace", (_gl_deriv2,), dict(extra_arguments=(1.2,))),
-            ("generic_gradient_magnitude", (_ggm_deriv,), dict(extra_arguments=(1.2,))),
         ]
         with scimetal.precision("strict"), scimetal.device("cpu"):
             for fn, args, kw in calls:
-                ref_fn = getattr(sn, fn)
-                ref_args = args
-                if fn == "generic_laplace":
-                    ref_args = (_gl_deriv2_scipy,)
-                elif fn == "generic_gradient_magnitude":
-                    ref_args = (_ggm_deriv_scipy,)
-                ref = ref_fn(a, *ref_args, output=out_dtype, **kw)
+                ref = getattr(sn, fn)(a, *args, output=out_dtype, **kw)
                 ours = getattr(mn, fn)(a, *args, output=out_dtype, **kw)
                 assert scimetal.last_route().engine == "cpu"
                 assert_identical(ours, ref, f"strict {fn} {in_dtype}->{out_dtype}")
@@ -1177,13 +1120,7 @@ def test_a4_cross_float_output_all_routes_and_guard_rails(gpu):
 
         with scimetal.precision("fast"), scimetal.device("gpu"):
             for fn, args, kw in calls:
-                ref_fn = getattr(sn, fn)
-                ref_args = args
-                if fn == "generic_laplace":
-                    ref_args = (_gl_deriv2_scipy,)
-                elif fn == "generic_gradient_magnitude":
-                    ref_args = (_ggm_deriv_scipy,)
-                ref = ref_fn(a, *ref_args, output=out_dtype, **kw)
+                ref = getattr(sn, fn)(a, *args, output=out_dtype, **kw)
                 ours = getattr(mn, fn)(a, *args, output=out_dtype, **kw)
                 assert ours.dtype == out_dtype and ours.shape == a.shape
                 if fn in ("laplace", "gaussian_filter", "uniform_filter") and (args == (0.0,) or args == (1,) or kw.get("axes") == ()):
@@ -1192,21 +1129,6 @@ def test_a4_cross_float_output_all_routes_and_guard_rails(gpu):
                     assert scimetal.last_route().engine == "gpu"
                     assert scimetal.last_route().compute_dtype == "float32"
                     assert np.abs(ours.astype(np.float64) - ref.astype(np.float64)).max() <= 5e-3 * scale
-
-    # Multi-step trace with intermediate output=None and outer cross-float output= must decline cleanly to SciPy.
-    a64 = array((15, 20), np.float64, seed=402)
-    def two_step_cb(inp, axis, output, mode, cval):
-        t = mn.gaussian_filter1d(inp, 1.0, axis=axis, mode=mode, cval=cval)
-        return mn.correlate1d(t, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
-    def two_step_cb_scipy(inp, axis, output, mode, cval):
-        t = sn.gaussian_filter1d(inp, 1.0, axis=axis, mode=mode, cval=cval)
-        return sn.correlate1d(t, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
-    before_gl = list(scimetal._dispatch.counters["ndimage.generic_laplace"])
-    with scimetal.precision("strict"):
-        got = mn.generic_laplace(a64, two_step_cb, output=np.float32)
-        after_gl = scimetal._dispatch.counters["ndimage.generic_laplace"]
-        assert after_gl == [before_gl[0], before_gl[1] + 1]
-        assert_identical(got, sn.generic_laplace(a64, two_step_cb_scipy, output=np.float32))
 
     # A5 overflow guard rails + PrecisionWarning + explain() for float64->float32 and float32->float64.
     big = np.ones((1536, 2048), dtype=np.float64)
@@ -1241,329 +1163,6 @@ def test_a4_cross_float_output_all_routes_and_guard_rails(gpu):
             assert scimetal.last_route().engine == "gpu"
             assert scimetal.last_route().compute_dtype == "float32"
         assert not [w for w in w_list if issubclass(w.category, scimetal.PrecisionWarning)]
-
-
-def test_a4_trace_nopass_intermediate_cast_and_single_step_native(gpu):
-    """0-pass intermediate cross-float casts must decline cleanly; single-step 0-pass callbacks stay native."""
-    small_eps = np.full((15, 20), 1.0 + 1e-7, dtype=np.float64)
-    small_eps[::2, ::2] += 2e-7
-    overflow_arr = np.full((15, 20), 1.0, dtype=np.float64)
-    overflow_arr[3, 4] = 1e39
-
-    for outer_fn, mn_fn, sn_fn in (
-        ("ndimage.generic_laplace", mn.generic_laplace, sn.generic_laplace),
-        ("ndimage.generic_gradient_magnitude", mn.generic_gradient_magnitude, sn.generic_gradient_magnitude),
-    ):
-        for nopass_kind in ("gaussian", "uniform", "laplace_empty"):
-            def make_cb(mod, kind):
-                def cb(inp, axis, output, mode, cval):
-                    if kind == "gaussian":
-                        t = mod.gaussian_filter(inp, 0.0, output=np.float32)
-                    elif kind == "uniform":
-                        t = mod.uniform_filter(inp, size=1, output=np.float32)
-                    else:
-                        t = mod.laplace(inp, output=np.float32, axes=())
-                    return mod.correlate1d(t, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
-                return cb
-
-            cb_ours = make_cb(mn, nopass_kind)
-            cb_scipy = make_cb(sn, nopass_kind)
-            for arr in (small_eps, overflow_arr):
-                for outer_out in (None, np.float32):
-                    with scimetal.precision("strict"), np.errstate(invalid="ignore", over="ignore"):
-                        before = list(scimetal._dispatch.counters[outer_fn])
-                        got = mn_fn(arr, cb_ours, output=outer_out)
-                        after = scimetal._dispatch.counters[outer_fn]
-                        assert after == [before[0], before[1] + 1], f"{outer_fn} {nopass_kind} {outer_out}"
-                        ref = sn_fn(arr, cb_scipy, output=outer_out)
-                        assert got.dtype == ref.dtype and got.shape == ref.shape
-                        np.testing.assert_array_equal(np.isnan(got), np.isnan(ref))
-                        finite = ~np.isnan(ref)
-                        assert got[finite].tobytes() == ref[finite].tobytes()
-
-        # Reusing axis-0 _TraceOutput after a 0-pass cross-float write must also decline cleanly.
-        def reuse_out_ours(inp, axis, output, mode, cval):
-            if isinstance(output, np.ndarray) or not isinstance(output, np.dtype):
-                mn.gaussian_filter(inp, 0.0, output=output)
-                mn.correlate1d(output, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
-                return None
-            t = mn.gaussian_filter(inp, 0.0, output=output)
-            return mn.correlate1d(t, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
-
-        def reuse_out_scipy(inp, axis, output, mode, cval):
-            if isinstance(output, np.ndarray):
-                sn.gaussian_filter(inp, 0.0, output=output)
-                sn.correlate1d(output, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
-                return None
-            t = sn.gaussian_filter(inp, 0.0, output=output)
-            return sn.correlate1d(t, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
-
-        with scimetal.precision("strict"):
-            before = list(scimetal._dispatch.counters[outer_fn])
-            got = mn_fn(small_eps, reuse_out_ours, output=np.float32)
-            after = scimetal._dispatch.counters[outer_fn]
-            assert after == [before[0], before[1] + 1]
-            assert_identical(got, sn_fn(small_eps, reuse_out_scipy, output=np.float32))
-
-        # Single-step 0-pass callbacks (writing to axis-0 _TraceOutput, returning on axis 1+ with target=None)
-        # must remain native on both CPU and GPU!
-        def single_nopass_ours(inp, axis, output, mode, cval):
-            return mn.gaussian_filter(inp, 0.0, output=output)
-
-        def single_nopass_scipy(inp, axis, output, mode, cval):
-            return sn.gaussian_filter(inp, 0.0, output=output)
-
-        a64 = array((15, 20), np.float64, seed=405)
-        scale64 = max(float(np.abs(a64).max()), 1.0)
-        for outer_out in (None, np.float32):
-            with scimetal.precision("strict"), scimetal.device("cpu"):
-                got_cpu = mn_fn(a64, single_nopass_ours, output=outer_out)
-                assert scimetal.last_route().engine == "cpu"
-                assert_identical(got_cpu, sn_fn(a64, single_nopass_scipy, output=outer_out))
-            with scimetal.precision("fast"), scimetal.device("gpu"):
-                got_gpu = mn_fn(a64, single_nopass_ours, output=outer_out)
-                assert scimetal.last_route().engine == "gpu"
-                ref_gpu = sn_fn(a64, single_nopass_scipy, output=outer_out)
-                assert np.abs(got_gpu.astype(np.float64) - ref_gpu.astype(np.float64)).max() <= 1e-4 * scale64
-
-
-def test_a4_trace_axis1_return_dtype_mismatch_and_unwritten_output(gpu):
-    """Axis-1+ dtype mismatches and reading unwritten axis-0 _TraceOutput must decline cleanly to SciPy."""
-    small_eps = np.full((15, 20), 1.0 + 1e-7, dtype=np.float64)
-    small_eps[::2, ::2] += 2e-7
-    overflow_arr = np.full((32, 32), 1.0, dtype=np.float64)
-    overflow_arr[3, 4] = 1e39
-    rand64 = array((15, 20), np.float64, seed=406)
-
-    for outer_fn, mn_fn, sn_fn in (
-        ("ndimage.generic_laplace", mn.generic_laplace, sn.generic_laplace),
-        ("ndimage.generic_gradient_magnitude", mn.generic_gradient_magnitude, sn.generic_gradient_magnitude),
-    ):
-        # 1. Axis 1+ returns 0-pass or 1-pass float32 when outer output is None or float64.
-        for kind in ("0pass_f32", "1pass_f32"):
-            def make_cb_f32(mod, k):
-                def cb(inp, axis, output, mode, cval):
-                    if isinstance(output, np.ndarray) or not isinstance(output, np.dtype):
-                        return mod.correlate1d(inp, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
-                    if k == "0pass_f32":
-                        return mod.gaussian_filter(inp, 0.0, output=np.float32)
-                    return mod.correlate1d(inp, [1, -2, 1], axis=axis, output=np.float32, mode=mode, cval=cval)
-                return cb
-
-            cb_ours = make_cb_f32(mn, kind)
-            cb_scipy = make_cb_f32(sn, kind)
-            for arr in (small_eps, overflow_arr, rand64):
-                for outer_out in (None, np.float64):
-                    for policy, device in (("strict", "cpu"), ("fast", "auto")):
-                        with scimetal.precision(policy), scimetal.device(device), np.errstate(invalid="ignore", over="ignore"):
-                            before = list(scimetal._dispatch.counters[outer_fn])
-                            got = mn_fn(arr, cb_ours, output=outer_out)
-                            after = scimetal._dispatch.counters[outer_fn]
-                            assert after == [before[0], before[1] + 1], f"{outer_fn} {kind} {outer_out} {policy}/{device}"
-                            ref = sn_fn(arr, cb_scipy, output=outer_out)
-                            assert got.dtype == ref.dtype and got.shape == ref.shape
-                            np.testing.assert_array_equal(np.isnan(got), np.isnan(ref))
-                            np.testing.assert_array_equal(np.isinf(got), np.isinf(ref))
-                            not_nan = ~np.isnan(ref)
-                            assert got[not_nan].tobytes() == ref[not_nan].tobytes()
-
-        # 2. Axis 1+ returns 1-pass float64 or returns inp directly when outer output is float32.
-        for kind in ("1pass_f64", "return_inp"):
-            def make_cb_f64(mod, k):
-                def cb(inp, axis, output, mode, cval):
-                    if isinstance(output, np.ndarray) or not isinstance(output, np.dtype):
-                        return mod.correlate1d(inp, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
-                    if k == "return_inp":
-                        return inp
-                    return mod.correlate1d(inp, [1, -2, 1], axis=axis, output=np.float64, mode=mode, cval=cval)
-                return cb
-
-            cb_ours = make_cb_f64(mn, kind)
-            cb_scipy = make_cb_f64(sn, kind)
-            for arr in (small_eps, overflow_arr, rand64):
-                with scimetal.precision("strict"), np.errstate(invalid="ignore", over="ignore"):
-                    before = list(scimetal._dispatch.counters[outer_fn])
-                    got = mn_fn(arr.copy(), cb_ours, output=np.float32)
-                    after = scimetal._dispatch.counters[outer_fn]
-                    assert after == [before[0], before[1] + 1], f"{outer_fn} {kind}"
-                    ref = sn_fn(arr.copy(), cb_scipy, output=np.float32)
-                    assert got.dtype == ref.dtype and got.shape == ref.shape
-                    np.testing.assert_array_equal(np.isnan(got), np.isnan(ref))
-                    not_nan = ~np.isnan(ref)
-                    assert got[not_nan].tobytes() == ref[not_nan].tobytes()
-
-        # 3. Reading unwritten _TraceOutput on axis 0 declines cleanly to SciPy.
-        def read_unwritten_inplace_ours(inp, axis, output, mode, cval):
-            if isinstance(output, np.ndarray) or not isinstance(output, np.dtype):
-                return mn.correlate1d(output, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
-            return mn.correlate1d(inp, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
-
-        def read_unwritten_inplace_scipy(inp, axis, output, mode, cval):
-            if isinstance(output, np.ndarray):
-                return sn.correlate1d(output, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
-            return sn.correlate1d(inp, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
-
-        def read_unwritten_new_ours(inp, axis, output, mode, cval):
-            if isinstance(output, np.ndarray) or not isinstance(output, np.dtype):
-                return mn.correlate1d(output, [1, -2, 1], axis=axis, mode=mode, cval=cval)
-            return mn.correlate1d(inp, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
-
-        def read_unwritten_new_scipy(inp, axis, output, mode, cval):
-            if isinstance(output, np.ndarray):
-                return sn.correlate1d(output, [1, -2, 1], axis=axis, mode=mode, cval=cval)
-            return sn.correlate1d(inp, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
-
-        for cb_ours, cb_scipy in (
-            (read_unwritten_inplace_ours, read_unwritten_inplace_scipy),
-            (read_unwritten_new_ours, read_unwritten_new_scipy),
-        ):
-            with scimetal.precision("strict"):
-                before = list(scimetal._dispatch.counters[outer_fn])
-                got = mn_fn(rand64, cb_ours)
-                after = scimetal._dispatch.counters[outer_fn]
-                assert after == [before[0], before[1] + 1], f"{outer_fn} unwritten"
-                assert_identical(got, sn_fn(rand64, cb_scipy))
-
-
-def test_a4_trace_axis1_return_input_and_cross_axis_output_reuse(gpu):
-    """Returning inp on axis >= 1 or reusing axis-0 _TraceOutput across axes must decline cleanly to SciPy."""
-    for dtype in (np.float64, np.float32):
-        a3 = array((8, 12, 16), dtype, seed=407)
-        for outer_fn, mn_fn, sn_fn in (
-            ("ndimage.generic_laplace", mn.generic_laplace, sn.generic_laplace),
-            ("ndimage.generic_gradient_magnitude", mn.generic_gradient_magnitude, sn.generic_gradient_magnitude),
-        ):
-            def make_ret_inp(mod):
-                def cb(inp, axis, output, mode, cval):
-                    if isinstance(output, np.ndarray) or not isinstance(output, np.dtype):
-                        return mod.correlate1d(inp, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
-                    if axis == 1:
-                        return inp
-                    return mod.correlate1d(inp, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
-                return cb
-
-            cb_ours = make_ret_inp(mn)
-            cb_scipy = make_ret_inp(sn)
-            for outer_out in (None, dtype):
-                ref = sn_fn(a3.copy(), cb_scipy, output=outer_out)
-                scale = max(float(np.abs(ref).max()), 1.0)
-                for policy, device in (("strict", "cpu"), ("fast", "gpu")):
-                    with scimetal.precision(policy), scimetal.device(device):
-                        before = list(scimetal._dispatch.counters[outer_fn])
-                        got = mn_fn(a3.copy(), cb_ours, output=outer_out)
-                        after = scimetal._dispatch.counters[outer_fn]
-                        assert after == [before[0], before[1] + 1], f"{outer_fn} ret_inp {dtype} {outer_out}"
-                    assert got.dtype == ref.dtype and got.shape == ref.shape
-                    if policy == "strict":
-                        assert got.tobytes() == ref.tobytes()
-                    else:
-                        assert np.abs(got - ref).max() <= 1e-3 * scale
-
-    a2 = array((15, 20), np.float64, seed=408)
-    a3 = array((8, 12, 16), np.float64, seed=409)
-    for arr in (a2, a3):
-        for outer_fn, mn_fn, sn_fn in (
-            ("ndimage.generic_laplace", mn.generic_laplace, sn.generic_laplace),
-            ("ndimage.generic_gradient_magnitude", mn.generic_gradient_magnitude, sn.generic_gradient_magnitude),
-        ):
-            for kind in ("return_out0", "read_out0", "write_out0"):
-                def make_cross_out0(mod, k):
-                    saved = {}
-
-                    def cb(inp, axis, output, mode, cval):
-                        if isinstance(output, np.ndarray) or not isinstance(output, np.dtype):
-                            saved["out0"] = output
-                            return mod.correlate1d(inp, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
-                        if k == "return_out0":
-                            return saved["out0"]
-                        if k == "read_out0":
-                            return mod.correlate1d(saved["out0"], [1, -2, 1], axis=axis, output=output,
-                                                  mode=mode, cval=cval)
-                        return mod.correlate1d(inp, [1, -2, 1], axis=axis, output=saved["out0"],
-                                              mode=mode, cval=cval)
-                    return cb
-
-                for outer_out in (None, np.float64):
-                    ref = sn_fn(arr.copy(), make_cross_out0(sn, kind), output=outer_out)
-                    scale = max(float(np.abs(ref).max()), 1.0)
-                    for policy, device in (("strict", "cpu"), ("fast", "gpu")):
-                        with scimetal.precision(policy), scimetal.device(device):
-                            before = list(scimetal._dispatch.counters[outer_fn])
-                            got = mn_fn(arr.copy(), make_cross_out0(mn, kind), output=outer_out)
-                            after = scimetal._dispatch.counters[outer_fn]
-                            assert after == [before[0], before[1] + 1], f"{outer_fn} {kind} {arr.shape} {outer_out}"
-                        assert got.dtype == ref.dtype and got.shape == ref.shape
-                        if policy == "strict":
-                            assert got.tobytes() == ref.tobytes()
-                        else:
-                            assert np.abs(got - ref).max() <= 1e-3 * scale
-
-
-def test_a4_trace_cross_axis_derived_token_reuse(gpu):
-    """Derived _TraceTokens created on axis i must expire on axis j > i and decline cleanly to SciPy."""
-    scenarios = [
-        ("tmp0_return_twice", None),
-        ("tmp0_return_then_read", None),
-        ("tmp0_read_both", None),
-        ("axis1_save_then_return", None),
-        ("axis1_save_then_read", None),
-        ("axis1_save_then_return", (2, 0, 1)),
-        ("axis1_save_then_read", (2, 0, 1)),
-    ]
-    for dtype in (np.float64, np.float32):
-        a3 = array((8, 12, 16), dtype, seed=410)
-        for outer_fn, mn_fn, sn_fn in (
-            ("ndimage.generic_laplace", mn.generic_laplace, sn.generic_laplace),
-            ("ndimage.generic_gradient_magnitude", mn.generic_gradient_magnitude, sn.generic_gradient_magnitude),
-        ):
-            for kind, axes in scenarios:
-                second_axis = 1 if axes is None else axes[1]
-
-                def make_cb(mod, k, ax1):
-                    saved = {}
-
-                    def cb(inp, axis, output, mode, cval):
-                        if isinstance(output, np.ndarray) or not isinstance(output, np.dtype):
-                            if k.startswith("tmp0_"):
-                                saved["tmp0"] = mod.correlate1d(inp, [1, -2, 1], axis=axis, mode=mode, cval=cval)
-                            return mod.correlate1d(inp, [1, -2, 1], axis=axis, output=output, mode=mode, cval=cval)
-                        if axis == ax1:
-                            if k in ("tmp0_return_twice", "tmp0_return_then_read"):
-                                return saved["tmp0"]
-                            if k == "tmp0_read_both":
-                                return mod.correlate1d(saved["tmp0"], [1, -2, 1], axis=axis, output=output,
-                                                      mode=mode, cval=cval)
-                            saved["tok1"] = mod.correlate1d(inp, [1, -2, 1], axis=axis, output=output,
-                                                            mode=mode, cval=cval)
-                            return saved["tok1"]
-                        if k == "tmp0_return_twice":
-                            return saved["tmp0"]
-                        if k in ("tmp0_return_then_read", "tmp0_read_both"):
-                            return mod.correlate1d(saved["tmp0"], [1, -2, 1], axis=axis, output=output,
-                                                  mode=mode, cval=cval)
-                        if k == "axis1_save_then_return":
-                            return saved["tok1"]
-                        return mod.correlate1d(saved["tok1"], [1, -2, 1], axis=axis, output=output,
-                                              mode=mode, cval=cval)
-
-                    return cb
-
-                for outer_out in (None, dtype):
-                    ref = sn_fn(a3.copy(), make_cb(sn, kind, second_axis), output=outer_out, axes=axes)
-                    scale = max(float(np.abs(ref).max()), 1.0)
-                    for policy, device in (("strict", "cpu"), ("fast", "gpu")):
-                        with scimetal.precision(policy), scimetal.device(device):
-                            before = list(scimetal._dispatch.counters[outer_fn])
-                            got = mn_fn(a3.copy(), make_cb(mn, kind, second_axis), output=outer_out, axes=axes)
-                            after = scimetal._dispatch.counters[outer_fn]
-                            assert after == [before[0], before[1] + 1], (
-                                f"{outer_fn} {kind} axes={axes} {dtype} {outer_out} {policy}/{device}"
-                            )
-                        assert got.dtype == ref.dtype and got.shape == ref.shape
-                        if policy == "strict":
-                            assert got.tobytes() == ref.tobytes()
-                        else:
-                            assert np.abs(got - ref).max() <= 1e-3 * scale
 
 
 def test_a4_uniform_neon_and_tiles_bit_identical():
@@ -1785,7 +1384,7 @@ def _int_bool_array(shape, dtype, seed=20261119):
 
 
 @pytest.mark.parametrize("dtype", _INT_BOOL_DTYPES)
-def test_a6_all_15_filters_integer_bool_strict_bit_identical(dtype):
+def test_a6_integer_bool_strict_bit_identical(dtype):
     a = _int_bool_array((19, 23), dtype, seed=10 + int(np.dtype(dtype).num))
     w1d = np.array([-0.5, 1.25, -0.5], dtype=np.float64)
     w2d = np.array([[0.0, -0.5, 0.25], [0.5, 1.0, -0.25], [0.0, 0.5, -0.5]], dtype=np.float64)
@@ -1803,19 +1402,12 @@ def test_a6_all_15_filters_integer_bool_strict_bit_identical(dtype):
         ("laplace", (), dict(mode="reflect")),
         ("gaussian_laplace", (1.2,), dict(mode="reflect")),
         ("gaussian_gradient_magnitude", (1.2,), dict(mode="reflect")),
-        ("generic_laplace", (_gl_deriv2,), dict(extra_arguments=(1.2,))),
-        ("generic_gradient_magnitude", (_ggm_deriv,), dict(extra_arguments=(1.2,))),
     )
     with scimetal.precision("strict"), scimetal.device("auto"):
         for fn, args, kw in calls:
             ours = getattr(mn, fn)(a, *args, **kw)
             assert scimetal.last_route().engine == "cpu", f"{fn} {dtype}: {scimetal.last_route()}"
-            if fn == "generic_laplace":
-                ref = sn.generic_laplace(a, _gl_deriv2_scipy, **kw)
-            elif fn == "generic_gradient_magnitude":
-                ref = sn.generic_gradient_magnitude(a, _ggm_deriv_scipy, **kw)
-            else:
-                ref = getattr(sn, fn)(a, *args, **kw)
+            ref = getattr(sn, fn)(a, *args, **kw)
             assert_identical(ours, ref, f"strict {fn} {dtype}")
 
 
@@ -1857,17 +1449,10 @@ def test_a6_bool_raw_bytes_and_cross_dtype_outputs():
                 ("laplace", (), sn.laplace),
                 ("gaussian_laplace", (1.1,), sn.gaussian_laplace),
                 ("gaussian_gradient_magnitude", (1.1,), sn.gaussian_gradient_magnitude),
-                ("generic_laplace", (_gl_deriv2,), None),
-                ("generic_gradient_magnitude", (_ggm_deriv,), None),
             ):
                 ours = getattr(mn, fn)(a, *args, output=out_dt)
                 assert scimetal.last_route().engine == "cpu"
-                if fn == "generic_laplace":
-                    ref = sn.generic_laplace(a, _gl_deriv2_scipy, output=out_dt)
-                elif fn == "generic_gradient_magnitude":
-                    ref = sn.generic_gradient_magnitude(a, _ggm_deriv_scipy, output=out_dt)
-                else:
-                    ref = ref_fn(a, *args, output=out_dt)
+                ref = ref_fn(a, *args, output=out_dt)
                 assert_identical(ours, ref, f"cross {fn} {in_dt}->{out_dt}")
 
 
@@ -1926,23 +1511,7 @@ def test_a6_gpu_fast_uint8_int16_and_large_int_guard(gpu):
 def test_review_regressions():
     a = array((10, 12), np.float64, seed=123)
 
-    # 1. _TraceToken handed to non-separable scimetal.ndimage routes declines cleanly to SciPy.
-    def dense_deriv(inp, axis, output, mode, cval):
-        w = np.ones((3, 3), dtype=np.float64) / 9.0
-        return mn.correlate(inp, w, output=output, mode=mode, cval=cval)
-
-    def dense_deriv_scipy(inp, axis, output, mode, cval):
-        w = np.ones((3, 3), dtype=np.float64) / 9.0
-        return sn.correlate(inp, w, output=output, mode=mode, cval=cval)
-
-    from scimetal._dispatch import counters
-
-    before_gl_fall = counters["ndimage.generic_laplace"][1]
-    got_gl = mn.generic_laplace(a, dense_deriv)
-    assert counters["ndimage.generic_laplace"][1] == before_gl_fall + 1
-    assert_identical(got_gl, sn.generic_laplace(a, dense_deriv_scipy))
-
-    # 2. Negative and out-of-range scalar axes in gaussian_laplace / gaussian_gradient_magnitude.
+    # Negative and out-of-range scalar axes in gaussian_laplace / gaussian_gradient_magnitude.
     with scimetal.precision("strict"), scimetal.device("cpu"):
         for fn in ("gaussian_laplace", "gaussian_gradient_magnitude"):
             got = getattr(mn, fn)(a, 1.0, axes=-1)
@@ -1951,10 +1520,10 @@ def test_review_regressions():
             assert_declined_like_scipy(fn, a, 1.0, axes=5)
             assert_declined_like_scipy(fn, a, 1.0, axes=-5)
 
-    # 3. String non-numeric output dtype "bool" raises RuntimeError like SciPy.
+    # String non-numeric output dtype "bool" raises RuntimeError like SciPy.
     assert_declined_like_scipy("gaussian_filter", a, 1.0, output="bool")
 
-    # 4. Self-overlapping strided output view declines cleanly to SciPy.
+    # Self-overlapping strided output view declines cleanly to SciPy.
     base = np.zeros(20, dtype=np.float64)
     overlap = np.lib.stride_tricks.as_strided(base, shape=(10, 12), strides=(8, 0))
     base_ref = np.zeros(20, dtype=np.float64)
@@ -1964,22 +1533,14 @@ def test_review_regressions():
     sn.gaussian_filter(a, 1.0, output=overlap_ref)
     assert_identical(base, base_ref)
 
-    # 5. Generator extra_arguments in generic_laplace / generic_gradient_magnitude declines to SciPy
-    #    so iterator exhaustion matches SciPy's TypeError on the second axis.
+    # SciPy consumes generator extra_arguments on the first axis.
     def scale_deriv(inp, axis, output, mode, cval, factor):
         return mn.correlate1d(inp, [factor, -2.0 * factor, factor], axis=axis, output=output, mode=mode, cval=cval)
 
-    def scale_deriv_scipy(inp, axis, output, mode, cval, factor):
-        return sn.correlate1d(inp, [factor, -2.0 * factor, factor], axis=axis, output=output, mode=mode, cval=cval)
+    with pytest.raises(TypeError, match="factor"):
+        mn.generic_laplace(a, scale_deriv, extra_arguments=iter((2.5,)))
 
-    with pytest.raises(TypeError):
-        sn.generic_laplace(a, scale_deriv_scipy, extra_arguments=(x for x in (2.5,)))
-    before_gen_fall = counters["ndimage.generic_laplace"][1]
-    with pytest.raises(TypeError):
-        mn.generic_laplace(a, scale_deriv, extra_arguments=(x for x in (2.5,)))
-    assert counters["ndimage.generic_laplace"][1] == before_gen_fall + 1
-
-    # 6. Unaligned float64 weights work cleanly in correlate1d and correlate.
+    # Unaligned float64 weights work cleanly in correlate1d and correlate.
     raw_w = bytearray(9 * 8 + 1)
     unaligned_w1 = np.frombuffer(raw_w, dtype=np.float64, count=3, offset=1)
     unaligned_w1[:] = [0.25, 0.5, 0.25]

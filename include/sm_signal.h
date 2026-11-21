@@ -14,9 +14,9 @@ extern "C" {
  *
  * Engines and error bounds:
  * - Direct CPU: computes in input precision when both inputs are single
- *   precision (float32/complex64) and in double precision otherwise, matching
- *   SciPy's _correlate_nd.cc / _firfilter.cc accumulation and preserving
- *   0.0 * NaN = NaN.
+ *   precision (float32/complex64) and in double precision otherwise. Its
+ *   dense tap order can round differently from SciPy's convolve2d. The Python
+ *   strict policy delegates that function to the installed SciPy.
  * - Direct GPU: computes in single precision (float32/complex64). For finite
  *   inputs and weights, error is bounded by <= u * M * max|in1, fill| * max|in2|
  *   (u = 2^-24, M = kernel elements), with subnormals below ~1.2e-38 flushed

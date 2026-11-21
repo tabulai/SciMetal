@@ -15,8 +15,8 @@ import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 FUNCTIONS = ("convolve", "convolve1d", "correlate", "correlate1d", "gaussian_filter", "gaussian_filter1d",
-             "gaussian_gradient_magnitude", "gaussian_laplace", "generic_gradient_magnitude", "generic_laplace",
-             "laplace", "prewitt", "sobel", "uniform_filter", "uniform_filter1d")
+             "gaussian_gradient_magnitude", "gaussian_laplace", "laplace", "prewitt", "sobel",
+             "uniform_filter", "uniform_filter1d")
 
 
 def run_oracle(**settings):
@@ -90,6 +90,10 @@ INT_INTERMEDIATE_QUANTIZATION = re.compile(
     r"test_(prewitt|sobel)0[123]\[numpy-uint(32|64)\]"
     r"|test_gaussian_(laplace|gradient_magnitude)0[12]\[numpy-int32\]"
 )
+# SciPy's generic_laplace adds the integer outputs of its derivative
+# callbacks. The fused GPU gaussian_laplace rounds to an integer only after
+# summing the two float32 derivatives.
+INT_GENERIC_LAPLACE = re.compile(r"test_generic_laplace01\[numpy-u?int(8|16|32|64)\]")
 
 
 def test_gpu_route_fails_only_scipy_tests_that_need_more_than_float32(native_filters):
@@ -99,18 +103,20 @@ def test_gpu_route_fails_only_scipy_tests_that_need_more_than_float32(native_fil
         pytest.skip("no GPU engine in CPU-only build")
     code, output, counters = run_oracle(SCIMETAL_ORACLE_PRECISION="fast", SCIMETAL_ORACLE_DEVICE="gpu")
     failed = re.findall(r"^FAILED \S*::(.+?)(?: - .*)?$", output, re.M)
-    unexpected = [name for name in failed if not (FLOAT32_ACCURACY.fullmatch(name) or INT_INTERMEDIATE_QUANTIZATION.fullmatch(name))]
+    allowed = (FLOAT32_ACCURACY, INT_INTERMEDIATE_QUANTIZATION, INT_GENERIC_LAPLACE)
+    unexpected = [name for name in failed if not any(pattern.fullmatch(name) for pattern in allowed)]
     assert not unexpected, f"not float32/int-intermediate accuracy: {unexpected}\n{summary(output)}"
     assert code in (0, 1), summary(output)  # 1: some tests failed; anything else is a broken run
     assert set(counters) == set(FUNCTIONS), summary(output)
     for name, (native, _) in counters.items():
         assert native > 0, f"{name} never ran natively in GPU mode:\n{summary(output)}"
-    # Differences are either tiny rounding (below 1e-3 for FLOAT32_ACCURACY) or
-    # intermediate pass clamping/truncation (<= 20 for INT_INTERMEDIATE_QUANTIZATION).
+    # Bound rounding and intermediate integer quantization differences.
     differences = [float(x) for x in re.findall(r"Max absolute difference among violations: (\S+)", output)]
     assert len(differences) == len(failed), summary(output)
     for name, d in zip(failed, differences):
-        if INT_INTERMEDIATE_QUANTIZATION.fullmatch(name):
+        if INT_GENERIC_LAPLACE.fullmatch(name):
+            assert d <= 1, f"{name}: unexpected int derivative sum difference {d}\n{summary(output)}"
+        elif INT_INTERMEDIATE_QUANTIZATION.fullmatch(name):
             assert d <= 20, f"{name}: unexpected int quantization diff {d}\n{summary(output)}"
         else:
             assert d < 1e-3, f"{name}: unexpected float32 accuracy diff {d}\n{summary(output)}"

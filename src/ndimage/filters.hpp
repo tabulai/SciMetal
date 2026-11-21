@@ -79,7 +79,7 @@ BufferPtr run_cpu_composite(sm_context*, const CompositePlan&, const void* input
 
 // GPU engine: single precision, one command buffer. gpu_supports says whether
 // the plan fits the kernels' 32-bit indexing and the single-buffer time budget.
-// If narrowing or filter-gain amplification overflows float32: when
+// If the input range or filter gain rules out float32 execution: when
 // `allow_cpu_fallback` is true (SM_EXECUTION_AUTO), returns null and writes the
 // reason to `overflow_reason` before any GPU operation begins; when false
 // (SM_EXECUTION_GPU), throws SM_ENOTSUP.

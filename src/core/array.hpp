@@ -49,6 +49,16 @@ struct ConvertReport {
     bool has_nonfinite = false;  // input contained at least one +-inf or NaN
     double max_finite = 0.0;     // largest |x| among finite elements
     double max_magnitude = 0.0;  // max_finite, or INFINITY if +-inf was present
+
+    // Metal filter arithmetic flushes float32 subnormals to zero. Compare
+    // the source peak before narrowing, including when the source is float32.
+    const char* filter_input_range_error() const noexcept {
+        if (inexact_int) return "integer input exceeds exact float32 range (|x| >= 2^24)";
+        if (overflowed) return "float64 input overflowed float32";
+        if (max_finite > 0.0 && max_finite < std::numeric_limits<float>::min())
+            return "all finite nonzero input values underflow the normal float32 range";
+        return nullptr;
+    }
 };
 
 // UB-free arm64-exact saturating truncations from double to 32/64-bit integer.

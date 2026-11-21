@@ -109,9 +109,6 @@ std::string check_parameters_range(const Plan& plan) {
 
 std::string check_chain_gain_range(const std::vector<Pass>& passes, const array::ConvertReport& report,
                                    bool input_is_double, double& out_m, double& out_e) {
-    if (report.overflowed) {
-        return "float64 input overflowed float32; re-routed to CPU";
-    }
     constexpr double u = 0x1p-24;
     double m = std::fabs(static_cast<double>(static_cast<float>(report.max_finite)));
     double e = u * m;
@@ -171,9 +168,6 @@ std::string check_gain_range(const Plan& plan, const array::ConvertReport& repor
 
 std::string check_composite_gain_range(const CompositePlan& plan, const array::ConvertReport& report,
                                        bool input_is_double) {
-    if (report.overflowed) {
-        return "float64 input overflowed float32; re-routed to CPU";
-    }
     constexpr double u = 0x1p-24;
     const size_t k_count = plan.chains.size();
     double sum_m = 0.0, sum_e = 0.0, sq_sum = 0.0;
@@ -226,12 +220,9 @@ BufferPtr run_gpu(sm_context* context, const Plan& plan, const sm_array& input, 
     array::ConvertReport report;
     BufferPtr single[2];
     single[0] = array::load_single(context, input, plan.shape, &report, /*raw_bool=*/true);
-    if (array::is_int_or_bool(plan.dtype) && report.inexact_int) {
-        single[0].reset();
-        if (!allow_cpu_fallback) {
-            throw Error(SM_ENOTSUP, "integer input exceeds exact float32 range (|x| >= 2^24); forced GPU cannot fall back to CPU");
-        }
-        overflow_reason = "integer input exceeds exact float32 range (|x| >= 2^24); re-routed to CPU";
+    if (const char* error = report.filter_input_range_error()) {
+        if (!allow_cpu_fallback) throw Error(SM_ENOTSUP, error);
+        overflow_reason = error;
         return BufferPtr{};
     }
     overflow_reason = check_gain_range(plan, report, input_is_double);
@@ -324,12 +315,9 @@ BufferPtr run_gpu_composite(sm_context* context, const CompositePlan& plan, cons
 
     array::ConvertReport report;
     BufferPtr single_in = array::load_single(context, input, plan.shape, &report, /*raw_bool=*/true);
-    if (array::is_int_or_bool(plan.in_dtype) && report.inexact_int) {
-        single_in.reset();
-        if (!allow_cpu_fallback) {
-            throw Error(SM_ENOTSUP, "integer input exceeds exact float32 range (|x| >= 2^24); forced GPU cannot fall back to CPU");
-        }
-        overflow_reason = "integer input exceeds exact float32 range (|x| >= 2^24); re-routed to CPU";
+    if (const char* error = report.filter_input_range_error()) {
+        if (!allow_cpu_fallback) throw Error(SM_ENOTSUP, error);
+        overflow_reason = error;
         return BufferPtr{};
     }
     overflow_reason = check_composite_gain_range(plan, report, input_is_double);
