@@ -12,18 +12,18 @@ The wheel supports Apple Silicon Macs running macOS 15 or later with Python 3.11
 or later. pip installs NumPy and SciPy as dependencies.
 
 ```sh
-python -m pip install scimetal
+python -m pip install --upgrade scimetal
 ```
 
 | Installation | Native `ndimage` filters | `fft` transforms | `signal` functions |
 |---|---:|---:|---:|
+| [PyPI 0.1.1 wheel](https://pypi.org/project/scimetal/0.1.1/) | 28 | 12 | 7 |
 | [PyPI 0.1.0 wheel](https://pypi.org/project/scimetal/0.1.0/) | 13 | 12 | 7 |
-| This source checkout | 28 | 12 | 7 |
 
-Both provide `scimetal.ndimage.median_filter`. In the 0.1.0 wheel it calls SciPy
-directly. Commit `686cf93` added native routes for median and 14 other filters in
-this checkout. Commit `c10810c` improved routing for wide windows and thin images.
-Use `scimetal.accelerated()` to see which functions have native routes in your installation.
+Version 0.1.1 adds native routes for 15 minimum, maximum, rank, median, percentile,
+and grayscale morphology filters. In 0.1.0 these functions called SciPy directly.
+The new release can use a sliding CPU window for wide 1-D median filters and Metal
+for shorter windows. Use `scimetal.accelerated()` to inspect your installation.
 
 ## Requirements
 
@@ -33,7 +33,7 @@ Use `scimetal.accelerated()` to see which functions have native routes in your i
 
 ## Build, install, and verify
 
-To install the development filters, run the following from this checkout with Python 3.11+
+To install from source, run the following from this checkout with Python 3.11+
 and the source-build tools listed above. The `test` extra installs pytest and Hypothesis.
 
 ```sh
@@ -124,7 +124,7 @@ in the current context. Functions exposed directly from SciPy leave that record 
 `precision(...)` and `device(...)` apply within a `with` block in the current thread or
 task. The setters `set_precision`, `set_device`, and `set_small_inputs` change process-wide defaults.
 
-## Native coverage in this checkout
+## Native coverage in 0.1.1
 
 - **`ndimage`** (28 filters):
   - Linear & derivative filters (13): `convolve1d`, `correlate1d`, `gaussian_filter1d`,

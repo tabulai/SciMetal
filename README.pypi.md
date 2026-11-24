@@ -10,34 +10,31 @@ The wheel supports Apple Silicon Macs running macOS 15 or later with Python
 3.11 or later. pip installs NumPy and SciPy as dependencies.
 
 ```sh
-python -m pip install scimetal
+python -m pip install --upgrade scimetal
 ```
 
 ## Native coverage
 
-The **0.1.0 wheel** provides 13 native `ndimage` filters, including Gaussian,
-uniform, Sobel, and Laplace filters. It also includes 12 `fft` transforms and
-7 `signal` functions. Other functions, including `ndimage.median_filter`, remain
-available through SciPy. [PyPI release files](https://pypi.org/project/scimetal/0.1.0/#files)
-
-The **development checkout** adds 15 native `ndimage` functions for minimum and
-maximum filters, rank, median and percentile filters, and grayscale morphology
-such as `grey_opening`, `grey_closing`, and `white_tophat`.
-[Project documentation](https://github.com/tabulai/SciMetal#readme)
+**SciMetal 0.1.1** provides native routes for 28 `ndimage` filters, 12 `fft`
+transforms, and 7 `signal` functions. This release adds 15 image filters to the
+13 in 0.1.0. The additions cover minimum and maximum filters, rank, median, and
+percentile filters, and grayscale morphology such as `grey_opening`,
+`grey_closing`, and `white_tophat`. SciMetal chooses an engine for each call
+based on the input, filter window, and precision policy.
+[Full coverage and benchmarks](https://github.com/tabulai/SciMetal/tree/v0.1.1#readme)
 
 ## Usage
 
 ```python
 import numpy as np
 import scimetal
-from scimetal.ndimage import gaussian_filter
+from scimetal.ndimage import median_filter
 
 native_filters = scimetal.accelerated()["ndimage"]
 print(native_filters)                     # Registered filters in this installation
-print("median_filter" in native_filters)  # False in the 0.1.0 wheel
 
 image = np.random.default_rng(0).standard_normal((1024, 1024), dtype=np.float32)
-smoothed = gaussian_filter(image, sigma=3.0)
+denoised = median_filter(image, size=7)
 print(scimetal.explain())                 # Engine and compute dtype for this call
 ```
 

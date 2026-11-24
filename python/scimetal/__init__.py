@@ -26,7 +26,7 @@ from ._config import (device, get_device, get_precision, precision, set_device,
 from ._dispatch import NotAccelerated, PrecisionWarning, Route, explain, last_route
 from ._fallback import install_finder as _install_finder
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"
 
 _install_finder()
 
