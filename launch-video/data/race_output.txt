@@ -1,0 +1,7 @@
+4096 x 4096 float64, Apple M1 Ultra
+
+gaussian_filter  sigma=3   scipy   404.2 ms   scimetal   3.7 ms     108x
+gaussian_laplace sigma=3   scipy   816.9 ms   scimetal   4.4 ms     184x
+convolve2d       5x5       scipy   573.5 ms   scimetal   3.6 ms     160x
+
+strict: 7.3 ms, identical to scipy: True
