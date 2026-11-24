@@ -316,3 +316,14 @@ CA::MetalDrawable* pMetalDrawable = pMetalLayer->nextDrawable();
 
 // ...
 ```
+
+## SciMetal integration
+
+With `SM_ENABLE_METAL=ON`, [SciMetal's CMake build](../../CMakeLists.txt) adds
+`SM_METAL_CPP_DIR` as a private system include directory and links the Metal
+and Foundation frameworks. The default include directory is `third_party/metal-cpp`.
+
+[The runtime header](../../src/runtime/metal_device.hpp) includes
+`<Foundation/Foundation.hpp>` and `<Metal/Metal.hpp>`.
+[metal_storage.cpp](../../src/runtime/metal_storage.cpp) is the single translation
+unit that defines `NS_PRIVATE_IMPLEMENTATION` and `MTL_PRIVATE_IMPLEMENTATION`.

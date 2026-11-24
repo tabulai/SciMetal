@@ -2,13 +2,9 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/scimetal)](https://pypi.org/project/scimetal/)
 
-SciPy's API, accelerated on Apple Silicon: Metal compute kernels and a multithreaded
-Accelerate/NEON CPU engine behind a versioned C ABI (`SM_ARRAY_ABI_VERSION` 3), with
-Python namespaces mirroring `scipy`.
-
-Three families have native routes today (`scimetal.accelerated()`). Every other function
-and declined call delegates transparently to SciPy with caller arguments untouched.
-Design rationale, probes, and milestones live in [PLAN.md](PLAN.md).
+SciMetal accelerates SciPy image filters, Fourier transforms, and signal convolutions
+on Apple Silicon. Its Python namespaces mirror SciPy. A call can use Metal, a
+multithreaded Accelerate/NEON CPU engine, or SciPy itself. [Watch the launch video](launch-video/scimetal-launch.mp4)
 
 ## Install from PyPI
 
@@ -16,21 +12,39 @@ The wheel supports Apple Silicon Macs running macOS 15 or later with Python 3.11
 or later. pip installs NumPy and SciPy as dependencies.
 
 ```sh
-pip install scimetal
+python -m pip install scimetal
 ```
+
+| Installation | Native `ndimage` filters | `fft` transforms | `signal` functions |
+|---|---:|---:|---:|
+| [PyPI 0.1.0 wheel](https://pypi.org/project/scimetal/0.1.0/) | 13 | 12 | 7 |
+| This source checkout | 28 | 12 | 7 |
+
+Both provide `scimetal.ndimage.median_filter`. In the 0.1.0 wheel it calls SciPy
+directly. Commit `686cf93` added native routes for median and 14 other filters in
+this checkout. Commit `c10810c` improved routing for wide windows and thin images.
+Use `scimetal.accelerated()` to see which functions have native routes in your installation.
 
 ## Requirements
 
 - Apple Silicon (`arm64`), macOS 15 or later
-- Xcode / Metal toolchain, CMake, Ninja (for building from source)
+- Xcode with the Metal toolchain, CMake 3.24+, and Ninja for the source build and presets
 - Python 3.11+, NumPy 2+, SciPy 1.15+
 
 ## Build, install, and verify
 
+To install the development filters, run the following from this checkout with Python 3.11+
+and the source-build tools listed above. The `test` extra installs pytest and Hypothesis.
+
+```sh
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install ".[test]"
+```
+
 ### CMake presets (`metal` and `cpu-only`)
 
 ```bash
-export PATH=$PWD/.venv/bin:$PATH
 cmake --preset metal && cmake --build --preset metal && ctest --preset metal --output-on-failure
 cmake --preset cpu-only && cmake --build --preset cpu-only && ctest --preset cpu-only --output-on-failure
 ```
@@ -43,7 +57,7 @@ cmake --preset cpu-only && cmake --build --preset cpu-only && ctest --preset cpu
 ### Wheel build
 
 ```bash
-MACOSX_DEPLOYMENT_TARGET=15.0 .venv/bin/python -m pip wheel . -w dist --no-deps --no-build-isolation
+MACOSX_DEPLOYMENT_TARGET=15.0 .venv/bin/python -m pip wheel . -w dist --no-deps
 ```
 
 This builds `dist/scimetal-<version>-py3-none-macosx_15_0_arm64.whl` bundling
@@ -58,10 +72,11 @@ builds and tests the Apple Silicon wheel, then uploads it to PyPI using
 Trusted Publishing. A manual run in GitHub Actions builds and tests the wheel
 without publishing it.
 
-### Verification ladder
+### Run the test suites
 
 ```bash
 ./tools/check.sh           # C++ CTests (metal + cpu-only) and Python suites for both builds
+.venv/bin/python -m pip install "scikit-build-core>=0.11"  # --wheel uses the active build backend
 ./tools/check.sh --wheel   # also builds and tests a fresh-venv wheel install
 ```
 
@@ -81,33 +96,35 @@ import numpy as np
 import scipy.fft
 import scimetal
 import scimetal.ndimage as ndimage          # drop-in replacement for scipy.ndimage
-import scimetal.signal as signal            # drop-in replacement for scipy.signal
 import scimetal.fft as mfft                 # drop-in replacement for scipy.fft
 
-# Inspect native coverage
-print(scimetal.accelerated())
-
-# fast policy (default): float64 & representable integer images use float32 on Metal
-image = np.random.default_rng(0).standard_normal((2048, 2048))
+# Inspect coverage, then check the engine used for a particular call.
+native_filters = scimetal.accelerated()["ndimage"]
+image = np.random.default_rng(0).standard_normal((2048, 2048), dtype=np.float32)
 smoothed = ndimage.gaussian_filter(image, 3.0)
-print(scimetal.explain())                   # engine, compute_dtype, policy, any re-route reason
-print(scimetal.last_route())                # structured Route namedtuple
+print(scimetal.explain())
 
-# strict policy: bit-identical to SciPy 1.18.1 arm64 (runs on CPU engine / SciPy)
+if "median_filter" in native_filters:
+    denoised = ndimage.median_filter(image, size=7)
+    print(scimetal.last_route().engine)     # gpu, cpu, or scipy
+
+# Keep double-precision computation for a float64 image.
 with scimetal.precision("strict"):
-    exact = ndimage.gaussian_filter(image, 3.0)
+    smoothed64 = ndimage.gaussian_filter(image.astype(np.float64), 3.0)
 
-# Use scimetal.fft directly or as a scipy.fft backend
-mfft.prepare((4096, 4096), np.complex64)     # pre-compiles pipelines to avoid first-call latency
-mfft.register()                              # plain scipy.fft calls now use SciMetal too
-spectrum = scipy.fft.fft(np.ones((4096, 4096), dtype=np.complex64))
+# Prepare the real 2-D transform and use SciMetal as a scipy.fft backend.
+mfft.prepare(image.shape, image.dtype, kind="rfft2")
+mfft.register()
+spectrum = scipy.fft.rfft2(image)
 mfft.unregister()
 ```
 
-Context managers (`with scimetal.precision(...)`, `with scimetal.device("auto" | "cpu" | "gpu")`)
-and setters (`set_precision`, `set_device`, `set_small_inputs`) scope per-thread/task state cleanly.
+`explain()` and `last_route()` describe the most recent call to a registered function
+in the current context. Functions exposed directly from SciPy leave that record unchanged.
+`precision(...)` and `device(...)` apply within a `with` block in the current thread or
+task. The setters `set_precision`, `set_device`, and `set_small_inputs` change process-wide defaults.
 
-## Accelerated coverage (`scimetal.accelerated()`)
+## Native coverage in this checkout
 
 - **`ndimage`** (28 filters):
   - Linear & derivative filters (13): `convolve1d`, `correlate1d`, `gaussian_filter1d`,
@@ -119,8 +136,9 @@ and setters (`set_precision`, `set_device`, `set_small_inputs`) scope per-thread
     `median_filter`, `percentile_filter`, `grey_erosion`, `grey_dilation`,
     `grey_opening`, `grey_closing`, `morphological_gradient`,
     `morphological_laplace`, `white_tophat`, `black_tophat`
-  - Supports `float32`, `float64`, `bool`, `int8`–`int64`, `uint8`–`uint64`, plus cross-dtype
-    `output=` among real dtypes; CPU `strict` is bit-identical to SciPy 1.18.1 arm64.
+  - Native routes cover `float32`, `float64`, `bool`, signed and unsigned integers up
+    to 64 bits, and cross-dtype `output=` for supported calls. The route depends on the
+    function, input shape, dtype, and arguments.
     SciPy runs the derivative callbacks for `generic_laplace` and `generic_gradient_magnitude`.
 - **`fft`** (12 transforms + backend + `prepare`): `fft`, `ifft`, `rfft`, `irfft`,
   `fft2`, `ifft2`, `fftn`, `ifftn`, `rfft2`, `irfft2`, `rfftn`, `irfftn`, plus
@@ -137,9 +155,9 @@ and setters (`set_precision`, `set_device`, `set_small_inputs`) scope per-thread
   silence with `warnings.filterwarnings("ignore", category=scimetal.PrecisionWarning)`.
 - **`refined`**: single-precision compute plus a double-precision correction where one
   exists; otherwise behaves as `fast`.
-- **`strict`** keeps double-precision work on the CPU. Native `ndimage` uses double
-  accumulation. `signal.convolve2d` and `signal.correlate2d` can use the native CPU
-  engine for matching `float32` or `float64` NumPy inputs. SciMetal recognizes the FIR binaries from
+- **`strict`** keeps double-precision work on the CPU. `signal.convolve2d` and
+  `signal.correlate2d` can use the native CPU engine for matching `float32` or `float64`
+  NumPy inputs. SciMetal recognizes the FIR binaries from
   all 12 official SciPy 1.18.1 macOS arm64 wheels, including free-threaded
   CPython builds. SciMetal requires macOS 15 or later.
   Unverified builds, unsupported arguments, nondefault floating-point settings,
@@ -158,9 +176,36 @@ and setters (`set_precision`, `set_device`, `set_small_inputs`) scope per-thread
 
 ## Benchmarks and accuracy (Apple M1 Ultra, 16 P-cores, 64-core GPU, 128 GB)
 
-Measured standalone on macOS 26.5.1 (SciPy 1.18.1, NumPy 2.5.5; median times in `bench/results/m1-ultra/`):
+### Wide windows and thin images
 
-| Family | Workload | SciPy (1w / 16w) | `fast` (GPU) | Speedup | `strict` (CPU) | Error / Scale |
+These warm median times were measured with automatic device selection at `c10810c`
+on macOS 26.5.1 with SciPy 1.18.1 and NumPy 2.5.5. On a 65,536-sample signal,
+the shorter median window ran on Metal. The wider window used a CPU algorithm that
+updates the ordered window as samples enter and leave.
+
+| Workload (`float32`) | SciPy | SciMetal `fast` | Engine | Speedup |
+|---|---:|---:|---|---:|
+| `median_filter`, 65,536 samples, size 31 | 1.64 ms | 0.598 ms | Metal | 2.7× |
+| `median_filter`, 65,536 samples, size 1023 | 2.90 ms | 0.871 ms | CPU | 3.3× |
+| `median_filter`, 1 × 16,384, 15 × 15 disk | 24.20 ms | 1.746 ms | CPU | 13.9× |
+| `maximum_filter1d`, 4096 × 4, size 511 along the last axis | 6.16 ms | 0.079 ms | CPU | 78.0× |
+
+Both `fast` and `strict` matched SciPy byte-for-byte on all eight inputs in this
+run. To repeat the comparison, build the `metal` CMake preset above, then run the
+benchmark from the checkout root.
+
+```sh
+.venv/bin/python bench/ndimage_morphology.py --routing
+```
+
+### Large images, FFTs, and convolutions
+
+The archived measurements below used the same machine and library versions. For
+FFTs and threaded signal calls, paired SciPy timings show one and 16 workers. For
+image filters with two dtypes, paired timings follow the dtype order in the workload
+column. [Benchmark results](bench/results/m1-ultra/)
+
+| Family | Workload | SciPy | `fast` (GPU) | Speedup | `strict` (CPU) | Error / Scale |
 |---|---|---|---|---|---|---|
 | `ndimage` | `gaussian_filter` 4096², σ=3 (`float64`) | 390.7 ms | 3.70 ms | **105.6×** | 7.20 ms (**54.3×**, bit-identical) | 2.0e-07 |
 | `ndimage` | `gaussian_filter` 4096², σ=3 (`uint8`) | 308.5 ms | 4.79 ms | **64.5×** | 7.95 ms (**38.8×**, bit-identical) | 5.1e-03 |
@@ -203,15 +248,11 @@ one-minute load average of 4.95–5.60. The measured `float32`, `uint8`, and
 `uint16` GPU results matched SciPy byte-for-byte. The original benchmark timed
 the first SciPy call once when it took over 1.5 seconds.
 
-Run `.venv/bin/python bench/ndimage_morphology.py --routing` to compare warm
-SciPy and SciMetal calls on 1-D signals and thin images. On long signals,
-SciMetal can update the ranked window on the CPU as each sample enters and
-leaves. Automatic routing also uses Metal for shorter windows and SciPy for
-cases where its sliding filter is faster.
-
 ## Provenance
 
-- `src/runtime/` is derived from `metal-arrow` (see `src/runtime/PROVENANCE.md`).
-- `third_party/mlx-kernels/` vendors Apple MLX FFT Metal kernels (MIT license; see `third_party/mlx-kernels/PROVENANCE.md`).
-- `third_party/metal-cpp/` vendors Apple's `metal-cpp` headers.
+- The Python package calls a versioned C ABI (`SM_ARRAY_ABI_VERSION` 3). [Array ABI header](include/sm_array.h)
+- The runtime is derived from `metal-arrow`. [Runtime provenance](src/runtime/PROVENANCE.md)
+- The FFT kernels include Apple MLX code under the MIT license. [FFT kernel provenance](third_party/mlx-kernels/PROVENANCE.md)
+- Metal builds use Apple's C++ headers. [metal-cpp integration](third_party/metal-cpp/README.md#scimetal-integration)
+- The design plan and early experiments document the engine choices. [Design plan](PLAN.md) · [Probe results](probes/README.md)
 - Reference behaviour and oracle test suites verify against SciPy 1.18.1 (`arm64`).

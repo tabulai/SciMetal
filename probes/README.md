@@ -1,12 +1,50 @@
-# Phase 0 probes — results
+# Phase 0 probe results
 
-Eight throwaway probes that test the design before the production code is written.
-Numbers below are from `probes/run_all.sh` on 2026-11-18: each probe run alone, one
-after another, on a Mac Studio M1 Ultra (16 P-cores, 64-core GPU, 128 GB, macOS 26.5),
-load average 2–6. Full results: `probes/results/<probe>.json` (console output in `.log`).
+E1–E8 tested eight design choices before SciMetal’s production engines were built.
+Their November 18, 2026 measurements were taken on a Mac Studio M1 Ultra with
+16 P-cores, a 64-core GPU and 128 GB of memory, running macOS 26.5 at a load
+average of 2–6.
+The separate A7 CPU FFT follow-up was added on November 21. Each probe has a JSON
+result and a console log in the [results directory](results/).
 
-Re-run everything: `probes/run_all.sh` (about 3.5 minutes), or one probe:
-`probes/run_all.sh e4_stencil`.
+## Reproducing the probes
+
+Run from the repository root on an Apple Silicon Mac with Xcode’s macOS SDK, Clang,
+and the Metal toolchain (`xcrun -sdk macosx metal` and `metallib`). The runner uses
+`.venv/bin/python`. E1 and E6 look for MLX headers under
+`.venv/lib/python3.14/site-packages/mlx/include`. The recorded Python environment
+used Python 3.14, NumPy 2.5.5, SciPy 1.18.1, and MLX 0.31.1. E8 also uses
+CMake 3.27 or later, Ninja in `.venv/bin`, and nanobind 3.1.0 for the recorded bridge.
+
+```sh
+probes/run_all.sh               # E1–E8 sequentially, about 3.5 minutes on the original host
+probes/run_all.sh e4_stencil    # Gaussian filter prototype only
+probes/run_all.sh a7_cpu_fft    # Separate CPU FFT follow-up
+```
+
+The runner writes `probes/results/<probe>.log` and `.json` for each selected probe.
+Its console summary reports the exit status and JSON byte count for each run.
+
+## Production routing and benchmarks
+
+- **Filters.** SciMetal selects among SciPy, threaded native CPU filters and Metal
+  according to input size, dtype, precision policy, and window geometry. Strict
+  double-precision filters use the native CPU engine or SciPy. The 1-D
+  rank filters can update a sliding window on the CPU, use Metal, or call SciPy.
+  Run `.venv/bin/python bench/ndimage_morphology.py --routing` for warm comparisons
+  on signals and thin images. [Gaussian and linear filter results](../bench/results/m1-ultra/ndimage_filters.json)
+  · [Morphology and rank results](../bench/results/m1-ultra/ndimage_morphology.json)
+- **FFTs.** Eligible transforms use the Metal planner. CPU execution and unsupported
+  transforms use `scipy.fft`. Strict double-precision FFTs preserve the caller’s
+  SciPy worker settings. Run `.venv/bin/python bench/fft.py --crossover` to compare
+  SciPy against the GPU by size and shape. [FFT results](../bench/results/m1-ultra/fft.json)
+  · [Crossover measurements](../bench/results/m1-ultra/fft_crossover.json)
+
+The GEMM, LU, solve, and Cholesky timings below belong to the prototypes.
+The current `scimetal.linalg` namespace delegates to SciPy.
+
+The production benchmarks use the built SciMetal library. See the
+[source build instructions](../README.md#cmake-presets-metal-and-cpu-only).
 
 ## Gates
 
@@ -37,7 +75,7 @@ Re-run everything: `probes/run_all.sh` (about 3.5 minutes), or one probe:
 | Cholesky, float64, n = 8192 (CPU only, exact) | `dpotrf` 2522 ms | 497 ms | 5.1× |
 | LU, float64, n = 8192 (CPU only, exact) | `dgetrf` 1567 ms | 790 ms | 2.0× |
 
-## What changes in the design
+## Design conclusions from E1–E8
 
 1. **Copy in, pool, and hand buffers out — do not wrap one-shot inputs.** Fresh no-copy
    wraps pay ~12 ms/GB at first GPU use, more than a 16-thread narrow or copy into a pooled
@@ -49,8 +87,8 @@ Re-run everything: `probes/run_all.sh` (about 3.5 minutes), or one probe:
    GPU pass; fuse only the widen into the last pass, where it is free.
 3. **FFT uses our own plan.** MLX 0.31.1's GPU FFT raises at 2^21–2^22 and returns wrong
    answers at 2^23–2^24. The vendored kernels are sound; the large-n plan (≤ 32-point
-   passes, one command buffer) is ours. The GPU wins from about 2^17–2^18 points; below
-   that, vDSP.
+   passes, one command buffer) is ours. The probe found a GPU crossover near
+   2^17–2^18 points. A7 then tested vDSP for the smaller CPU transforms.
 4. **Hybrid LU is CPU-bound.** The GPU is busy 45 ms of a 127 ms factorization; the panel
    (73 ms) dominates. Next lever: a hand-written tall-panel kernel, and row swaps + TRSM on
    the GPU in the update's command buffer.
@@ -60,8 +98,9 @@ Re-run everything: `probes/run_all.sh` (about 3.5 minutes), or one probe:
    Use `getrf`+`getrs` rather than the `gesv` drivers, which are 1.3–3× slower in Accelerate.
 6. **Mixed precision pays even without the GPU**: float32 factor + float64 refinement on
    the CPU beats `dgesv` from n = 512.
-7. **MLX bridge is cheap, but pin nanobind** to the version MLX was built with (2.10.2 for
-   MLX 0.31.1); 3.x cannot share `mx.array`.
+7. **MLX bridge overhead was small.** E8 used nanobind 3.1.0 with its version-specific
+   bridge for the MLX 0.31.1 wheel built with nanobind 2.10.2. Direct nanobind sharing
+   of `mx.array` across the two modules failed in that configuration. [E8 bridge and type-sharing results](results/e8_mlx_primitive.json)
 8. **Fixed GPU cost** is 0.25 ms per synchronous command buffer (0.035–0.055 ms per call
    when several are pipelined), so inputs below roughly 1e5 elements stay on the CPU.
 
@@ -80,10 +119,13 @@ Re-run everything: `probes/run_all.sh` (about 3.5 minutes), or one probe:
 
 ## A7 CPU FFT probe (follow-up)
 
-Run alone on the same M1 Ultra host via `probes/run_all.sh a7_cpu_fft` (`uptime` load `2.92 2.74 2.31`; full tables in `probes/results/a7_cpu_fft.{json,log}`):
+A7 ran alone on the same M1 Ultra at load averages of 2.92, 2.74, and 2.31.
+[Full measurements](results/a7_cpu_fft.json) · [Console output](results/a7_cpu_fft.log)
 
 - **Batches (`batch > 1`, 16 P-core threads vs `scipy.fft.fft(..., workers=16)`)**: end-to-end interleaved vDSP (`vDSP_ctoz[D]` + transform + `vDSP_ztoc[D]`) measures **0.27×–1.20×** across `(64, 256)`, `(256, 1024)`, `(64, 4096)`, `(256, 4096)`, `(1024, 4096)`, `(1024, 1024)`, `(256, 3072)`, and `(64, 15360)` in both `complex64` and `complex128` — never reaching the 1.5× gate (even split-only vDSP tops out at ~1.3–1.4×).
-- **Large 1-D (`≥ 2^17` `complex64`, `≥ 2^16` `complex128`)**: single-threaded vDSP trails 16-worker pocketfft (`0.14×–0.89×`), and Metal GPU already handles `complex64` cleanly in `fast`/`auto` above ~`2^17`.
+- **Large 1-D (`≥ 2^17` `complex64`, `≥ 2^16` `complex128`)**: single-threaded vDSP trails 16-worker SciPy (`0.14×–0.89×`), and Metal GPU already handles `complex64` cleanly in `fast`/`auto` above ~`2^17`.
 - **Small 1-D (`≤ 16384`)**: realistic Python call + output allocation + `SciMetal` ctypes hand-off (`~15–20 µs`, which is also why `auto_min_points = 12461`) erases raw C++ microsecond gains (`≤ 1.4×`, slower than SciPy at `≤ 4096`).
 - **Narrow band**: only 1-D `complex64` `f·2^n` around `49152–65536` (`~0.14 ms` vs `0.25 ms`) hits ~1.7–1.8× end-to-end, while supporting only `f ∈ {1, 3, 5, 15}` and introducing ~1e-7 rounding differences that break `strict` bit-identity with SciPy.
-- **Decision**: Negative result for a native CPU FFT engine; keep the SciPy (`pocketfft`, threaded `workers=cores` under `fast`/`refined` where beneficial, single-worker under `strict`) fall-through.
+- **Decision.** The CPU route stays with `scipy.fft`. Under `fast` or `refined`,
+  eligible large calls can use performance-core workers when the caller leaves the
+  worker setting at its default. Under `strict`, the caller’s worker settings apply.
