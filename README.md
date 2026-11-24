@@ -197,10 +197,17 @@ For `correlate2d` with the same shapes and dtype, the strict CPU route measured
 These medians are from five warm calls under a concurrent system load (one-minute
 load average 5.29–5.43).
 
-The morphology and rank/median rows were measured standalone via
-`bench/ndimage_morphology.py` (saved in `bench/results/m1-ultra/ndimage_morphology.json`,
-one-minute load average 4.95–5.60) on full-precision inputs; `float32`, `uint8`, and
-`uint16` GPU outputs are bit-identical (`0.0` error) to SciPy.
+The saved morphology and rank/median measurements in
+`bench/results/m1-ultra/ndimage_morphology.json` used full-precision inputs at a
+one-minute load average of 4.95–5.60. The measured `float32`, `uint8`, and
+`uint16` GPU results matched SciPy byte-for-byte. The original benchmark timed
+the first SciPy call once when it took over 1.5 seconds.
+
+Run `.venv/bin/python bench/ndimage_morphology.py --routing` to compare warm
+SciPy and SciMetal calls on 1-D signals and thin images. On long signals,
+SciMetal can update the ranked window on the CPU as each sample enters and
+leaves. Automatic routing also uses Metal for shorter windows and SciPy for
+cases where its sliding filter is faster.
 
 ## Provenance
 

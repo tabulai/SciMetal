@@ -28,7 +28,8 @@ import warnings
 
 import numpy as np
 
-from .._config import get_precision
+from .. import _native
+from .._config import get_device, get_precision
 from .._dispatch import NotAccelerated, Route, accelerated, last_route, record
 from . import _native_ndimage as _nd
 from ._filters import (
@@ -265,6 +266,100 @@ def maximum_filter(input, size=None, footprint=None, output=None, mode="reflect"
     return _run_minmax_spec("ndimage.maximum_filter", array, separable, spec, True, target, out_dtype, warn_ignored)
 
 
+def _route_rank_1d(array, out_dtype, width: int, rank: int, mode: int, cval: float) -> bool:
+    """Check 1-D routing and return True when the output is an exact input copy."""
+    # SciPy's sliding 1-D algorithm promotes narrow integers and padding to
+    # int64 before ordering. In particular, a negative pad on uint8 sorts first.
+    if array.dtype.kind in "iub":
+        if not (-(1 << 63) <= cval < (1 << 63)):
+            _decline("1-D integer rank cval out of int64 range")
+        if array.dtype.kind == "b":
+            lo, hi = 0, 1
+        else:
+            limits = np.iinfo(array.dtype)
+            lo, hi = limits.min, limits.max
+        if mode == _nd.CONSTANT and not (lo <= int(cval) <= hi):
+            _decline("1-D rank padding needs SciPy's promoted integer ordering")
+        if array.dtype == np.int64:
+            if ((mode == _nd.CONSTANT and abs(cval) >= 1 << 53) or
+                    array.min() < -(1 << 53) or array.max() > (1 << 53)):
+                _decline("1-D int64 rank values exceed exact double precision")
+
+    if _constant_rank_1d(array, out_dtype, width, mode, cval):
+        return True
+    if width <= 15:
+        return False
+    # Match use_sliding_rank in morphology.hpp. Keep NaNs and tied signed
+    # zeroes on SciPy for its 1-D comparison/tie ordering.
+    sliding_dtype = array.dtype.kind == "f" or (array.dtype.kind in "iu" and array.itemsize <= 4)
+    if (sliding_dtype and array.dtype == out_dtype and array.size >= 16384
+            and width <= min(4096, array.size // 16)):
+        if array.dtype.kind == "f":
+            bits = array.view(f"i{array.itemsize}")
+            negative_zero = np.iinfo(bits.dtype).min
+            if mode == _nd.CONSTANT:
+                with np.errstate(over="ignore", under="ignore"):
+                    pad = array.dtype.type(cval)
+                if np.isnan(pad) or (pad == 0 and np.signbit(pad)):
+                    _decline("1-D rank NaN or signed-zero padding goes to SciPy")
+            if np.isnan(array.min()) or (bits == negative_zero).any():
+                _decline("1-D rank NaN or signed-zero ordering goes to SciPy")
+        return False
+    if get_device() != "auto":
+        return False
+
+    # The general CPU kernel selects each window independently. On an M1 Ultra
+    # it wins for short windows; SciPy's sliding filter wins beyond ~15 taps.
+    reason = "SciPy's sliding 1-D rank filter is faster for this window"
+    if get_precision() == "strict" or not _native.has_metal():
+        _decline(reason)
+
+    # The Metal dispatch cost amortizes at 32K samples. Its selection kernel
+    # can win for 125-tap medians, or wider windows within one rank of an end.
+    # Even those near-end ranks still read every tap for every output sample.
+    _native.decline_small(array.size, 1 << 15)
+    typical_limit = 63 if array.size < (1 << 16) or array.dtype == np.bool_ else 125
+    if width <= typical_limit:
+        return False
+    distance_from_end = min(rank, width - 1 - rank)
+    if distance_from_end == 1 and width <= min(511, array.size // 256) and array.dtype != np.bool_:
+        return False
+    _decline(reason)
+
+
+def _constant_rank_1d(array, out_dtype, width, mode, cval):
+    if get_device() != "auto" or array.dtype != out_dtype:
+        return False
+    # Compare representations so signed zeros remain distinct. Three samples
+    # avoid an extra full scan of an ordinary nonconstant signal.
+    bits = array.view(f"u{array.itemsize}")
+    first = bits[0]
+    if first != bits[-1] or first != bits[array.size // 2]:
+        return False
+    if (array.dtype.kind == "b" and first > 1) or np.isnan(array[0]):
+        return False
+    if not (bits == first).all():
+        return False
+    if mode != _nd.CONSTANT:
+        return True
+    # SciPy orders floating padding in the input dtype, and integer padding in
+    # int64. Comparing bits on the floating path preserves the sign of zero.
+    if array.dtype.kind == "f":
+        with np.errstate(over="ignore", under="ignore"):
+            pad = array.dtype.type(cval)
+        if np.isfinite(cval) and not np.isfinite(pad):
+            _decline("constant padding overflows the input dtype")
+        if pad.view(bits.dtype) == first:
+            return True
+        if pad == 0 and array[0] == 0:
+            _decline("constant rank input and padding have distinct zero signs")
+    elif int(cval) == int(array[0]):
+        return True
+    if width > 15:
+        _decline("SciPy's sliding 1-D filter is faster for constant input with differing padding")
+    return False
+
+
 def _rank_common(function: str, input, rank_arg, size, footprint, output, mode, cval, origin, operation: str, axes):
     warn_ignored = (size is not None) and (footprint is not None)
     array = _input(input)
@@ -350,6 +445,7 @@ def _rank_common(function: str, input, rank_arg, size, footprint, output, mode, 
     # Match SciPy 1.18.1 1-D _rank_filter_1d corner cases cleanly by declining
     # where SciPy's C++ 1-D path diverges from NI_RankFilter (non-all-true
     # 1-D footprints and uint64 cast to int64).
+    copy_constant = False
     if array.ndim == 1:
         f_total = fshape[0]
         lim2 = array.size - ((f_total - 1) // 2 - origins[0])
@@ -358,13 +454,15 @@ def _rank_common(function: str, input, rank_arg, size, footprint, output, mode, 
                 _decline("1-D non-rectangular rank footprint goes to SciPy")
             if array.dtype == np.uint64:
                 _decline("1-D uint64 rank filter goes to SciPy")
-            if mode_code == _nd.CONSTANT and array.dtype.kind in "iub":
-                if not (-9223372036854775808.0 <= cval_f < 9223372036854775808.0):
-                    _decline("1-D integer rank cval out of int64 range")
+            copy_constant = _route_rank_1d(array, out_dtype, f_total, rank, mode_code, cval_f)
 
     if warn_ignored:
         warnings.warn("ignoring size because footprint is set", UserWarning, stacklevel=3)
-    result = _nd.rank_filter(function, array, rank, fshape, origins, fp_arr, mode_code, cval_f, out_dtype=out_dtype)
+    if copy_constant:
+        result = array.copy() if target is None else array
+        record(Route(function, "cpu", array.dtype.name, get_precision(), "constant 1-D rank input: copied"))
+    else:
+        result = _nd.rank_filter(function, array, rank, fshape, origins, fp_arr, mode_code, cval_f, out_dtype=out_dtype)
     if target is None:
         return result
     target[...] = result

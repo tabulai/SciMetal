@@ -35,7 +35,7 @@ uint32_t resolve_morph_out_dtype(uint32_t in_dtype, uint32_t requested) {
 
 MorphTapTable build_morph_taps(const array::Shape& shape, const uint32_t fshape[SM_MAX_NDIM],
                                const int64_t start[SM_MAX_NDIM], const uint8_t* footprint,
-                               const double* structure, bool& all_true_out) {
+                               const double* structure, uint32_t mode, bool& all_true_out) {
     const uint32_t ndim = shape.ndim;
     uint64_t in_strides[SM_MAX_NDIM] = {};
     in_strides[ndim - 1] = 1;
@@ -68,7 +68,10 @@ MorphTapTable build_morph_taps(const array::Shape& shape, const uint32_t fshape[
             MorphTap tap;
             int64_t lin = 0;
             for (uint32_t d = 0; d < ndim; ++d) {
-                const int64_t off = static_cast<int64_t>(fcoord[d]) + start[d];
+                // Every nonconstant extension maps a singleton axis to its sole sample.
+                // Fold it into the tap offset so thin images retain an interior fast path.
+                const int64_t off = (shape.dims[d] == 1 && mode != SM_NDIMAGE_CONSTANT)
+                                        ? 0 : static_cast<int64_t>(fcoord[d]) + start[d];
                 tap.coord[d] = off;
                 lin += off * static_cast<int64_t>(in_strides[d]);
                 if (off < min_off[d]) min_off[d] = off;
@@ -199,7 +202,7 @@ sm_status sm_ndimage_minmax_filter(sm_context* context, const sm_array* input,
         }
         bool all_true = false;
         plan.taps = ndimage::build_morph_taps(shape, plan.fshape, plan.start, minmax_options->footprint,
-                                              minmax_options->structure, all_true);
+                                              minmax_options->structure, plan.mode, all_true);
 
         sm_route_options route = *options;
         if (!ndimage::gpu_supports_dense_minmax(plan)) {
@@ -292,7 +295,7 @@ sm_status sm_ndimage_rank_filter(sm_context* context, const sm_array* input,
             plan.start[d] = -(sz / 2) - rank_options->origins[d];
         }
         plan.taps = ndimage::build_morph_taps(shape, plan.fshape, plan.start, rank_options->footprint,
-                                              nullptr, plan.all_true_footprint);
+                                              nullptr, plan.mode, plan.all_true_footprint);
         const size_t k = plan.taps.taps.size();
         if (plan.rank >= k) throw Error(SM_EINVAL, "rank not within filter footprint size");
 
@@ -356,7 +359,12 @@ sm_status sm_ndimage_rank_filter(sm_context* context, const sm_array* input,
         }
 
         sm_route_options route = *options;
-        if (!ndimage::gpu_supports_rank(plan)) {
+        // Wide 1-D windows reuse their overlapping samples on the CPU. The
+        // generic Metal kernel revisits every tap for every output.
+        if (route.execution == SM_EXECUTION_AUTO && ndimage::use_sliding_rank(plan) &&
+            (shape.elements < 65536 || k > 64))
+            route.execution = SM_EXECUTION_CPU;
+        if (route.execution != SM_EXECUTION_CPU && !ndimage::gpu_supports_rank(plan)) {
             if (route.execution == SM_EXECUTION_GPU)
                 throw Error(SM_ENOTSUP, "the array or rank window exceeds GPU rank filter limits");
             route.execution = SM_EXECUTION_CPU;

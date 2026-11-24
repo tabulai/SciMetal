@@ -350,3 +350,19 @@ def test_hypothesis_grey_morphology_2d(h, w, k0, k1, mode, op, seed):
             is_noop = (k0 == 1 and k1 == 1 and op in ("grey_opening", "grey_closing"))
             assert scimetal.last_route().engine == ("cpu" if is_noop else "gpu")
         np.testing.assert_allclose(got_gpu, ref, rtol=1e-6, atol=1e-5)
+
+
+@pytest.mark.parametrize("shape", [(1, 16387), (16387, 1), (3, 6001)])
+@pytest.mark.parametrize("mode", ["reflect", "constant"])
+def test_sparse_morphology_thin_images(shape, mode):
+    x = _make_array(shape, np.float32, seed=51)
+    fp = np.array([[0, 1, 0], [1, 1, 0], [1, 0, 1]], dtype=bool)
+    structure = np.arange(9, dtype=np.float64).reshape(3, 3)
+    for name, options in (("rank_filter", {"rank": 2}), ("grey_erosion", {"structure": structure})):
+        kwargs = dict(footprint=fp, mode=mode, cval=-17.0, origin=(0, 1), **options)
+        expected = getattr(sp_nd, name)(x, **kwargs)
+        for device in ("cpu", "gpu") if _native.has_metal() else ("cpu",):
+            with scimetal.device(device), scimetal.precision("fast"):
+                got = getattr(sm_nd, name)(x, **kwargs)
+                assert scimetal.last_route().engine == device
+            np.testing.assert_array_equal(got, expected)

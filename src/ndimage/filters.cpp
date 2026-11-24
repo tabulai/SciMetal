@@ -196,6 +196,7 @@ CompositePlan make_composite_plan(const sm_array* input, const sm_ndimage_chain*
 
 // The CPU engine's cost of one pass per element, in tap operations.
 uint64_t cpu_operations(const Pass& pass) {
+    if (minmax_identity(pass)) return 0;
     uint64_t arithmetic = 0;
     if (gpu_minmax_use_vanherk(pass)) {
         // Two-pass GPU van Herk has twice the memory traffic of a direct pass, so it

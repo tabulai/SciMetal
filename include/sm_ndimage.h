@@ -245,11 +245,12 @@ typedef struct sm_ndimage_rank_options {
  * CPU engine: threaded across P-cores, exact order statistic in double with
  * SciPy's input-type cval cast and CASE_FILTER_OUT[_SAFE] output conversion
  * (bit-identical to SciPy 1.18.1 arm64 on finite inputs; uses SciPy's exact
- * NI_Select when NaNs are present).
+ * NI_Select when NaNs are present). Wide rectangular 1-D windows can use
+ * per-chunk sorted samples and a sliding count tree on the CPU.
  * GPU engine: single precision, one command buffer. Uses dedicated tiled
  * register-only sorting/selection networks for 2-D 3x3, 5x5, and 7x7 medians,
  * and Forgetful Selection for arbitrary N-D footprints and ranks with
- * min(rank, K - 1 - rank) + 2 <= 64 (covering all footprints up to 127 taps,
+ * min(rank, K - 1 - rank) + 2 <= 64 (covering all footprints up to 126 taps,
  * including 11x11 and 3x3x3). Exact for float32, bool, int8/16, uint8/16, and
  * representable (|x| < 2^24) int32/64/uint32/64; for float64 under FAST/REFINED,
  * values are float32-rounded (absolute error <= 2^-24 * max|input, cval|). */

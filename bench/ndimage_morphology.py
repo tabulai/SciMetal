@@ -2,7 +2,8 @@
 """Benchmark of scimetal.ndimage's morphology, min/max, and rank/median filters against scipy.ndimage.
 
     .venv/bin/python bench/ndimage_morphology.py              # full benchmark suite
-    .venv/bin/python bench/ndimage_morphology.py --quick      # 1 SciPy run, 5 native runs
+    .venv/bin/python bench/ndimage_morphology.py --quick      # one timed SciPy call per case
+    .venv/bin/python bench/ndimage_morphology.py --routing    # signals and thin images vs SciPy
     .venv/bin/python bench/ndimage_morphology.py --calibrate  # CPU engine vs GPU engine sweep
 
 Every timing is the median wall time of warm calls, end to end as a user sees it:
@@ -48,22 +49,6 @@ def timed(function, repeats, warmup):
     return statistics.median(times) * 1e3, min(times) * 1e3
 
 
-def timed_scipy(function, quick):
-    """Time SciPy with 1 repeat if quick or if a single call takes > 1.5s, else 3 repeats."""
-    start = time.perf_counter()
-    first = function()
-    elapsed0 = time.perf_counter() - start
-    if quick or elapsed0 > 1.5:
-        return elapsed0 * 1e3, elapsed0 * 1e3, first
-    times = [elapsed0]
-    for _ in range(2):
-        start = time.perf_counter()
-        res = function()
-        times.append(time.perf_counter() - start)
-        del res
-    return statistics.median(times) * 1e3, min(times) * 1e3, first
-
-
 def image(shape, dtype, seed=20261123):
     """Positive, image-like data: smooth structure plus noise (full precision for float64)."""
     rng = np.random.default_rng(seed)
@@ -87,6 +72,7 @@ def disk(radius: int) -> np.ndarray:
 
 DISK_5X5 = disk(2)  # 13 active taps, non-separable
 DISK_7X7 = disk(3)  # 29 active taps, non-separable
+DISK_15X15 = disk(7)
 
 # (name, shape, dtypes, call(module, array))
 WORKLOADS = [
@@ -117,6 +103,23 @@ WORKLOADS = [
 ]
 
 
+# Wide 1-D windows, skinny images and small windows on the GPU/CPU crossover.
+ROUTING_WORKLOADS = [
+    ("median_filter 65536 size=31", (65536,), (np.float32,), lambda m, a: m.median_filter(a, 31)),
+    ("median_filter 65536 size=127", (65536,), (np.float32,), lambda m, a: m.median_filter(a, 127)),
+    ("median_filter 65536 size=1023", (65536,), (np.float32,), lambda m, a: m.median_filter(a, 1023)),
+    ("rank_filter 65536 rank=2 size=1023", (65536,), (np.float32,), lambda m, a: m.rank_filter(a, 2, 1023)),
+    ("percentile_filter 65536 p=25 size=255", (65536,), (np.uint16,),
+     lambda m, a: m.percentile_filter(a, 25, 255)),
+    ("minimum_filter 1x16384 15x15 disk", (1, 16384), (np.float32,),
+     lambda m, a: m.minimum_filter(a, footprint=DISK_15X15)),
+    ("median_filter 1x16384 15x15 disk", (1, 16384), (np.float32,),
+     lambda m, a: m.median_filter(a, footprint=DISK_15X15)),
+    ("maximum_filter1d 4096x4 size=511", (4096, 4), (np.float32,),
+     lambda m, a: m.maximum_filter1d(a, 511)),
+]
+
+
 def load_averages() -> list[float]:
     return [round(x, 2) for x in os.getloadavg()]
 
@@ -128,17 +131,18 @@ def uptime_line() -> str:
         return ""
 
 
-def benchmark(quick: bool) -> list[dict]:
+def benchmark(quick: bool, workloads=WORKLOADS) -> list[dict]:
     rows = []
     header = (
         f"{'workload':39s} {'dtype':8s} {'scipy':>9s}  {'fast':>8s} {'':>8s} {'engine':6s} {'err/scale':>9s}  "
         f"{'strict':>8s} {'':>7s} {'engine':6s} {'identical'}"
     )
     print(header)
-    for name, shape, dtypes, call in WORKLOADS:
+    for name, shape, dtypes, call in workloads:
         for dtype in dtypes:
             a = image(shape, dtype)
-            scipy_ms, scipy_min, reference = timed_scipy(lambda: call(sn, a), quick)
+            reference = call(sn, a)  # warm-up and correctness oracle
+            scipy_ms, scipy_min = timed(lambda: call(sn, a), 1 if quick else 5, 0)
             scale = float(np.abs(reference).max()) or 1.0
             row = {
                 "workload": name,
@@ -242,8 +246,10 @@ def calibrate() -> list[dict]:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--quick", action="store_true", help="one SciPy run and five native runs per workload")
-    parser.add_argument("--calibrate", action="store_true", help="sweep CPU and GPU engines around routing thresholds")
+    parser.add_argument("--quick", action="store_true", help="one timed SciPy call and fewer native repeats per workload")
+    suite = parser.add_mutually_exclusive_group()
+    suite.add_argument("--calibrate", action="store_true", help="sweep CPU and GPU engines around routing thresholds")
+    suite.add_argument("--routing", action="store_true", help="compare 1-D and thin-image routes with SciPy")
     parser.add_argument("--out", type=pathlib.Path, default=None, help="optional JSON file to save the RESULT payload")
     options = parser.parse_args()
     started = time.perf_counter()
@@ -262,7 +268,7 @@ def main():
     if options.calibrate:
         result["calibration"] = calibrate()
     else:
-        result["workloads"] = benchmark(options.quick)
+        result["workloads"] = benchmark(options.quick, ROUTING_WORKLOADS if options.routing else WORKLOADS)
     result["load_after"] = load_averages()
     result["uptime_after"] = uptime_line()
     result["wall_seconds"] = round(time.perf_counter() - started, 1)

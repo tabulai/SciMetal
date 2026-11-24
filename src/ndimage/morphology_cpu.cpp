@@ -5,6 +5,7 @@
 #include "sm/detail/parallel.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <cstring>
 #include <type_traits>
@@ -134,7 +135,6 @@ void dense_minmax_typed(const DenseMinMaxPlan& plan, const void* input_raw, void
     const MemT* src = static_cast<const MemT*>(input_raw);
     const uint32_t ndim = plan.shape.ndim;
     const uint64_t last_len = plan.shape.dims[ndim - 1];
-    const uint64_t rows = plan.shape.elements / last_len;
     const size_t num_taps = plan.taps.taps.size();
     const MorphTap* taps = plan.taps.taps.data();
 
@@ -157,12 +157,12 @@ void dense_minmax_typed(const DenseMinMaxPlan& plan, const void* input_raw, void
 
     const int64_t x_lo = plan.taps.has_interior ? plan.taps.interior_lo[ndim - 1] : static_cast<int64_t>(last_len);
     const int64_t x_hi = plan.taps.has_interior ? plan.taps.interior_hi[ndim - 1] : 0;
-    const uint64_t row_work = std::max<uint64_t>(1, last_len * num_taps);
-    const uint64_t grain = std::max<uint64_t>(1, (uint64_t{1} << 16) / row_work);
+    // Partition pixels, allowing several lanes to share a long row on a thin image.
+    const uint64_t grain = std::max<uint64_t>(1, (uint64_t{1} << 14) / num_taps);
 
-    parallel::parallel_for(rows, grain, [&](unsigned, uint64_t r0, uint64_t r1) {
+    parallel::parallel_for(plan.shape.elements, grain, [&](unsigned, uint64_t begin, uint64_t end) {
         int64_t coord[SM_MAX_NDIM] = {};
-        for (uint64_t row = r0; row < r1; ++row) {
+        for (uint64_t row = begin / last_len; row <= (end - 1) / last_len; ++row) {
             uint64_t rem = row;
             for (int32_t d = static_cast<int32_t>(ndim) - 2; d >= 0; --d) {
                 coord[d] = static_cast<int64_t>(rem % plan.shape.dims[d]);
@@ -207,38 +207,31 @@ void dense_minmax_typed(const DenseMinMaxPlan& plan, const void* input_raw, void
                 return res;
             };
 
-            const int64_t len = static_cast<int64_t>(last_len);
-            if (!outer_interior || x_lo >= x_hi) {
-                for (int64_t x = 0; x < len; ++x) {
-                    store_dense_output(plan.out_dtype, output_raw, row_base + static_cast<uint64_t>(x),
-                                       eval_boundary(x));
-                }
-            } else {
-                for (int64_t x = 0; x < x_lo; ++x) {
-                    store_dense_output(plan.out_dtype, output_raw, row_base + static_cast<uint64_t>(x),
-                                       eval_boundary(x));
-                }
-                const int64_t off0 = taps[0].linear_offset;
-                for (int64_t x = x_lo; x < x_hi; ++x) {
-                    const int64_t base = static_cast<int64_t>(row_base) + x;
-                    double res = static_cast<double>(src[base + off0]);
-                    if constexpr (HasStruct) res += ss0_f64;
-                    for (size_t t = 1; t < num_taps; ++t) {
-                        MemT tmp = src[base + taps[t].linear_offset];
-                        if constexpr (HasStruct) tmp = add_struct_in_type<InT>(tmp, ss_t[t]);
-                        const double td = static_cast<double>(tmp);
-                        if constexpr (IsMax) {
-                            if (td > res) res = td;
-                        } else {
-                            if (td < res) res = td;
-                        }
+            int64_t x = static_cast<int64_t>(std::max(begin, row_base) - row_base);
+            const int64_t end_x = static_cast<int64_t>(std::min(last_len, end - row_base));
+            const int64_t head_end = outer_interior ? std::min(end_x, x_lo) : end_x;
+            for (; x < head_end; ++x) {
+                store_dense_output(plan.out_dtype, output_raw, row_base + static_cast<uint64_t>(x), eval_boundary(x));
+            }
+            const int64_t off0 = taps[0].linear_offset;
+            for (; x < std::min(end_x, x_hi); ++x) {
+                const int64_t base = static_cast<int64_t>(row_base) + x;
+                double res = static_cast<double>(src[base + off0]);
+                if constexpr (HasStruct) res += ss0_f64;
+                for (size_t t = 1; t < num_taps; ++t) {
+                    MemT tmp = src[base + taps[t].linear_offset];
+                    if constexpr (HasStruct) tmp = add_struct_in_type<InT>(tmp, ss_t[t]);
+                    const double td = static_cast<double>(tmp);
+                    if constexpr (IsMax) {
+                        if (td > res) res = td;
+                    } else {
+                        if (td < res) res = td;
                     }
-                    store_dense_output(plan.out_dtype, output_raw, static_cast<uint64_t>(base), res);
                 }
-                for (int64_t x = x_hi; x < len; ++x) {
-                    store_dense_output(plan.out_dtype, output_raw, row_base + static_cast<uint64_t>(x),
-                                       eval_boundary(x));
-                }
+                store_dense_output(plan.out_dtype, output_raw, static_cast<uint64_t>(base), res);
+            }
+            for (; x < end_x; ++x) {
+                store_dense_output(plan.out_dtype, output_raw, row_base + static_cast<uint64_t>(x), eval_boundary(x));
             }
         }
     });
@@ -255,13 +248,79 @@ void dispatch_dense_minmax_in(const DenseMinMaxPlan& plan, const void* input_raw
     }
 }
 
+// Each chunk sorts its samples (including the halo) once. A Fenwick tree
+// counts the samples currently in the window by sorted position. Sliding
+// changes two counts, and a prefix-count search locates any requested rank.
+template<class T>
+bool try_sliding_rank(const RankPlan& plan, const T* src, T* dst, T cval) {
+    if (!use_sliding_rank(plan)) return false;
+    const int64_t length = static_cast<int64_t>(plan.shape.elements);
+    if constexpr (std::is_floating_point_v<T>) {
+        // NaNs require SciPy's comparison order. Preserve its zero tie
+        // handling too when equal values can have different representations.
+        const auto special = [](T v) { return std::isnan(v) || (v == 0 && std::signbit(v)); };
+        if ((plan.mode == SM_NDIMAGE_CONSTANT && special(cval)) || std::any_of(src, src + length, special))
+            return false;
+    }
+
+    struct Sample {
+        double value;
+        int position;
+    };
+    const int width = static_cast<int>(plan.fshape[0]);
+    const int chunk_size = std::max(1024, width);
+    const int64_t chunks = (length - 1) / chunk_size + 1;
+    parallel::parallel_for(chunks, 1, [&](unsigned, uint64_t first, uint64_t last) {
+        std::vector<Sample> samples(chunk_size + width - 1);
+        std::vector<int> index(samples.size()), counts(samples.size() + 1);
+        for (uint64_t chunk = first; chunk < last; ++chunk) {
+            const int64_t start = static_cast<int64_t>(chunk) * chunk_size;
+            const int outputs = static_cast<int>(std::min<int64_t>(chunk_size, length - start));
+            const int size = outputs + width - 1;
+            for (int i = 0; i < size; ++i) {
+                int64_t pos = start + plan.start[0] + i;
+                if (pos < 0 || pos >= length) pos = extend(pos, length, plan.mode);
+                samples[i] = {static_cast<double>(pos < 0 ? cval : src[pos]), i};
+            }
+            std::sort(samples.begin(), samples.begin() + size,
+                      [](const Sample& a, const Sample& b) { return a.value < b.value; });
+            for (int i = 0; i < size; ++i) index[samples[i].position] = i + 1;
+
+            std::fill_n(counts.begin(), size + 1, 0);
+            const auto update = [&](int position, int delta) {
+                for (int j = index[position]; j <= size; j += j & -j) counts[j] += delta;
+            };
+            for (int i = 0; i < width; ++i) update(i, 1);
+            const int top_bit = static_cast<int>(std::bit_floor(static_cast<unsigned>(size)));
+            for (int i = 0; i < outputs; ++i) {
+                int below = 0, remaining = static_cast<int>(plan.rank);
+                for (int bit = top_bit; bit; bit >>= 1) {
+                    const int next = below + bit;
+                    if (next <= size && counts[next] <= remaining) {
+                        remaining -= counts[next];
+                        below = next;
+                    }
+                }
+                dst[start + i] = static_cast<T>(samples[below].value);
+                if (i + 1 < outputs) {
+                    update(i, -1);
+                    update(i + width, 1);
+                }
+            }
+        }
+    });
+    return true;
+}
+
 template<class InT>
 void rank_typed(const RankPlan& plan, const void* input_raw, void* output_raw) {
     using MemT = std::conditional_t<std::is_same_v<InT, BoolTag>, uint8_t, InT>;
     const MemT* src = static_cast<const MemT*>(input_raw);
+    if constexpr (!std::is_same_v<InT, BoolTag> && !std::is_same_v<InT, int64_t> && !std::is_same_v<InT, uint64_t>) {
+        if (try_sliding_rank(plan, src, static_cast<InT*>(output_raw), cast_cval_to_in<InT>(plan.cval))) return;
+    }
     const uint32_t ndim = plan.shape.ndim;
     const uint64_t last_len = plan.shape.dims[ndim - 1];
-    const uint64_t rows = plan.shape.elements / last_len;
     const size_t num_taps = plan.taps.taps.size();
     const MorphTap* taps = plan.taps.taps.data();
     const size_t rank = plan.rank;
@@ -276,10 +335,9 @@ void rank_typed(const RankPlan& plan, const void* input_raw, void* output_raw) {
     const double cval_d = static_cast<double>(cast_cval_to_in<InT>(plan.cval));
     const int64_t x_lo = plan.taps.has_interior ? plan.taps.interior_lo[ndim - 1] : static_cast<int64_t>(last_len);
     const int64_t x_hi = plan.taps.has_interior ? plan.taps.interior_hi[ndim - 1] : 0;
-    const uint64_t row_work = std::max<uint64_t>(1, last_len * num_taps * 2);
-    const uint64_t grain = std::max<uint64_t>(1, (uint64_t{1} << 16) / row_work);
+    const uint64_t grain = std::max<uint64_t>(1, (uint64_t{1} << 13) / num_taps);
 
-    parallel::parallel_for(rows, grain, [&](unsigned, uint64_t r0, uint64_t r1) {
+    parallel::parallel_for(plan.shape.elements, grain, [&](unsigned, uint64_t begin, uint64_t end) {
         std::vector<double> buf(num_taps);
         int64_t coord[SM_MAX_NDIM] = {};
 
@@ -297,7 +355,7 @@ void rank_typed(const RankPlan& plan, const void* input_raw, void* output_raw) {
             return static_cast<double>(cast_cval_to_in<InT>(sel));
         };
 
-        for (uint64_t row = r0; row < r1; ++row) {
+        for (uint64_t row = begin / last_len; row <= (end - 1) / last_len; ++row) {
             uint64_t rem = row;
             for (int32_t d = static_cast<int32_t>(ndim) - 2; d >= 0; --d) {
                 coord[d] = static_cast<int64_t>(rem % plan.shape.dims[d]);
@@ -336,31 +394,24 @@ void rank_typed(const RankPlan& plan, const void* input_raw, void* output_raw) {
                 return select_buf(has_nan);
             };
 
-            const int64_t len = static_cast<int64_t>(last_len);
-            if (!outer_interior || x_lo >= x_hi) {
-                for (int64_t x = 0; x < len; ++x) {
-                    store_dense_output(plan.out_dtype, output_raw, row_base + static_cast<uint64_t>(x),
-                                       eval_boundary(x));
+            int64_t x = static_cast<int64_t>(std::max(begin, row_base) - row_base);
+            const int64_t end_x = static_cast<int64_t>(std::min(last_len, end - row_base));
+            const int64_t head_end = outer_interior ? std::min(end_x, x_lo) : end_x;
+            for (; x < head_end; ++x) {
+                store_dense_output(plan.out_dtype, output_raw, row_base + static_cast<uint64_t>(x), eval_boundary(x));
+            }
+            for (; x < std::min(end_x, x_hi); ++x) {
+                const int64_t base = static_cast<int64_t>(row_base) + x;
+                bool has_nan = false;
+                for (size_t t = 0; t < num_taps; ++t) {
+                    const double v = static_cast<double>(src[base + taps[t].linear_offset]);
+                    if (is_float_in && std::isnan(v)) has_nan = true;
+                    buf[t] = v;
                 }
-            } else {
-                for (int64_t x = 0; x < x_lo; ++x) {
-                    store_dense_output(plan.out_dtype, output_raw, row_base + static_cast<uint64_t>(x),
-                                       eval_boundary(x));
-                }
-                for (int64_t x = x_lo; x < x_hi; ++x) {
-                    const int64_t base = static_cast<int64_t>(row_base) + x;
-                    bool has_nan = false;
-                    for (size_t t = 0; t < num_taps; ++t) {
-                        const double v = static_cast<double>(src[base + taps[t].linear_offset]);
-                        if (is_float_in && std::isnan(v)) has_nan = true;
-                        buf[t] = v;
-                    }
-                    store_dense_output(plan.out_dtype, output_raw, static_cast<uint64_t>(base), select_buf(has_nan));
-                }
-                for (int64_t x = x_hi; x < len; ++x) {
-                    store_dense_output(plan.out_dtype, output_raw, row_base + static_cast<uint64_t>(x),
-                                       eval_boundary(x));
-                }
+                store_dense_output(plan.out_dtype, output_raw, static_cast<uint64_t>(base), select_buf(has_nan));
+            }
+            for (; x < end_x; ++x) {
+                store_dense_output(plan.out_dtype, output_raw, row_base + static_cast<uint64_t>(x), eval_boundary(x));
             }
         }
     });

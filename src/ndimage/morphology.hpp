@@ -54,6 +54,17 @@ struct RankPlan {
     MorphTapTable taps;
 };
 
+// The chunked 1-D order-statistic engine amortizes its per-chunk sort over
+// at least one window of outputs and enough chunks for the P-cores.
+inline bool use_sliding_rank(const RankPlan& plan) noexcept {
+    const uint64_t n = plan.shape.elements;
+    const uint32_t k = plan.fshape[0];
+    return plan.shape.ndim == 1 && plan.all_true_footprint && n >= 16384 &&
+           k >= 16 && k <= 4096 && k <= n / 16 &&
+           plan.in_dtype == plan.out_dtype && plan.in_dtype != SM_BOOL &&
+           plan.in_dtype != SM_INT64 && plan.in_dtype != SM_UINT64;
+}
+
 // CPU engines (threaded across P-cores, bit-identical to SciPy 1.18.1 arm64).
 BufferPtr run_cpu_dense_minmax(sm_context*, const DenseMinMaxPlan&, const void* input);
 BufferPtr run_cpu_rank(sm_context*, const RankPlan&, const void* input);

@@ -73,6 +73,12 @@ inline int64_t extend(int64_t position, int64_t length, uint32_t mode) noexcept 
     }
 }
 
+// These passes only convert the input through the SciPy line-buffer dtype.
+inline bool minmax_identity(const Pass& pass) noexcept {
+    return (pass.kind == SM_NDIMAGE_MINIMUM || pass.kind == SM_NDIMAGE_MAXIMUM) &&
+           (pass.size == 1 || (pass.length == 1 && pass.mode != SM_NDIMAGE_CONSTANT));
+}
+
 // True when a 1-D min/max pass is eligible for the 2-pass van Herk GPU path
 // (window > 64, enough blocks for GPU occupancy, and extended buffer fits 32-bit indices).
 inline bool gpu_minmax_use_vanherk(const Pass& pass) noexcept {

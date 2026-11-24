@@ -1358,34 +1358,36 @@ struct HarterPair {
     size_t death;
 };
 
-void harter_minmax_line(const double* __restrict__ ext, size_t length, size_t w, bool is_max,
-                        double* __restrict__ out, std::vector<HarterPair>& ring) {
+template<bool IsMax, class Dst>
+void harter_minmax_line(const double* __restrict__ ext, size_t length, size_t w,
+                        Dst* __restrict__ out, std::vector<HarterPair>& ring) {
     if (w == 1) {
-        std::memcpy(out, ext, length * sizeof(double));
+        std::copy_n(ext, length, out);
         return;
     }
     ring.resize(w);
-    size_t minpair = 0, last = 0;
-    ring[0] = {ext[0], w};
+    auto* const begin = ring.data();
+    auto* const end = begin + w;
+    HarterPair* head = begin;
+    HarterPair* tail = begin;
+    *head = {ext[0], w};
     const size_t total = w + length - 1;
-    for (size_t ll = 1; ll < total; ++ll) {
-        const double val = ext[ll];
-        if (ring[minpair].death == ll) {
-            if (++minpair == w) minpair = 0;
+    for (size_t i = 1; i < total; ++i) {
+        const double value = ext[i];
+        if (head->death == i) {
+            if (++head == end) head = begin;
         }
-        if ((!is_max && val <= ring[minpair].value) || (is_max && val >= ring[minpair].value)) {
-            ring[minpair].value = val;
-            ring[minpair].death = ll + w;
-            last = minpair;
+        if (IsMax ? value >= head->value : value <= head->value) {
+            tail = head;
         } else {
-            while ((!is_max && ring[last].value >= val) || (is_max && ring[last].value <= val)) {
-                last = (last == 0 ? w - 1 : last - 1);
+            while (IsMax ? tail->value <= value : tail->value >= value) {
+                if (tail == begin) tail = end;
+                --tail;
             }
-            if (++last == w) last = 0;
-            ring[last].value = val;
-            ring[last].death = ll + w;
+            if (++tail == end) tail = begin;
         }
-        if (ll >= w - 1) out[ll - (w - 1)] = ring[minpair].value;
+        *tail = {value, i + w};
+        if (i >= w - 1) *out++ = head->value;
     }
 }
 
@@ -1488,7 +1490,7 @@ void minmax_tiles_impl(const Pass& pass, uint32_t src_dtype, uint32_t dst_dtype,
                 const uint8_t* col_in = in + c * src_esize;
                 uint8_t* col_out = out + c * dst_esize;
                 extended_line_generic(pass, src_dtype, col_in, inner, src_esize, -before, ext_len, ws.nan_ext.data());
-                harter_minmax_line(ws.nan_ext.data(), static_cast<size_t>(length), w, IsMax, ws.nan_out.data(),
+                harter_minmax_line<IsMax>(ws.nan_ext.data(), static_cast<size_t>(length), w, ws.nan_out.data(),
                                    ws.ring);
                 store_from_double_generic(dst_dtype, op, ws.nan_out.data(), col_out, inner,
                                           static_cast<size_t>(length));
@@ -1540,6 +1542,57 @@ void minmax_tiles_impl(const Pass& pass, uint32_t src_dtype, uint32_t dst_dtype,
     });
 }
 
+// A unit window (or any nonconstant extension of a singleton axis) simply
+// passes each sample through SciPy's double line-buffer conversion.
+void minmax_copy(const Pass& pass, uint32_t src_dtype, uint32_t dst_dtype, const void* src, void* dst, StoreOp op) {
+    const uint64_t elements = pass.outer * pass.length * pass.inner;
+    const size_t src_width = array::dtype_size(src_dtype);
+    const size_t dst_width = array::dtype_size(dst_dtype);
+    // float32 signaling NaNs quiet on the double round trip, and large
+    // int64/uint64 samples may round. Every other same-dtype copy is exact.
+    if (op == StoreOp::write && src_dtype == dst_dtype &&
+        src_dtype != SM_FLOAT32 && src_dtype != SM_INT64 && src_dtype != SM_UINT64) {
+        std::memcpy(dst, src, elements * src_width);
+        return;
+    }
+    parallel::parallel_for(elements, 16384, [&](unsigned, uint64_t begin, uint64_t end) {
+        double buf[512];
+        for (uint64_t i = begin; i < end; i += 512) {
+            const size_t n = static_cast<size_t>(std::min<uint64_t>(512, end - i));
+            load_to_double_contig(src_dtype, static_cast<const uint8_t*>(src) + i * src_width, buf, n);
+            store_from_double_generic(dst_dtype, op, buf, static_cast<uint8_t*>(dst) + i * dst_width, 1, n);
+        }
+    });
+}
+
+bool covers_whole_line(const Pass& pass) {
+    // A full period covers all samples for any origin. With constant or
+    // nearest padding, even the two endpoint windows must cover the whole line.
+    if (pass.size / 2 < pass.length) return false;
+    if (pass.mode == SM_NDIMAGE_NEAREST || pass.mode == SM_NDIMAGE_CONSTANT) {
+        return pass.before >= pass.length - 1 && pass.after >= pass.length - 1;
+    }
+    return true;
+}
+
+// A complete period yields a single extremum for the whole line, except
+// when NaNs or the signs of tied zeros make its representative order-dependent.
+template<bool IsMax>
+bool reduce_whole_line(std::vector<double>& samples, const Pass& pass) {
+    const bool constant = pass.mode == SM_NDIMAGE_CONSTANT;
+    if (row_has_nan(samples.data(), samples.size()) || (constant && std::isnan(pass.cval))) return false;
+    const double peak = IsMax ? *std::max_element(samples.begin(), samples.end())
+                              : *std::min_element(samples.begin(), samples.end());
+    const double value = constant ? (IsMax ? std::max(peak, pass.cval) : std::min(peak, pass.cval)) : peak;
+    const auto negative_zero = [](double x) { return x == 0.0 && std::signbit(x); };
+    if (value == 0.0 && ((constant && negative_zero(pass.cval)) ||
+                         std::any_of(samples.begin(), samples.end(), negative_zero))) {
+        return false;
+    }
+    std::fill(samples.begin(), samples.end(), value);
+    return true;
+}
+
 template<bool IsMax>
 void minmax_lines_impl(const Pass& pass, uint32_t src_dtype, uint32_t dst_dtype, const void* src, void* dst,
                        StoreOp op) {
@@ -1554,7 +1607,8 @@ void minmax_lines_impl(const Pass& pass, uint32_t src_dtype, uint32_t dst_dtype,
     const size_t chunk = std::max<size_t>(static_cast<size_t>(line_chunk), std::min<size_t>(w, 65536));
     const size_t widest = static_cast<size_t>(std::min<int64_t>(length, static_cast<int64_t>(chunk)));
     const uint64_t chunks = (pass.length + chunk - 1) / chunk;
-    const bool can_chunk = !check_nan && chunks > 1;
+    const bool whole_line = covers_whole_line(pass);
+    const bool can_chunk = !whole_line && !check_nan && chunks > 1;
     const size_t ws_ext = can_chunk ? (widest + w - 1) : (static_cast<size_t>(length) + w - 1);
     const unsigned lanes = lanes_for(lines * pass.length, 4, 3 * ws_ext * sizeof(double));
     struct MinMaxLineWS {
@@ -1618,25 +1672,37 @@ void minmax_lines_impl(const Pass& pass, uint32_t src_dtype, uint32_t dst_dtype,
     } else {
         const size_t ext_len = static_cast<size_t>(length) + w - 1;
         const uint64_t grain = std::max<uint64_t>(1, 16384 / std::max<uint64_t>(pass.length, 1));
-        const auto make = [&] {
-            MinMaxLineWS ws;
-            ws.ext.resize(ext_len);
-            ws.prefix.resize(ext_len);
-            ws.suffix.resize(ext_len);
-            ws.out.resize(static_cast<size_t>(length));
-            return ws;
-        };
-        for_each_item(lines, grain, lanes, make, [&](uint64_t line, MinMaxLineWS& ws) {
+        for_each_item(lines, grain, lanes, [] { return MinMaxLineWS{}; }, [&](uint64_t line, MinMaxLineWS& ws) {
             const uint64_t offset = (line / pass.inner) * pass.length * pass.inner + line % pass.inner;
-            extended_line_generic(pass, src_dtype, static_cast<const uint8_t*>(src) + offset * src_esize, stride,
-                                  src_esize, -before, ext_len, ws.ext.data());
-            if (check_nan && row_has_nan(ws.ext.data(), ext_len)) {
-                harter_minmax_line(ws.ext.data(), static_cast<size_t>(length), w, IsMax, ws.out.data(), ws.ring);
-            } else {
-                vanherk_chunk(ws.ext.data(), static_cast<size_t>(length), w, ws.prefix.data(), ws.suffix.data(),
-                              ws.out.data());
-            }
+            const uint8_t* in = static_cast<const uint8_t*>(src) + offset * src_esize;
             uint8_t* out_ptr = static_cast<uint8_t*>(dst) + offset * dst_esize;
+            bool reduced = false;
+            if (whole_line) {
+                ws.out.resize(static_cast<size_t>(length));
+                load_to_double_strided(src_dtype, in, stride, ws.out.data(), static_cast<size_t>(length));
+                reduced = reduce_whole_line<IsMax>(ws.out, pass);
+            }
+            if (!reduced) {
+                ws.ext.resize(ext_len);
+                extended_line_generic(pass, src_dtype, in, stride, src_esize, -before, ext_len, ws.ext.data());
+                if (whole_line || (check_nan && row_has_nan(ws.ext.data(), ext_len))) {
+                    if (op == StoreOp::write && stride == 1 && array::is_float(dst_dtype)) {
+                        if (dst_dtype == SM_FLOAT32)
+                            harter_minmax_line<IsMax>(ws.ext.data(), length, w, reinterpret_cast<float*>(out_ptr), ws.ring);
+                        else
+                            harter_minmax_line<IsMax>(ws.ext.data(), length, w, reinterpret_cast<double*>(out_ptr), ws.ring);
+                        return;
+                    }
+                    ws.out.resize(static_cast<size_t>(length));
+                    harter_minmax_line<IsMax>(ws.ext.data(), length, w, ws.out.data(), ws.ring);
+                } else {
+                    ws.out.resize(static_cast<size_t>(length));
+                    ws.prefix.resize(ext_len);
+                    ws.suffix.resize(ext_len);
+                    vanherk_chunk(ws.ext.data(), static_cast<size_t>(length), w, ws.prefix.data(), ws.suffix.data(),
+                                  ws.out.data());
+                }
+            }
             store_from_double_generic(dst_dtype, op, ws.out.data(), out_ptr, stride, static_cast<size_t>(length));
         });
     }
@@ -1644,6 +1710,10 @@ void minmax_lines_impl(const Pass& pass, uint32_t src_dtype, uint32_t dst_dtype,
 
 void dispatch_pass(const Pass& pass, uint32_t src_dtype, uint32_t dst_dtype, const void* src, void* dst, StoreOp op) {
     if (pass.kind == SM_NDIMAGE_MINIMUM || pass.kind == SM_NDIMAGE_MAXIMUM) {
+        if (minmax_identity(pass)) {
+            minmax_copy(pass, src_dtype, dst_dtype, src, dst, op);
+            return;
+        }
         const bool tiles = pass.inner >= min_tile_columns && pass.size <= max_ring_taps;
         if (pass.kind == SM_NDIMAGE_MAXIMUM) {
             if (tiles) minmax_tiles_impl<true>(pass, src_dtype, dst_dtype, src, dst, op);
