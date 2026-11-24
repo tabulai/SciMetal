@@ -205,6 +205,8 @@ enum class StoreOp : uint32_t {
     square_add = 3,
     square_sqrt = 4,
     square_add_sqrt = 5,
+    sub = 6,
+    xor_op = 7,
 };
 
 template<class DstT, StoreOp Op>
@@ -214,14 +216,18 @@ inline void store_val(DstT& dst, double val) noexcept {
         dst = v;
     } else if constexpr (Op == StoreOp::add) {
         dst = dst + v;
+    } else if constexpr (Op == StoreOp::sub) {
+        dst = dst - v;
     } else if constexpr (Op == StoreOp::square) {
         dst = v * v;
     } else if constexpr (Op == StoreOp::square_add) {
         dst = dst + v * v;
     } else if constexpr (Op == StoreOp::square_sqrt) {
         dst = std::sqrt(v * v);
-    } else {
+    } else if constexpr (Op == StoreOp::square_add_sqrt) {
         dst = std::sqrt(dst + v * v);
+    } else {
+        dst = v;
     }
 }
 
@@ -705,6 +711,8 @@ void run_pass_with_op(const Pass& pass, const void* src, void* dst, StoreOp op) 
     case StoreOp::square_add: run_pass_op<SrcT, DstT, StoreOp::square_add>(pass, src, dst); break;
     case StoreOp::square_sqrt: run_pass_op<SrcT, DstT, StoreOp::square_sqrt>(pass, src, dst); break;
     case StoreOp::square_add_sqrt: run_pass_op<SrcT, DstT, StoreOp::square_add_sqrt>(pass, src, dst); break;
+    case StoreOp::sub: run_pass_op<SrcT, DstT, StoreOp::sub>(pass, src, dst); break;
+    case StoreOp::xor_op: run_pass_op<SrcT, DstT, StoreOp::xor_op>(pass, src, dst); break;
     }
 }
 
@@ -728,6 +736,8 @@ void apply_identity(uint64_t elements, const void* src, void* dst, StoreOp op) {
     case StoreOp::square_add: apply_identity_op<SrcT, DstT, StoreOp::square_add>(elements, s, d); break;
     case StoreOp::square_sqrt: apply_identity_op<SrcT, DstT, StoreOp::square_sqrt>(elements, s, d); break;
     case StoreOp::square_add_sqrt: apply_identity_op<SrcT, DstT, StoreOp::square_add_sqrt>(elements, s, d); break;
+    case StoreOp::sub: apply_identity_op<SrcT, DstT, StoreOp::sub>(elements, s, d); break;
+    case StoreOp::xor_op: apply_identity_op<SrcT, DstT, StoreOp::xor_op>(elements, s, d); break;
     }
 }
 
@@ -820,6 +830,8 @@ inline void apply_typed_store_op(typename std::conditional_t<std::is_same_v<DstT
     if constexpr (std::is_same_v<DstT, BoolByteTag>) {
         if constexpr (Op == StoreOp::write) {
             dst = v;
+        } else if constexpr (Op == StoreOp::xor_op) {
+            dst = ((dst != 0) ^ (v != 0)) ? uint8_t{1} : uint8_t{0};
         } else if constexpr (Op == StoreOp::add || Op == StoreOp::square_add || Op == StoreOp::square_add_sqrt) {
             dst = (dst != 0 || v != 0) ? uint8_t{1} : uint8_t{0};
         } else {
@@ -830,14 +842,18 @@ inline void apply_typed_store_op(typename std::conditional_t<std::is_same_v<DstT
             dst = v;
         } else if constexpr (Op == StoreOp::add) {
             dst = dst + v;
+        } else if constexpr (Op == StoreOp::sub) {
+            dst = dst - v;
         } else if constexpr (Op == StoreOp::square) {
             dst = v * v;
         } else if constexpr (Op == StoreOp::square_add) {
             dst = dst + v * v;
         } else if constexpr (Op == StoreOp::square_sqrt) {
             dst = std::sqrt(v * v);
-        } else {
+        } else if constexpr (Op == StoreOp::square_add_sqrt) {
             dst = std::sqrt(dst + v * v);
+        } else {
+            dst = v;
         }
     } else {
         using RawU = std::make_unsigned_t<DstT>;
@@ -848,6 +864,8 @@ inline void apply_typed_store_op(typename std::conditional_t<std::is_same_v<DstT
             dst = v;
         } else if constexpr (Op == StoreOp::add) {
             dst = static_cast<DstT>(static_cast<RawU>(ud + uv));
+        } else if constexpr (Op == StoreOp::sub) {
+            dst = static_cast<DstT>(static_cast<RawU>(ud - uv));
         } else if constexpr (Op == StoreOp::square) {
             dst = static_cast<DstT>(static_cast<RawU>(uv * uv));
         } else if constexpr (Op == StoreOp::square_add) {
@@ -855,9 +873,11 @@ inline void apply_typed_store_op(typename std::conditional_t<std::is_same_v<DstT
         } else if constexpr (Op == StoreOp::square_sqrt) {
             const DstT s = static_cast<DstT>(static_cast<RawU>(uv * uv));
             dst = (std::is_signed_v<DstT> && s < 0) ? DstT{0} : static_cast<DstT>(std::sqrt(static_cast<double>(s)));
-        } else {
+        } else if constexpr (Op == StoreOp::square_add_sqrt) {
             const DstT s = static_cast<DstT>(static_cast<RawU>(ud + uv * uv));
             dst = (std::is_signed_v<DstT> && s < 0) ? DstT{0} : static_cast<DstT>(std::sqrt(static_cast<double>(s)));
+        } else {
+            dst = v;
         }
     }
 }
@@ -888,6 +908,8 @@ inline void store_row_double(StoreOp op, const double* __restrict__ acc, void* b
     case StoreOp::square_add: store_row_double_op<DstT, StoreOp::square_add>(acc, base, stride, n); break;
     case StoreOp::square_sqrt: store_row_double_op<DstT, StoreOp::square_sqrt>(acc, base, stride, n); break;
     case StoreOp::square_add_sqrt: store_row_double_op<DstT, StoreOp::square_add_sqrt>(acc, base, stride, n); break;
+    case StoreOp::sub: store_row_double_op<DstT, StoreOp::sub>(acc, base, stride, n); break;
+    case StoreOp::xor_op: store_row_double_op<DstT, StoreOp::xor_op>(acc, base, stride, n); break;
     }
 }
 
@@ -1290,6 +1312,8 @@ void apply_identity_typed(const void* src_typed, void* dst_raw, uint64_t count, 
     case StoreOp::square_add_sqrt:
         apply_identity_typed_op<DstT, StoreOp::square_add_sqrt>(src_typed, dst_raw, count);
         break;
+    case StoreOp::sub: apply_identity_typed_op<DstT, StoreOp::sub>(src_typed, dst_raw, count); break;
+    case StoreOp::xor_op: apply_identity_typed_op<DstT, StoreOp::xor_op>(src_typed, dst_raw, count); break;
     }
 }
 
@@ -1327,7 +1351,309 @@ void apply_identity_generic(uint64_t elements, uint32_t src_dtype, uint32_t dst_
     });
 }
 
+// ---- 1-D minimum / maximum (van Herk / Gil-Werman + exact Harter NaN fallback) ---
+
+struct HarterPair {
+    double value;
+    size_t death;
+};
+
+void harter_minmax_line(const double* __restrict__ ext, size_t length, size_t w, bool is_max,
+                        double* __restrict__ out, std::vector<HarterPair>& ring) {
+    if (w == 1) {
+        std::memcpy(out, ext, length * sizeof(double));
+        return;
+    }
+    ring.resize(w);
+    size_t minpair = 0, last = 0;
+    ring[0] = {ext[0], w};
+    const size_t total = w + length - 1;
+    for (size_t ll = 1; ll < total; ++ll) {
+        const double val = ext[ll];
+        if (ring[minpair].death == ll) {
+            if (++minpair == w) minpair = 0;
+        }
+        if ((!is_max && val <= ring[minpair].value) || (is_max && val >= ring[minpair].value)) {
+            ring[minpair].value = val;
+            ring[minpair].death = ll + w;
+            last = minpair;
+        } else {
+            while ((!is_max && ring[last].value >= val) || (is_max && ring[last].value <= val)) {
+                last = (last == 0 ? w - 1 : last - 1);
+            }
+            if (++last == w) last = 0;
+            ring[last].value = val;
+            ring[last].death = ll + w;
+        }
+        if (ll >= w - 1) out[ll - (w - 1)] = ring[minpair].value;
+    }
+}
+
+inline bool row_has_nan(const double* __restrict__ p, size_t n) noexcept {
+    for (size_t i = 0; i < n; ++i) {
+        if (std::isnan(p[i])) return true;
+    }
+    return false;
+}
+
+template<bool IsMax>
+inline void minmax_combine_row(double* __restrict__ dst, const double* __restrict__ a, const double* __restrict__ b,
+                               size_t n) noexcept {
+    if constexpr (IsMax) {
+        for (size_t c = 0; c < n; ++c) dst[c] = a[c] > b[c] ? a[c] : b[c];
+    } else {
+        for (size_t c = 0; c < n; ++c) dst[c] = a[c] < b[c] ? a[c] : b[c];
+    }
+}
+
+template<bool IsMax>
+void minmax_tiles_impl(const Pass& pass, uint32_t src_dtype, uint32_t dst_dtype, const void* src, void* dst,
+                       StoreOp op) {
+    const size_t w = static_cast<size_t>(pass.size);
+    const size_t inner = static_cast<size_t>(pass.inner);
+    const int64_t length = static_cast<int64_t>(pass.length);
+    const int64_t before = static_cast<int64_t>(pass.before);
+    const size_t src_esize = static_cast<size_t>(array::dtype_size(src_dtype));
+    const size_t dst_esize = static_cast<size_t>(array::dtype_size(dst_dtype));
+    const bool check_nan = array::is_float(src_dtype) || (pass.mode == SM_NDIMAGE_CONSTANT && std::isnan(pass.cval));
+    const size_t tile = std::min(inner, std::clamp<size_t>((65536 / (std::max<size_t>(w, 1) * 2 * sizeof(double))) & ~size_t{7},
+                                                           32, 1024));
+    const uint64_t tiles = (inner + tile - 1) / tile;
+    const size_t pitch = (tile + 7) & ~size_t{7};
+    const unsigned lanes = lanes_for(pass.outer * pass.length * pass.inner, 4,
+                                     (2 * w + 2) * pitch * sizeof(double));
+    struct MinMaxTileWS {
+        std::vector<double> prev_suffix;
+        std::vector<double> cur_rows;
+        std::vector<double> pref;
+        std::vector<double> acc;
+        std::vector<double> nan_ext;
+        std::vector<double> nan_out;
+        std::vector<HarterPair> ring;
+    };
+    const auto make = [&] {
+        MinMaxTileWS ws;
+        ws.prev_suffix.resize(w * pitch);
+        ws.cur_rows.resize(w * pitch);
+        ws.pref.resize(pitch);
+        ws.acc.resize(pitch);
+        return ws;
+    };
+    const size_t ext_len = static_cast<size_t>(length) + w - 1;
+    const size_t num_blocks = (ext_len + w - 1) / w;
+    for_each_item(pass.outer * tiles, 1, lanes, make, [&](uint64_t item, MinMaxTileWS& ws) {
+        const uint64_t block = item / tiles;
+        const size_t c0 = static_cast<size_t>(item % tiles) * tile;
+        const size_t n = std::min(tile, inner - c0);
+        const uint8_t* in = static_cast<const uint8_t*>(src) + (block * pass.length * pass.inner + c0) * src_esize;
+        uint8_t* out = static_cast<uint8_t*>(dst) + (block * pass.length * pass.inner + c0) * dst_esize;
+        if (w == 1) {
+            for (int64_t y = 0; y < length; ++y) {
+                load_to_double_contig(src_dtype, in + static_cast<size_t>(y) * inner * src_esize, ws.acc.data(), n);
+                store_from_double_generic(dst_dtype, op, ws.acc.data(),
+                                          out + static_cast<size_t>(y) * inner * dst_esize, 1, n);
+            }
+            return;
+        }
+        auto load_ext_row = [&](int64_t t, double* row) -> bool {
+            const int64_t pos = t - before;
+            const int64_t source = pos >= 0 && pos < length ? pos : extend(pos, length, pass.mode);
+            if (source < 0) {
+                std::fill_n(row, n, pass.cval);
+                return check_nan && std::isnan(pass.cval);
+            }
+            load_to_double_contig(src_dtype, in + static_cast<size_t>(source) * inner * src_esize, row, n);
+            return check_nan && row_has_nan(row, n);
+        };
+        // Pre-scan for NaN only when op modifies dst in-place; for StoreOp::write
+        // we detect NaN on the fly while loading rows and re-run only if found.
+        bool tile_has_nan = false;
+        if (check_nan) {
+            if (pass.mode == SM_NDIMAGE_CONSTANT && std::isnan(pass.cval) && (before > 0 || pass.after > 0)) {
+                tile_has_nan = true;
+            } else if (op != StoreOp::write && array::is_float(src_dtype)) {
+                for (int64_t y = 0; y < length; ++y) {
+                    load_to_double_contig(src_dtype, in + static_cast<size_t>(y) * inner * src_esize, ws.acc.data(), n);
+                    if (row_has_nan(ws.acc.data(), n)) {
+                        tile_has_nan = true;
+                        break;
+                    }
+                }
+            }
+        }
+        auto run_harter_tile = [&] {
+            ws.nan_ext.resize(ext_len);
+            ws.nan_out.resize(static_cast<size_t>(length));
+            for (size_t c = 0; c < n; ++c) {
+                const uint8_t* col_in = in + c * src_esize;
+                uint8_t* col_out = out + c * dst_esize;
+                extended_line_generic(pass, src_dtype, col_in, inner, src_esize, -before, ext_len, ws.nan_ext.data());
+                harter_minmax_line(ws.nan_ext.data(), static_cast<size_t>(length), w, IsMax, ws.nan_out.data(),
+                                   ws.ring);
+                store_from_double_generic(dst_dtype, op, ws.nan_out.data(), col_out, inner,
+                                          static_cast<size_t>(length));
+            }
+        };
+        if (tile_has_nan) {
+            run_harter_tile();
+            return;
+        }
+        double* __restrict__ pref = ws.pref.data();
+        double* __restrict__ acc = ws.acc.data();
+        for (size_t b = 0; b < num_blocks; ++b) {
+            const size_t t0 = b * w;
+            const size_t m = std::min(w, ext_len - t0);
+            for (size_t r = 0; r < m; ++r) {
+                double* row = ws.cur_rows.data() + r * pitch;
+                if (load_ext_row(static_cast<int64_t>(t0 + r), row)) {
+                    run_harter_tile();
+                    return;
+                }
+                if (r == 0) {
+                    std::memcpy(pref, row, n * sizeof(double));
+                } else {
+                    minmax_combine_row<IsMax>(pref, pref, row, n);
+                }
+                const size_t t = t0 + r;
+                if (t >= w - 1) {
+                    const size_t y = t - (w - 1);
+                    uint8_t* target = out + y * inner * dst_esize;
+                    if (r == w - 1) {
+                        store_from_double_generic(dst_dtype, op, pref, target, 1, n);
+                    } else {
+                        const double* suf = ws.prev_suffix.data() + (r + 1) * pitch;
+                        minmax_combine_row<IsMax>(acc, suf, pref, n);
+                        store_from_double_generic(dst_dtype, op, acc, target, 1, n);
+                    }
+                }
+            }
+            if (b + 1 < num_blocks) {
+                std::memcpy(ws.prev_suffix.data() + (m - 1) * pitch,
+                            ws.cur_rows.data() + (m - 1) * pitch, n * sizeof(double));
+                for (size_t r = m - 1; r > 1; --r) {
+                    minmax_combine_row<IsMax>(ws.prev_suffix.data() + (r - 1) * pitch,
+                                              ws.cur_rows.data() + (r - 1) * pitch,
+                                              ws.prev_suffix.data() + r * pitch, n);
+                }
+            }
+        }
+    });
+}
+
+template<bool IsMax>
+void minmax_lines_impl(const Pass& pass, uint32_t src_dtype, uint32_t dst_dtype, const void* src, void* dst,
+                       StoreOp op) {
+    const size_t w = static_cast<size_t>(pass.size);
+    const size_t stride = static_cast<size_t>(pass.inner);
+    const size_t src_esize = static_cast<size_t>(array::dtype_size(src_dtype));
+    const size_t dst_esize = static_cast<size_t>(array::dtype_size(dst_dtype));
+    const int64_t length = static_cast<int64_t>(pass.length);
+    const int64_t before = static_cast<int64_t>(pass.before);
+    const uint64_t lines = pass.outer * pass.inner;
+    const bool check_nan = array::is_float(src_dtype) || (pass.mode == SM_NDIMAGE_CONSTANT && std::isnan(pass.cval));
+    const size_t chunk = std::max<size_t>(static_cast<size_t>(line_chunk), std::min<size_t>(w, 65536));
+    const size_t widest = static_cast<size_t>(std::min<int64_t>(length, static_cast<int64_t>(chunk)));
+    const uint64_t chunks = (pass.length + chunk - 1) / chunk;
+    const bool can_chunk = !check_nan && chunks > 1;
+    const size_t ws_ext = can_chunk ? (widest + w - 1) : (static_cast<size_t>(length) + w - 1);
+    const unsigned lanes = lanes_for(lines * pass.length, 4, 3 * ws_ext * sizeof(double));
+    struct MinMaxLineWS {
+        std::vector<double> ext;
+        std::vector<double> prefix;
+        std::vector<double> suffix;
+        std::vector<double> out;
+        std::vector<HarterPair> ring;
+    };
+    auto vanherk_chunk = [](const double* __restrict__ ext, size_t n, size_t win, double* __restrict__ prefix,
+                            double* __restrict__ suffix, double* __restrict__ out) {
+        if (win == 1) {
+            std::memcpy(out, ext, n * sizeof(double));
+            return;
+        }
+        const size_t ext_len = n + win - 1;
+        for (size_t b0 = 0; b0 < ext_len; b0 += win) {
+            const size_t b1 = std::min(ext_len, b0 + win);
+            double p = ext[b0];
+            prefix[b0] = p;
+            for (size_t t = b0 + 1; t < b1; ++t) {
+                const double v = ext[t];
+                p = IsMax ? (v > p ? v : p) : (v < p ? v : p);
+                prefix[t] = p;
+            }
+            double s = ext[b1 - 1];
+            suffix[b1 - 1] = s;
+            for (size_t t = b1 - 1; t > b0; --t) {
+                const double v = ext[t - 1];
+                s = IsMax ? (v > s ? v : s) : (v < s ? v : s);
+                suffix[t - 1] = s;
+            }
+        }
+        for (size_t i = 0; i < n; ++i) {
+            const double a = suffix[i], b = prefix[i + win - 1];
+            out[i] = IsMax ? (b > a ? b : a) : (b < a ? b : a);
+        }
+    };
+
+    if (can_chunk) {
+        const uint64_t grain = std::max<uint64_t>(1, 16384 / widest);
+        const auto make = [&] {
+            MinMaxLineWS ws;
+            ws.ext.resize(widest + w - 1);
+            ws.prefix.resize(widest + w - 1);
+            ws.suffix.resize(widest + w - 1);
+            ws.out.resize(widest);
+            return ws;
+        };
+        for_each_item(lines * chunks, grain, lanes, make, [&](uint64_t item, MinMaxLineWS& ws) {
+            const uint64_t line = item / chunks;
+            const int64_t begin = static_cast<int64_t>(item % chunks) * static_cast<int64_t>(chunk);
+            const size_t n = static_cast<size_t>(std::min(length, begin + static_cast<int64_t>(chunk)) - begin);
+            const uint64_t offset = (line / pass.inner) * pass.length * pass.inner + line % pass.inner;
+            extended_line_generic(pass, src_dtype, static_cast<const uint8_t*>(src) + offset * src_esize, stride,
+                                  src_esize, begin - before, n + w - 1, ws.ext.data());
+            vanherk_chunk(ws.ext.data(), n, w, ws.prefix.data(), ws.suffix.data(), ws.out.data());
+            uint8_t* out_ptr = static_cast<uint8_t*>(dst) + (offset + static_cast<size_t>(begin) * stride) * dst_esize;
+            store_from_double_generic(dst_dtype, op, ws.out.data(), out_ptr, stride, n);
+        });
+    } else {
+        const size_t ext_len = static_cast<size_t>(length) + w - 1;
+        const uint64_t grain = std::max<uint64_t>(1, 16384 / std::max<uint64_t>(pass.length, 1));
+        const auto make = [&] {
+            MinMaxLineWS ws;
+            ws.ext.resize(ext_len);
+            ws.prefix.resize(ext_len);
+            ws.suffix.resize(ext_len);
+            ws.out.resize(static_cast<size_t>(length));
+            return ws;
+        };
+        for_each_item(lines, grain, lanes, make, [&](uint64_t line, MinMaxLineWS& ws) {
+            const uint64_t offset = (line / pass.inner) * pass.length * pass.inner + line % pass.inner;
+            extended_line_generic(pass, src_dtype, static_cast<const uint8_t*>(src) + offset * src_esize, stride,
+                                  src_esize, -before, ext_len, ws.ext.data());
+            if (check_nan && row_has_nan(ws.ext.data(), ext_len)) {
+                harter_minmax_line(ws.ext.data(), static_cast<size_t>(length), w, IsMax, ws.out.data(), ws.ring);
+            } else {
+                vanherk_chunk(ws.ext.data(), static_cast<size_t>(length), w, ws.prefix.data(), ws.suffix.data(),
+                              ws.out.data());
+            }
+            uint8_t* out_ptr = static_cast<uint8_t*>(dst) + offset * dst_esize;
+            store_from_double_generic(dst_dtype, op, ws.out.data(), out_ptr, stride, static_cast<size_t>(length));
+        });
+    }
+}
+
 void dispatch_pass(const Pass& pass, uint32_t src_dtype, uint32_t dst_dtype, const void* src, void* dst, StoreOp op) {
+    if (pass.kind == SM_NDIMAGE_MINIMUM || pass.kind == SM_NDIMAGE_MAXIMUM) {
+        const bool tiles = pass.inner >= min_tile_columns && pass.size <= max_ring_taps;
+        if (pass.kind == SM_NDIMAGE_MAXIMUM) {
+            if (tiles) minmax_tiles_impl<true>(pass, src_dtype, dst_dtype, src, dst, op);
+            else minmax_lines_impl<true>(pass, src_dtype, dst_dtype, src, dst, op);
+        } else {
+            if (tiles) minmax_tiles_impl<false>(pass, src_dtype, dst_dtype, src, dst, op);
+            else minmax_lines_impl<false>(pass, src_dtype, dst_dtype, src, dst, op);
+        }
+        return;
+    }
     if (src_dtype == SM_FLOAT64 && dst_dtype == SM_FLOAT64) {
         run_pass_with_op<double, double>(pass, src, dst, op);
     } else if (src_dtype == SM_FLOAT32 && dst_dtype == SM_FLOAT32) {
@@ -1410,7 +1736,6 @@ BufferPtr run_cpu_composite(sm_context* context, const CompositePlan& plan, cons
 
     void* result_ptr = mutable_data(result.get());
     const size_t num_chains = plan.chains.size();
-    const bool is_grad = plan.combine_op == SM_NDIMAGE_COMBINE_SQRT_SUM_SQ;
 
     for (size_t k = 0; k < num_chains; ++k) {
         const auto& chain = plan.chains[k];
@@ -1418,12 +1743,17 @@ BufferPtr run_cpu_composite(sm_context* context, const CompositePlan& plan, cons
         const bool is_last = (k + 1 == num_chains);
 
         StoreOp final_op = StoreOp::write;
-        if (is_grad) {
+        if (plan.combine_op == SM_NDIMAGE_COMBINE_SQRT_SUM_SQ) {
             if (is_first && is_last) final_op = StoreOp::square_sqrt;
             else if (is_first) final_op = StoreOp::square;
             else if (is_last) final_op = StoreOp::square_add_sqrt;
             else final_op = StoreOp::square_add;
+        } else if (plan.combine_op == SM_NDIMAGE_COMBINE_SUB) {
+            final_op = is_first ? StoreOp::write : StoreOp::sub;
+        } else if (plan.combine_op == SM_NDIMAGE_COMBINE_XOR) {
+            final_op = is_first ? StoreOp::write : StoreOp::xor_op;
         } else {
+            // SUM and MORPH_LAPLACE both compute chain_0 + chain_1 first.
             final_op = is_first ? StoreOp::write : StoreOp::add;
         }
 
@@ -1451,6 +1781,10 @@ BufferPtr run_cpu_composite(sm_context* context, const CompositePlan& plan, cons
             src = dst;
             src_dtype = plan.out_dtype;
         }
+    }
+    if (plan.combine_op == SM_NDIMAGE_COMBINE_MORPH_LAPLACE) {
+        dispatch_identity(elements, plan.in_dtype, plan.out_dtype, input, result_ptr, StoreOp::sub);
+        dispatch_identity(elements, plan.in_dtype, plan.out_dtype, input, result_ptr, StoreOp::sub);
     }
     return result;
 }

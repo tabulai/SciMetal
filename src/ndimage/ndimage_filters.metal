@@ -277,6 +277,185 @@ SM_NDIMAGE_CORRELATE1D_KERNEL(sm_ndimage_correlate1d_any_f64, ulong, SM_NDIMAGE_
 SM_NDIMAGE_CORRELATE1D_KERNEL(sm_ndimage_correlate1d_even_f64, ulong, SM_NDIMAGE_SYMMETRY_EVEN)
 SM_NDIMAGE_CORRELATE1D_KERNEL(sm_ndimage_correlate1d_odd_f64, ulong, SM_NDIMAGE_SYMMETRY_ODD)
 
+static inline int sm_ndimage_extend1d(int pos, int length, uint mode) {
+    if (pos >= 0 && pos < length) return pos;
+    if (mode == 0u) { // nearest
+        return pos < 0 ? 0 : length - 1;
+    } else if (mode == 1u) { // wrap
+        if (pos >= -length && pos < 0) return pos + length;
+        if (pos >= length && pos < 2 * length) return pos - length;
+        int m = pos % length;
+        return m < 0 ? m + length : m;
+    } else if (mode == 2u) { // reflect
+        if (pos >= -length && pos < 0) return -1 - pos;
+        if (pos >= length && pos < 2 * length) return 2 * length - 1 - pos;
+        const int period = 2 * length;
+        int m = pos % period;
+        if (m < 0) m += period;
+        return m < length ? m : period - 1 - m;
+    } else if (mode == 3u) { // mirror
+        if (length == 1) return 0;
+        if (pos > -length && pos < 0) return -pos;
+        if (pos >= length && pos <= 2 * length - 2) return 2 * length - 2 - pos;
+        const int period = 2 * length - 2;
+        int m = pos % period;
+        if (m < 0) m += period;
+        return m < length ? m : period - m;
+    } else { // constant
+        return -1;
+    }
+}
+
+template <bool IsMax>
+static inline float sm_ndimage_minmax_step(float acc, float v) {
+    return IsMax ? (v > acc ? v : acc) : (v < acc ? v : acc);
+}
+
+template <typename Destination, bool IsMax>
+static inline void sm_ndimage_minmax1d_impl(constant SMNdimageMinMax1DParams& p, device const float* src,
+                                            Destination dst, uint3 pos) {
+    if (pos.x >= p.extent[0] || pos.y >= p.extent[1] || pos.z >= p.extent[2]) return;
+    const uint index = (pos.z * p.extent[1] + pos.y) * p.extent[0] + pos.x;
+    const int at = int(p.axis_in_y != 0u ? pos.y : pos.x);
+    const int length = int(p.length);
+    const int stride = int(p.stride);
+    const int taps = int(p.taps);
+    const int first = at - int(p.before);
+    float acc;
+    if (first >= 0 && first + taps <= length) {
+        device const float* window = src + (int(index) - int(p.before) * stride);
+        acc = window[0];
+        for (int j = 1; j < taps; ++j) {
+            acc = sm_ndimage_minmax_step<IsMax>(acc, window[j * stride]);
+        }
+    } else {
+        device const float* line_src = src + (int(index) - at * stride);
+        const uint mode = p.mode;
+        const float cval = p.cval;
+        const int q0 = sm_ndimage_extend1d(first, length, mode);
+        acc = q0 < 0 ? cval : line_src[q0 * stride];
+        for (int j = 1; j < taps; ++j) {
+            const int q = sm_ndimage_extend1d(first + j, length, mode);
+            const float v = q < 0 ? cval : line_src[q * stride];
+            acc = sm_ndimage_minmax_step<IsMax>(acc, v);
+        }
+    }
+    sm_ndimage_store(dst, index, acc);
+}
+
+#define SM_NDIMAGE_MINMAX1D_KERNEL(name, element, is_max)                                           \
+    kernel void name(constant SMNdimageMinMax1DParams& p [[buffer(0)]],                             \
+                     device const float* src [[buffer(1)]],                                         \
+                     device element* dst [[buffer(2)]],                                             \
+                     uint3 pos [[thread_position_in_grid]]) {                                       \
+        sm_ndimage_minmax1d_impl<device element*, is_max>(p, src, dst, pos);                        \
+    }
+
+SM_NDIMAGE_MINMAX1D_KERNEL(sm_ndimage_minmax1d_min_f32, float, false)
+SM_NDIMAGE_MINMAX1D_KERNEL(sm_ndimage_minmax1d_max_f32, float, true)
+SM_NDIMAGE_MINMAX1D_KERNEL(sm_ndimage_minmax1d_min_f64, ulong, false)
+SM_NDIMAGE_MINMAX1D_KERNEL(sm_ndimage_minmax1d_max_f64, ulong, true)
+
+template <bool IsMax>
+static inline void sm_ndimage_minmax1d_vh_pass1_impl(constant SMNdimageMinMax1DParams& p,
+                                                     device const float* src,
+                                                     device float* prefix,
+                                                     device float* suffix,
+                                                     uint3 pos) {
+    if (pos.x >= p.extent[0] || pos.y >= p.extent[1] || pos.z >= p.extent[2]) return;
+    const uint blk = p.axis_in_y != 0u ? pos.y : pos.x;
+    const uint t0 = blk * p.taps;
+    if (t0 >= p.ext_len) return;
+    const uint t1 = min(t0 + p.taps, p.ext_len);
+    const int length = int(p.length);
+    const int before = int(p.before);
+    const uint stride = p.stride;
+    const uint mode = p.mode;
+    const float cval = p.cval;
+    uint line_src_base;
+    uint line_ext_base;
+    if (p.axis_in_y != 0u) {
+        line_src_base = pos.z * p.length * stride + pos.x;
+        line_ext_base = pos.z * p.ext_len * stride + pos.x;
+    } else {
+        line_src_base = pos.y * p.length;
+        line_ext_base = pos.y * p.ext_len;
+    }
+    // Forward prefix scan
+    float acc;
+    {
+        const int q = sm_ndimage_extend1d(int(t0) - before, length, mode);
+        acc = q < 0 ? cval : src[line_src_base + uint(q) * stride];
+        prefix[line_ext_base + t0 * stride] = acc;
+    }
+    for (uint t = t0 + 1u; t < t1; ++t) {
+        const int q = sm_ndimage_extend1d(int(t) - before, length, mode);
+        const float v = q < 0 ? cval : src[line_src_base + uint(q) * stride];
+        acc = sm_ndimage_minmax_step<IsMax>(acc, v);
+        prefix[line_ext_base + t * stride] = acc;
+    }
+    // Backward suffix scan
+    {
+        const uint tl = t1 - 1u;
+        const int q = sm_ndimage_extend1d(int(tl) - before, length, mode);
+        acc = q < 0 ? cval : src[line_src_base + uint(q) * stride];
+        suffix[line_ext_base + tl * stride] = acc;
+    }
+    for (uint t = t1 - 1u; t > t0; --t) {
+        const uint idx = t - 1u;
+        const int q = sm_ndimage_extend1d(int(idx) - before, length, mode);
+        const float v = q < 0 ? cval : src[line_src_base + uint(q) * stride];
+        acc = sm_ndimage_minmax_step<IsMax>(acc, v);
+        suffix[line_ext_base + idx * stride] = acc;
+    }
+}
+
+kernel void sm_ndimage_minmax1d_vh_pass1_min(constant SMNdimageMinMax1DParams& p [[buffer(0)]],
+                                             device const float* src [[buffer(1)]],
+                                             device float* prefix [[buffer(2)]],
+                                             device float* suffix [[buffer(3)]],
+                                             uint3 pos [[thread_position_in_grid]]) {
+    sm_ndimage_minmax1d_vh_pass1_impl<false>(p, src, prefix, suffix, pos);
+}
+
+kernel void sm_ndimage_minmax1d_vh_pass1_max(constant SMNdimageMinMax1DParams& p [[buffer(0)]],
+                                             device const float* src [[buffer(1)]],
+                                             device float* prefix [[buffer(2)]],
+                                             device float* suffix [[buffer(3)]],
+                                             uint3 pos [[thread_position_in_grid]]) {
+    sm_ndimage_minmax1d_vh_pass1_impl<true>(p, src, prefix, suffix, pos);
+}
+
+template <typename Destination, bool IsMax>
+static inline void sm_ndimage_minmax1d_vh_pass2_impl(constant SMNdimageMinMax1DParams& p,
+                                                     device const float* prefix,
+                                                     device const float* suffix,
+                                                     Destination dst,
+                                                     uint3 pos) {
+    if (pos.x >= p.extent[0] || pos.y >= p.extent[1] || pos.z >= p.extent[2]) return;
+    const uint index = (pos.z * p.extent[1] + pos.y) * p.extent[0] + pos.x;
+    const uint at = p.axis_in_y != 0u ? pos.y : pos.x;
+    const uint stride = p.stride;
+    const uint line_ext_base = p.axis_in_y != 0u ? (pos.z * p.ext_len * stride + pos.x) : (pos.y * p.ext_len);
+    const float a = suffix[line_ext_base + at * stride];
+    const float b = prefix[line_ext_base + (at + p.taps - 1u) * stride];
+    sm_ndimage_store(dst, index, sm_ndimage_minmax_step<IsMax>(a, b));
+}
+
+#define SM_NDIMAGE_MINMAX1D_VH_PASS2_KERNEL(name, element, is_max)                                  \
+    kernel void name(constant SMNdimageMinMax1DParams& p [[buffer(0)]],                             \
+                     device const float* prefix [[buffer(1)]],                                      \
+                     device const float* suffix [[buffer(2)]],                                      \
+                     device element* dst [[buffer(3)]],                                             \
+                     uint3 pos [[thread_position_in_grid]]) {                                       \
+        sm_ndimage_minmax1d_vh_pass2_impl<device element*, is_max>(p, prefix, suffix, dst, pos);    \
+    }
+
+SM_NDIMAGE_MINMAX1D_VH_PASS2_KERNEL(sm_ndimage_minmax1d_vh_pass2_min_f32, float, false)
+SM_NDIMAGE_MINMAX1D_VH_PASS2_KERNEL(sm_ndimage_minmax1d_vh_pass2_max_f32, float, true)
+SM_NDIMAGE_MINMAX1D_VH_PASS2_KERNEL(sm_ndimage_minmax1d_vh_pass2_min_f64, ulong, false)
+SM_NDIMAGE_MINMAX1D_VH_PASS2_KERNEL(sm_ndimage_minmax1d_vh_pass2_max_f64, ulong, true)
+
 template <typename Destination>
 static inline void sm_ndimage_combine_impl(constant SMNdimageCombineParams& p,
                                            device const float* a,
@@ -290,6 +469,8 @@ static inline void sm_ndimage_combine_impl(constant SMNdimageCombineParams& p,
         out = va;
     } else if (p.op == SM_NDIMAGE_COMBINE_OP_SUM2) {
         out = va + b[gid];
+    } else if (p.op == SM_NDIMAGE_COMBINE_OP_SUB2) {
+        out = va - b[gid];
     } else if (p.op == SM_NDIMAGE_COMBINE_OP_SQRT_SQ1) {
         out = sqrt(va * va);
     } else if (p.op == SM_NDIMAGE_COMBINE_OP_SUM_SQ2) {
@@ -322,4 +503,26 @@ kernel void sm_ndimage_combine_f64(constant SMNdimageCombineParams& p [[buffer(0
                                    device ulong* dst [[buffer(3)]],
                                    uint gid [[thread_position_in_grid]]) {
     sm_ndimage_combine_impl<device ulong*>(p, a, b, dst, gid);
+}
+
+kernel void sm_ndimage_combine_morph_laplace_f32(constant SMNdimageCombineParams& p [[buffer(0)]],
+                                                 device const float* a [[buffer(1)]],
+                                                 device const float* b [[buffer(2)]],
+                                                 device const float* c [[buffer(3)]],
+                                                 device float* dst [[buffer(4)]],
+                                                 uint gid [[thread_position_in_grid]]) {
+    if (gid >= p.elements) return;
+    const float vc = c[gid];
+    dst[gid] = ((a[gid] + b[gid]) - vc) - vc;
+}
+
+kernel void sm_ndimage_combine_morph_laplace_f64(constant SMNdimageCombineParams& p [[buffer(0)]],
+                                                 device const float* a [[buffer(1)]],
+                                                 device const float* b [[buffer(2)]],
+                                                 device const float* c [[buffer(3)]],
+                                                 device ulong* dst [[buffer(4)]],
+                                                 uint gid [[thread_position_in_grid]]) {
+    if (gid >= p.elements) return;
+    const float vc = c[gid];
+    sm_ndimage_store(dst, gid, ((a[gid] + b[gid]) - vc) - vc);
 }

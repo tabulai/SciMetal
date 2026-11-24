@@ -693,7 +693,7 @@ def test_wrappers_keep_scipys_signatures_and_are_registered():
         assert inspect.signature(ours) == inspect.signature(theirs)
         assert ours.__doc__ == theirs.__doc__ and ours.__name__ == name
         assert name in dir(mn)
-    assert mn.median_filter is sn.median_filter  # everything else is SciPy's own object
+    assert mn.generic_filter is sn.generic_filter  # everything else is SciPy's own object
 
 
 # ---- properties -------------------------------------------------------------------------------

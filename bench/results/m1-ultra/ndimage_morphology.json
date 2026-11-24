@@ -1,0 +1,748 @@
+{
+  "benchmark": "ndimage_morphology",
+  "numpy": "2.5.5",
+  "scipy": "1.18.1",
+  "scimetal": "0.1.0",
+  "machine": "arm64",
+  "macos": "26.5.1",
+  "load_before": [
+    4.95,
+    4.04,
+    3.22
+  ],
+  "uptime_before": "17:47  up 159 days,  6:29, 25 users, load averages: 4.95 4.04 3.22",
+  "workloads": [
+    {
+      "workload": "median_filter 4096x4096 3x3",
+      "dtype": "float64",
+      "elements": 16777216,
+      "scipy_ms": 1541.75,
+      "scipy_min_ms": 1541.75,
+      "fast": {
+        "ms": 2.107,
+        "min_ms": 1.883,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 731.9,
+        "max_error_over_scale": 3.4516859939584554e-08,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 82.361,
+        "min_ms": 76.757,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 18.7,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "median_filter 4096x4096 3x3",
+      "dtype": "float32",
+      "elements": 16777216,
+      "scipy_ms": 1605.0,
+      "scipy_min_ms": 1605.0,
+      "fast": {
+        "ms": 1.661,
+        "min_ms": 1.603,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 966.2,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      },
+      "strict": {
+        "ms": 81.54,
+        "min_ms": 76.09,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 19.7,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "median_filter 4096x4096 3x3",
+      "dtype": "uint8",
+      "elements": 16777216,
+      "scipy_ms": 1559.02,
+      "scipy_min_ms": 1559.02,
+      "fast": {
+        "ms": 3.257,
+        "min_ms": 2.975,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 478.6,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      },
+      "strict": {
+        "ms": 75.283,
+        "min_ms": 71.237,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 20.7,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "median_filter 4096x4096 3x3",
+      "dtype": "uint16",
+      "elements": 16777216,
+      "scipy_ms": 1592.51,
+      "scipy_min_ms": 1592.51,
+      "fast": {
+        "ms": 3.871,
+        "min_ms": 3.708,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 411.4,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      },
+      "strict": {
+        "ms": 72.022,
+        "min_ms": 70.09,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 22.1,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "median_filter 4096x4096 5x5",
+      "dtype": "float64",
+      "elements": 16777216,
+      "scipy_ms": 5336.29,
+      "scipy_min_ms": 5336.29,
+      "fast": {
+        "ms": 2.946,
+        "min_ms": 2.262,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 1811.5,
+        "max_error_over_scale": 3.570575092639551e-08,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 414.992,
+        "min_ms": 405.228,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 12.9,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "median_filter 4096x4096 5x5",
+      "dtype": "float32",
+      "elements": 16777216,
+      "scipy_ms": 5420.44,
+      "scipy_min_ms": 5420.44,
+      "fast": {
+        "ms": 2.697,
+        "min_ms": 2.617,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 2010.0,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      },
+      "strict": {
+        "ms": 411.436,
+        "min_ms": 397.95,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 13.2,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "median_filter 4096x4096 5x5",
+      "dtype": "uint8",
+      "elements": 16777216,
+      "scipy_ms": 5328.85,
+      "scipy_min_ms": 5328.85,
+      "fast": {
+        "ms": 4.377,
+        "min_ms": 4.054,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 1217.4,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      },
+      "strict": {
+        "ms": 419.131,
+        "min_ms": 416.548,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 12.7,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "median_filter 4096x4096 7x7",
+      "dtype": "float64",
+      "elements": 16777216,
+      "scipy_ms": 9693.85,
+      "scipy_min_ms": 9693.85,
+      "fast": {
+        "ms": 3.909,
+        "min_ms": 3.707,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 2479.9,
+        "max_error_over_scale": 3.6524878902298094e-08,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 603.193,
+        "min_ms": 593.076,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 16.1,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "median_filter 4096x4096 7x7",
+      "dtype": "float32",
+      "elements": 16777216,
+      "scipy_ms": 9834.65,
+      "scipy_min_ms": 9834.65,
+      "fast": {
+        "ms": 3.785,
+        "min_ms": 3.618,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 2598.3,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      },
+      "strict": {
+        "ms": 604.86,
+        "min_ms": 601.906,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 16.3,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "median_filter 256x256x256 3x3x3",
+      "dtype": "float64",
+      "elements": 16777216,
+      "scipy_ms": 5708.74,
+      "scipy_min_ms": 5708.74,
+      "fast": {
+        "ms": 22.295,
+        "min_ms": 21.738,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 256.1,
+        "max_error_over_scale": 3.6029686166904426e-08,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 445.675,
+        "min_ms": 434.556,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 12.8,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "median_filter 256x256x256 3x3x3",
+      "dtype": "float32",
+      "elements": 16777216,
+      "scipy_ms": 5804.58,
+      "scipy_min_ms": 5804.58,
+      "fast": {
+        "ms": 21.533,
+        "min_ms": 21.337,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 269.6,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      },
+      "strict": {
+        "ms": 457.186,
+        "min_ms": 440.356,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 12.7,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "percentile_filter 4096x4096 p=25 5x5",
+      "dtype": "float64",
+      "elements": 16777216,
+      "scipy_ms": 4998.95,
+      "scipy_min_ms": 4998.95,
+      "fast": {
+        "ms": 16.443,
+        "min_ms": 16.323,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 304.0,
+        "max_error_over_scale": 3.762114931135526e-08,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 426.072,
+        "min_ms": 403.009,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 11.7,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "percentile_filter 4096x4096 p=25 5x5",
+      "dtype": "float32",
+      "elements": 16777216,
+      "scipy_ms": 5090.69,
+      "scipy_min_ms": 5090.69,
+      "fast": {
+        "ms": 15.984,
+        "min_ms": 15.886,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 318.5,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      },
+      "strict": {
+        "ms": 420.825,
+        "min_ms": 393.924,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 12.1,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "minimum_filter 4096x4096 size=15",
+      "dtype": "float64",
+      "elements": 16777216,
+      "scipy_ms": 483.15,
+      "scipy_min_ms": 467.8,
+      "fast": {
+        "ms": 2.761,
+        "min_ms": 2.529,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 175.0,
+        "max_error_over_scale": 4.666221454546747e-08,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 6.681,
+        "min_ms": 6.376,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 72.3,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "minimum_filter 4096x4096 size=15",
+      "dtype": "float32",
+      "elements": 16777216,
+      "scipy_ms": 406.68,
+      "scipy_min_ms": 403.64,
+      "fast": {
+        "ms": 2.451,
+        "min_ms": 2.36,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 165.9,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      },
+      "strict": {
+        "ms": 4.858,
+        "min_ms": 4.585,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 83.7,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "minimum_filter 4096x4096 size=15",
+      "dtype": "uint8",
+      "elements": 16777216,
+      "scipy_ms": 366.21,
+      "scipy_min_ms": 361.27,
+      "fast": {
+        "ms": 4.001,
+        "min_ms": 3.707,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 91.5,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      },
+      "strict": {
+        "ms": 5.506,
+        "min_ms": 5.283,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 66.5,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "maximum_filter 4096x4096 size=101",
+      "dtype": "float64",
+      "elements": 16777216,
+      "scipy_ms": 489.5,
+      "scipy_min_ms": 487.53,
+      "fast": {
+        "ms": 5.676,
+        "min_ms": 5.42,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 86.2,
+        "max_error_over_scale": 3.406322439042454e-08,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 10.332,
+        "min_ms": 10.305,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 47.4,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "maximum_filter 4096x4096 size=101",
+      "dtype": "float32",
+      "elements": 16777216,
+      "scipy_ms": 420.63,
+      "scipy_min_ms": 419.78,
+      "fast": {
+        "ms": 5.142,
+        "min_ms": 5.08,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 81.8,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      },
+      "strict": {
+        "ms": 8.942,
+        "min_ms": 8.841,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 47.0,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "maximum_filter 4096x4096 5x5 disk",
+      "dtype": "float64",
+      "elements": 16777216,
+      "scipy_ms": 204.68,
+      "scipy_min_ms": 204.46,
+      "fast": {
+        "ms": 2.677,
+        "min_ms": 2.158,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 76.5,
+        "max_error_over_scale": 3.406323555722343e-08,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 9.517,
+        "min_ms": 7.98,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 21.5,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "maximum_filter 4096x4096 5x5 disk",
+      "dtype": "float32",
+      "elements": 16777216,
+      "scipy_ms": 596.71,
+      "scipy_min_ms": 593.44,
+      "fast": {
+        "ms": 2.367,
+        "min_ms": 2.291,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 252.1,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      },
+      "strict": {
+        "ms": 8.651,
+        "min_ms": 7.943,
+        "engine": "cpu",
+        "computed_in": "float32",
+        "speedup": 69.0,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "grey_opening 4096x4096 size=15",
+      "dtype": "float64",
+      "elements": 16777216,
+      "scipy_ms": 907.87,
+      "scipy_min_ms": 900.55,
+      "fast": {
+        "ms": 3.068,
+        "min_ms": 2.687,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 295.9,
+        "max_error_over_scale": 4.666221454546747e-08,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 12.321,
+        "min_ms": 11.802,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 73.7,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "grey_opening 4096x4096 size=15",
+      "dtype": "float32",
+      "elements": 16777216,
+      "scipy_ms": 708.17,
+      "scipy_min_ms": 701.6,
+      "fast": {
+        "ms": 3.667,
+        "min_ms": 2.491,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 193.1,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      },
+      "strict": {
+        "ms": 9.289,
+        "min_ms": 8.983,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 76.2,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "morphological_gradient 4096x4096 s=15",
+      "dtype": "float64",
+      "elements": 16777216,
+      "scipy_ms": 994.77,
+      "scipy_min_ms": 989.21,
+      "fast": {
+        "ms": 3.345,
+        "min_ms": 3.129,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 297.4,
+        "max_error_over_scale": 1.9405208233385897e-07,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 12.585,
+        "min_ms": 12.236,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 79.0,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "morphological_gradient 4096x4096 s=15",
+      "dtype": "float32",
+      "elements": 16777216,
+      "scipy_ms": 825.27,
+      "scipy_min_ms": 818.87,
+      "fast": {
+        "ms": 3.452,
+        "min_ms": 2.815,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 239.1,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      },
+      "strict": {
+        "ms": 9.403,
+        "min_ms": 9.165,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 87.8,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "white_tophat 4096x4096 size=15",
+      "dtype": "float64",
+      "elements": 16777216,
+      "scipy_ms": 921.21,
+      "scipy_min_ms": 902.06,
+      "fast": {
+        "ms": 3.304,
+        "min_ms": 3.104,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 278.8,
+        "max_error_over_scale": 2.213154854993425e-07,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 13.543,
+        "min_ms": 13.252,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 68.0,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "white_tophat 4096x4096 size=15",
+      "dtype": "float32",
+      "elements": 16777216,
+      "scipy_ms": 712.02,
+      "scipy_min_ms": 699.81,
+      "fast": {
+        "ms": 2.89,
+        "min_ms": 2.8,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 246.4,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      },
+      "strict": {
+        "ms": 9.949,
+        "min_ms": 9.723,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 71.6,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "white_tophat 4096x4096 size=15",
+      "dtype": "uint8",
+      "elements": 16777216,
+      "scipy_ms": 635.33,
+      "scipy_min_ms": 627.12,
+      "fast": {
+        "ms": 4.733,
+        "min_ms": 4.537,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 134.2,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      },
+      "strict": {
+        "ms": 10.759,
+        "min_ms": 10.363,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 59.1,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "morphological_laplace 4096x4096 s=15",
+      "dtype": "float64",
+      "elements": 16777216,
+      "scipy_ms": 1020.77,
+      "scipy_min_ms": 1002.7,
+      "fast": {
+        "ms": 3.31,
+        "min_ms": 3.148,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 308.4,
+        "max_error_over_scale": 6.472258074489378e-07,
+        "bit_identical": false
+      },
+      "strict": {
+        "ms": 15.198,
+        "min_ms": 14.587,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 67.2,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    },
+    {
+      "workload": "morphological_laplace 4096x4096 s=15",
+      "dtype": "float32",
+      "elements": 16777216,
+      "scipy_ms": 820.73,
+      "scipy_min_ms": 804.41,
+      "fast": {
+        "ms": 4.116,
+        "min_ms": 2.993,
+        "engine": "gpu",
+        "computed_in": "float32",
+        "speedup": 199.4,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      },
+      "strict": {
+        "ms": 11.542,
+        "min_ms": 10.672,
+        "engine": "cpu",
+        "computed_in": "float64",
+        "speedup": 71.1,
+        "max_error_over_scale": 0.0,
+        "bit_identical": true
+      }
+    }
+  ],
+  "load_after": [
+    5.6,
+    4.85,
+    3.68
+  ],
+  "uptime_after": "17:50  up 159 days,  6:32, 25 users, load averages: 5.60 4.85 3.68",
+  "wall_seconds": 141.7
+}

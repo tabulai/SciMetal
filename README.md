@@ -36,9 +36,9 @@ cmake --preset cpu-only && cmake --build --preset cpu-only && ctest --preset cpu
 ```
 
 - The `metal` preset builds `.build/metal/libscimetal.dylib` with Metal GPU kernels and
-  runs all 20 native tests (including `_validated` runs under Metal API & shader validation).
+  runs all 22 native tests (including `_validated` runs under Metal API & shader validation).
 - The `cpu-only` preset builds `.build/cpu-only/libscimetal.dylib` (`SM_ENABLE_METAL=OFF`)
-  and runs all 11 CPU-only native tests.
+  and runs all 12 CPU-only native tests.
 
 ### Wheel build
 
@@ -69,6 +69,7 @@ Run SciPy's own test suites through the oracle directly:
 
 ```bash
 PYTHONPATH=python:tests/oracle .venv/bin/python -m pytest -p scimetal_oracle --pyargs scipy.ndimage.tests.test_filters -q
+PYTHONPATH=python:tests/oracle .venv/bin/python -m pytest -p scimetal_oracle --pyargs scipy.ndimage.tests.test_morphology -q
 PYTHONPATH=python:tests/oracle .venv/bin/python -m pytest -p scimetal_oracle --pyargs scipy.fft.tests.test_basic -q
 PYTHONPATH=python:tests/oracle .venv/bin/python -m pytest -p scimetal_oracle --pyargs scipy.signal.tests.test_signaltools -k "Convolve or Correlate or choose_conv_method" -q
 ```
@@ -108,13 +109,19 @@ and setters (`set_precision`, `set_device`, `set_small_inputs`) scope per-thread
 
 ## Accelerated coverage (`scimetal.accelerated()`)
 
-- **`ndimage`** (13 filters): `convolve1d`, `correlate1d`, `gaussian_filter1d`,
-  `gaussian_filter`, `uniform_filter1d`, `uniform_filter`, `prewitt`, `sobel`,
-  `convolve`, `correlate`, `laplace`, `gaussian_laplace`,
-  `gaussian_gradient_magnitude`
-  (supports `float32`, `float64`, `bool`, `int8`–`int64`, `uint8`–`uint64`, plus cross-dtype
-  `output=` among real dtypes; CPU `strict` is bit-identical to SciPy 1.18.1 arm64).
-  SciPy runs the derivative callbacks for `generic_laplace` and `generic_gradient_magnitude`.
+- **`ndimage`** (28 filters):
+  - Linear & derivative filters (13): `convolve1d`, `correlate1d`, `gaussian_filter1d`,
+    `gaussian_filter`, `uniform_filter1d`, `uniform_filter`, `prewitt`, `sobel`,
+    `convolve`, `correlate`, `laplace`, `gaussian_laplace`,
+    `gaussian_gradient_magnitude`
+  - Min/max, rank/median, and grayscale morphology (15): `minimum_filter1d`,
+    `maximum_filter1d`, `minimum_filter`, `maximum_filter`, `rank_filter`,
+    `median_filter`, `percentile_filter`, `grey_erosion`, `grey_dilation`,
+    `grey_opening`, `grey_closing`, `morphological_gradient`,
+    `morphological_laplace`, `white_tophat`, `black_tophat`
+  - Supports `float32`, `float64`, `bool`, `int8`–`int64`, `uint8`–`uint64`, plus cross-dtype
+    `output=` among real dtypes; CPU `strict` is bit-identical to SciPy 1.18.1 arm64.
+    SciPy runs the derivative callbacks for `generic_laplace` and `generic_gradient_magnitude`.
 - **`fft`** (12 transforms + backend + `prepare`): `fft`, `ifft`, `rfft`, `irfft`,
   `fft2`, `ifft2`, `fftn`, `ifftn`, `rfft2`, `irfft2`, `rfftn`, `irfftn`, plus
   `scimetal.fft.register()` / `unregister()` and `scimetal.fft.prepare()`.
@@ -161,6 +168,18 @@ Measured standalone on macOS 26.5.1 (SciPy 1.18.1, NumPy 2.5.5; median times in 
 | `ndimage` | `gaussian_laplace` 4096², σ=3 (`float64`) | 771.1 ms | 4.00 ms | **192.8×** | 14.62 ms (**52.7×**, bit-identical) | 1.4e-06 |
 | `ndimage` | `correlate` 4096², 5×5 dense (`float64`) | 275.3 ms | 3.44 ms | **79.9×** | 4.56 ms (**60.4×**, bit-identical) | 3.0e-07 |
 | `ndimage` | `correlate` 4096², 5×5 dense (`uint8`) | 300.2 ms | 4.71 ms | **63.8×** | 11.12 ms (**27.0×**, bit-identical) | 4.1e-03 |
+| `ndimage` | `median_filter` 4096², 3×3 (`float32` / `float64`) | 1605.0 / 1541.8 ms | 1.66 / 2.11 ms | **966.2× / 731.9×** | 81.54 / 82.36 ms (**19.7× / 18.7×**, bit-identical) | 0.0 / 3.5e-08 |
+| `ndimage` | `median_filter` 4096², 5×5 (`float32` / `float64`) | 5420.4 / 5336.3 ms | 2.70 / 2.95 ms | **2,010.0× / 1,811.5×** | 411.44 / 414.99 ms (**13.2× / 12.9×**, bit-identical) | 0.0 / 3.6e-08 |
+| `ndimage` | `median_filter` 4096², 7×7 (`float32` / `float64`) | 9834.7 / 9693.9 ms | 3.79 / 3.91 ms | **2,598.3× / 2,479.9×** | 604.86 / 603.19 ms (**16.3× / 16.1×**, bit-identical) | 0.0 / 3.7e-08 |
+| `ndimage` | `median_filter` 256³, 3×3×3 (`float32` / `float64`) | 5804.6 / 5708.7 ms | 21.53 / 22.30 ms | **269.6× / 256.1×** | 457.19 / 445.68 ms (**12.7× / 12.8×**, bit-identical) | 0.0 / 3.6e-08 |
+| `ndimage` | `percentile_filter` 4096², p=25, 5×5 (`float64`) | 4998.9 ms | 16.44 ms | **304.0×** | 426.07 ms (**11.7×**, bit-identical) | 3.8e-08 |
+| `ndimage` | `minimum_filter` 4096², size=15 (`float64`) | 483.2 ms | 2.76 ms | **175.0×** | 6.68 ms (**72.3×**, bit-identical) | 4.7e-08 |
+| `ndimage` | `maximum_filter` 4096², size=101 (`float64`) | 489.5 ms | 5.68 ms | **86.2×** | 10.33 ms (**47.4×**, bit-identical) | 3.4e-08 |
+| `ndimage` | `maximum_filter` 4096², 5×5 disk (`float32`) | 596.7 ms | 2.37 ms | **252.1×** | 8.65 ms (**69.0×**, bit-identical) | 0.0 |
+| `ndimage` | `grey_opening` 4096², size=15 (`float64`) | 907.9 ms | 3.07 ms | **295.9×** | 12.32 ms (**73.7×**, bit-identical) | 4.7e-08 |
+| `ndimage` | `morphological_gradient` 4096², size=15 (`float64`) | 994.8 ms | 3.35 ms | **297.4×** | 12.59 ms (**79.0×**, bit-identical) | 1.9e-07 |
+| `ndimage` | `white_tophat` 4096², size=15 (`float64` / `uint8`) | 921.2 / 635.3 ms | 3.30 / 4.73 ms | **278.8× / 134.2×** | 13.54 / 10.76 ms (**68.0× / 59.1×**, bit-identical) | 2.2e-07 / 0.0 |
+| `ndimage` | `morphological_laplace` 4096², size=15 (`float64`) | 1020.8 ms | 3.31 ms | **308.4×** | 15.20 ms (**67.2×**, bit-identical) | 6.5e-07 |
 | `fft` | `fft` 2^24 (`complex64`) | 206.1 / 21.6 ms | 5.35 ms | **38.5× / 4.0×** | SciPy | 4.2e-07 |
 | `fft` | `fft` 2^24 (`complex128`) | 299.9 / 29.9 ms | 8.01 ms | **37.4× / 3.7×** | SciPy | 4.2e-07 |
 | `fft` | `rfft` 2^22 (`float64`) | 47.8 / 9.0 ms | 2.19 ms | **21.9× / 4.1×** | SciPy | 1.2e-06 |
@@ -177,6 +196,11 @@ For `correlate2d` with the same shapes and dtype, the strict CPU route measured
 **5.34 ms** versus **588 ms** in SciPy (**110×**), with byte-identical output.
 These medians are from five warm calls under a concurrent system load (one-minute
 load average 5.29–5.43).
+
+The morphology and rank/median rows were measured standalone via
+`bench/ndimage_morphology.py` (saved in `bench/results/m1-ultra/ndimage_morphology.json`,
+one-minute load average 4.95–5.60) on full-precision inputs; `float32`, `uint8`, and
+`uint16` GPU outputs are bit-identical (`0.0` error) to SciPy.
 
 ## Provenance
 

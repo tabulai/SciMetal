@@ -73,6 +73,25 @@ inline int64_t extend(int64_t position, int64_t length, uint32_t mode) noexcept 
     }
 }
 
+// True when a 1-D min/max pass is eligible for the 2-pass van Herk GPU path
+// (window > 64, enough blocks for GPU occupancy, and extended buffer fits 32-bit indices).
+inline bool gpu_minmax_use_vanherk(const Pass& pass) noexcept {
+    if (pass.kind != SM_NDIMAGE_MINIMUM && pass.kind != SM_NDIMAGE_MAXIMUM) return false;
+    if (pass.size <= 64) return false;
+    const uint64_t ext_len = pass.length + pass.size - 1;
+    if (ext_len > (uint64_t{1} << 29)) return false;
+    uint64_t ext_elems = 0;
+    if (sm_checked_mul(pass.outer, ext_len, &ext_elems) != SM_OK ||
+        sm_checked_mul(ext_elems, pass.inner, &ext_elems) != SM_OK ||
+        ext_elems > INT32_MAX) {
+        return false;
+    }
+    const uint64_t blocks_per_line = (ext_len + pass.size - 1) / pass.size;
+    uint64_t total_blocks = 0;
+    if (sm_checked_mul(pass.outer * pass.inner, blocks_per_line, &total_blocks) != SM_OK) return false;
+    return total_blocks >= 512;
+}
+
 // CPU engine: every pass in double precision on the performance cores.
 BufferPtr run_cpu(sm_context*, const Plan&, const void* input);
 BufferPtr run_cpu_composite(sm_context*, const CompositePlan&, const void* input);

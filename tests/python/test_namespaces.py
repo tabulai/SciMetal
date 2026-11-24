@@ -80,23 +80,23 @@ def test_fall_through_is_recorded_and_returns_scipys_result():
     from scimetal._dispatch import NotAccelerated, accelerated, counters, registry
 
     # A function no family accelerates, so the probe route shadows nothing.
-    assert "white_tophat" not in registry.get("ndimage", ())
+    assert "distance_transform_bf" not in registry.get("ndimage", ())
 
-    @accelerated("ndimage.white_tophat")
-    def white_tophat(input, size=None, *args, **kwargs):
+    @accelerated("ndimage.distance_transform_bf")
+    def distance_transform_bf(input, *args, **kwargs):
         raise NotAccelerated("probe route always declines")
 
     try:
-        x = np.arange(10.0)
-        out = white_tophat(x, 3)
-        np.testing.assert_array_equal(out, scipy.ndimage.white_tophat(x, 3))
+        x = np.array([0, 1, 1, 0, 1])
+        out = distance_transform_bf(x)
+        np.testing.assert_array_equal(out, scipy.ndimage.distance_transform_bf(x))
         route = scimetal.last_route()
         assert route.engine == "scipy" and "declines" in route.reason
-        assert "white_tophat" in scimetal.explain()
-        assert counters["ndimage.white_tophat"] == [0, 1]
+        assert "distance_transform_bf" in scimetal.explain()
+        assert counters["ndimage.distance_transform_bf"] == [0, 1]
     finally:
-        registry["ndimage"].discard("white_tophat")
-        counters.pop("ndimage.white_tophat", None)
+        registry["ndimage"].discard("distance_transform_bf")
+        counters.pop("ndimage.distance_transform_bf", None)
 
 
 def test_aliased_modules_are_never_loaded_twice():

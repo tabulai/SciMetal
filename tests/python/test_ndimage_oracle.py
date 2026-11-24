@@ -15,13 +15,21 @@ import xml.etree.ElementTree as ET
 import pytest
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
-FUNCTIONS = ("convolve", "convolve1d", "correlate", "correlate1d", "gaussian_filter", "gaussian_filter1d",
-             "gaussian_gradient_magnitude", "gaussian_laplace", "laplace", "prewitt", "sobel",
-             "uniform_filter", "uniform_filter1d")
+FILTER_FUNCTIONS = (
+    "convolve", "convolve1d", "correlate", "correlate1d", "gaussian_filter", "gaussian_filter1d",
+    "gaussian_gradient_magnitude", "gaussian_laplace", "laplace", "maximum_filter", "maximum_filter1d",
+    "median_filter", "minimum_filter", "minimum_filter1d", "percentile_filter", "prewitt", "rank_filter",
+    "sobel", "uniform_filter", "uniform_filter1d",
+)
+MORPHOLOGY_FUNCTIONS = (
+    "black_tophat", "grey_closing", "grey_dilation", "grey_erosion", "grey_opening",
+    "morphological_gradient", "morphological_laplace", "white_tophat",
+)
+FUNCTIONS = FILTER_FUNCTIONS
 
 
-def run_oracle(*args, **settings):
-    """Run SciPy's filter tests with the native routes patched in.
+def run_oracle_module(module, *args, **settings):
+    """Run one of SciPy's ndimage test modules with the native routes patched in.
 
     Returns pytest's exit code, its output and {function: (native calls, calls handed to SciPy)}.
     """
@@ -34,12 +42,16 @@ def run_oracle(*args, **settings):
     env["PYTHONPATH"] = os.pathsep.join(parts)
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-p", "scimetal_oracle", "-p", "no:cacheprovider", "--pyargs",
-         "scipy.ndimage.tests.test_filters", "-q", *args],
+         module, "-q", *args],
         cwd=ROOT, env=env, capture_output=True, text=True, timeout=1800)
     output = result.stdout + result.stderr
     counters = {name: (int(native), int(declined)) for name, native, declined in
                 re.findall(r"^ndimage\.(\w+): (\d+) native, (\d+) fell through to SciPy$", output, re.M)}
     return result.returncode, output, counters
+
+
+def run_oracle(*args, **settings):
+    return run_oracle_module("scipy.ndimage.tests.test_filters", *args, **settings)
 
 
 def summary(output):
@@ -64,9 +76,9 @@ def test_scipys_filter_tests_pass_on_the_native_routes_in_strict_mode(native_fil
     code, output, counters = run_oracle(SCIMETAL_ORACLE_PRECISION="strict", SCIMETAL_ORACLE_DEVICE="auto")
     assert code == 0 and re.search(r"\b\d+ passed", output), summary(output)
     # The suite really ran native code: every function has native calls, including integer/bool dtypes.
-    assert set(counters) == set(FUNCTIONS), summary(output)
-    for name, (native, _) in counters.items():
-        assert native > 0, f"{name} never ran natively:\n{summary(output)}"
+    assert set(counters) == set(FILTER_FUNCTIONS) | set(MORPHOLOGY_FUNCTIONS), summary(output)
+    for name in FILTER_FUNCTIONS:
+        assert counters[name][0] > 0, f"{name} never ran natively:\n{summary(output)}"
     assert counters["correlate1d"][0] >= 1000, summary(output)
     assert counters["convolve1d"][0] >= 800, summary(output)
     assert counters["correlate"][0] >= 700, summary(output)
@@ -74,6 +86,11 @@ def test_scipys_filter_tests_pass_on_the_native_routes_in_strict_mode(native_fil
     assert counters["uniform_filter"][0] >= 150, summary(output)
     assert counters["prewitt"][0] >= 50, summary(output)
     assert counters["sobel"][0] >= 50, summary(output)
+    assert counters["median_filter"][0] >= 200, summary(output)
+    assert counters["rank_filter"][0] >= 150, summary(output)
+    assert counters["percentile_filter"][0] >= 100, summary(output)
+    assert counters["minimum_filter"][0] >= 100, summary(output)
+    assert counters["maximum_filter"][0] >= 100, summary(output)
 
 
 # What float32 arithmetic cannot pass. test_filter_axes* compare two float64
@@ -106,9 +123,9 @@ def test_gpu_route_fails_only_scipy_tests_that_need_more_than_float32(native_fil
     code, output, counters = run_oracle(f"--junitxml={report}", SCIMETAL_ORACLE_PRECISION="fast",
                                         SCIMETAL_ORACLE_DEVICE="gpu")
     assert code in (0, 1), summary(output)  # 1: some tests failed; anything else is a broken run
-    assert set(counters) == set(FUNCTIONS), summary(output)
-    for name, (native, _) in counters.items():
-        assert native > 0, f"{name} never ran natively in GPU mode:\n{summary(output)}"
+    assert set(counters) == set(FILTER_FUNCTIONS) | set(MORPHOLOGY_FUNCTIONS), summary(output)
+    for name in FILTER_FUNCTIONS:
+        assert counters[name][0] > 0, f"{name} never ran natively in GPU mode:\n{summary(output)}"
     # Pytest can repeat the traceback in its terminal summary on CI. JUnit keeps
     # each assertion with its test even when the terminal format or order changes.
     suite = ET.parse(report)
@@ -128,3 +145,29 @@ def test_gpu_route_fails_only_scipy_tests_that_need_more_than_float32(native_fil
         else:
             assert FLOAT32_ACCURACY.fullmatch(name), f"unexpected GPU oracle failure: {name}\n{details}"
             assert d < 1e-3, f"{name}: unexpected float32 accuracy diff {d}\n{summary(output)}"
+
+
+def test_scipys_morphology_tests_pass_on_the_native_routes_in_strict_mode(native_filters):
+    code, output, counters = run_oracle_module(
+        "scipy.ndimage.tests.test_morphology",
+        SCIMETAL_ORACLE_PRECISION="strict",
+        SCIMETAL_ORACLE_DEVICE="auto",
+    )
+    assert code == 0 and re.search(r"\b\d+ passed", output), summary(output)
+    for name in MORPHOLOGY_FUNCTIONS:
+        assert counters[name][0] >= 150, f"{name} had too few native calls:\n{summary(output)}"
+
+
+def test_scipys_morphology_tests_pass_on_the_gpu_route(native_filters):
+    import scimetal._native as _native
+
+    if not _native.has_metal():
+        pytest.skip("no GPU engine in CPU-only build")
+    code, output, counters = run_oracle_module(
+        "scipy.ndimage.tests.test_morphology",
+        SCIMETAL_ORACLE_PRECISION="fast",
+        SCIMETAL_ORACLE_DEVICE="gpu",
+    )
+    assert code == 0 and re.search(r"\b\d+ passed", output), summary(output)
+    for name in MORPHOLOGY_FUNCTIONS:
+        assert counters[name][0] >= 150, f"{name} had too few native GPU calls:\n{summary(output)}"

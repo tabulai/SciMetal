@@ -75,7 +75,8 @@ Pass parse_pass(const array::Shape& shape, const sm_ndimage_pass& given) {
         throw Error(SM_EINVAL, "filter pass size or ABI version mismatch");
     if (given.reserved0 || given.reserved[0] || given.reserved[1])
         throw Error(SM_EINVAL, "filter pass reserved fields must be zero");
-    if (given.kind != SM_NDIMAGE_CORRELATE && given.kind != SM_NDIMAGE_UNIFORM)
+    if (given.kind != SM_NDIMAGE_CORRELATE && given.kind != SM_NDIMAGE_UNIFORM &&
+        given.kind != SM_NDIMAGE_MINIMUM && given.kind != SM_NDIMAGE_MAXIMUM)
         throw Error(SM_EINVAL, "unknown filter pass kind");
     if (given.axis >= shape.ndim) throw Error(SM_EINVAL, "filter axis is out of range");
     if (given.mode > SM_NDIMAGE_CONSTANT) throw Error(SM_EINVAL, "unknown boundary mode");
@@ -89,8 +90,8 @@ Pass parse_pass(const array::Shape& shape, const sm_ndimage_pass& given) {
         if (reinterpret_cast<uintptr_t>(given.weights) % alignof(double) != 0)
             throw Error(SM_EINVAL, "filter weights are not aligned for double");
     }
-    if (given.kind == SM_NDIMAGE_UNIFORM && given.weights)
-        throw Error(SM_EINVAL, "a uniform filter pass takes no weights");
+    if (given.kind != SM_NDIMAGE_CORRELATE && given.weights)
+        throw Error(SM_EINVAL, "a uniform or min/max filter pass takes no weights");
 
     Pass pass;
     pass.kind = given.kind;
@@ -99,8 +100,9 @@ Pass parse_pass(const array::Shape& shape, const sm_ndimage_pass& given) {
     pass.size = given.size;
     pass.weights = given.weights;
     // A uniform window is symmetric when it has a centre; the GPU engine sums it as weights 1/size.
-    pass.symmetry = given.kind == SM_NDIMAGE_UNIFORM ? (given.size & 1 ? Symmetry::even : Symmetry::none)
-                                                     : classify(given.weights, given.size);
+    pass.symmetry = given.kind == SM_NDIMAGE_UNIFORM
+                        ? (given.size & 1 ? Symmetry::even : Symmetry::none)
+                        : (given.kind == SM_NDIMAGE_CORRELATE ? classify(given.weights, given.size) : Symmetry::none);
     pass.length = shape.dims[given.axis];
     pass.outer = pass.inner = 1;
     for (uint32_t axis = 0; axis < given.axis; ++axis) pass.outer *= shape.dims[axis];
@@ -154,12 +156,23 @@ CompositePlan make_composite_plan(const sm_array* input, const sm_ndimage_chain*
     plan.in_dtype = input->dtype;
     plan.out_dtype = resolve_out_dtype(input->dtype, out_dtype);
     check_output_bytes(plan.shape, plan.out_dtype);
-    if (combine_op != SM_NDIMAGE_COMBINE_SUM && combine_op != SM_NDIMAGE_COMBINE_SQRT_SUM_SQ)
+    if (combine_op != SM_NDIMAGE_COMBINE_SUM && combine_op != SM_NDIMAGE_COMBINE_SQRT_SUM_SQ &&
+        combine_op != SM_NDIMAGE_COMBINE_SUB && combine_op != SM_NDIMAGE_COMBINE_MORPH_LAPLACE &&
+        combine_op != SM_NDIMAGE_COMBINE_XOR)
         throw Error(SM_EINVAL, "unknown composite combine op");
-    plan.combine_op = combine_op;
     if (!chains) throw Error(SM_EINVAL, "null filter chains");
     if (chain_count < 1 || chain_count > SM_MAX_NDIM)
         throw Error(SM_EINVAL, "composite filter chain count must be 1 to SM_MAX_NDIM");
+    if ((combine_op == SM_NDIMAGE_COMBINE_SUB || combine_op == SM_NDIMAGE_COMBINE_MORPH_LAPLACE ||
+         combine_op == SM_NDIMAGE_COMBINE_XOR) &&
+        chain_count != 2)
+        throw Error(SM_EINVAL, "binary composite combine op requires exactly 2 chains");
+    if ((combine_op == SM_NDIMAGE_COMBINE_SUB || combine_op == SM_NDIMAGE_COMBINE_MORPH_LAPLACE) &&
+        plan.out_dtype == SM_BOOL)
+        throw Error(SM_ENOTSUP, "subtraction composite op is not supported for boolean output");
+    if (combine_op == SM_NDIMAGE_COMBINE_XOR && plan.out_dtype != SM_BOOL)
+        throw Error(SM_EINVAL, "xor composite op requires boolean output");
+    plan.combine_op = combine_op;
     plan.chains.resize(chain_count);
     for (uint32_t k = 0; k < chain_count; ++k) {
         const sm_ndimage_chain& c = chains[k];
@@ -183,8 +196,17 @@ CompositePlan make_composite_plan(const sm_array* input, const sm_ndimage_chain*
 
 // The CPU engine's cost of one pass per element, in tap operations.
 uint64_t cpu_operations(const Pass& pass) {
-    const uint64_t arithmetic = pass.kind == SM_NDIMAGE_UNIFORM ? uniform_operations
-                              : pass.symmetry == Symmetry::none ? pass.size : pass.size / 2 + 1;
+    uint64_t arithmetic = 0;
+    if (gpu_minmax_use_vanherk(pass)) {
+        // Two-pass GPU van Herk has twice the memory traffic of a direct pass, so it
+        // needs a larger image (~2048^2 vs ~1448^2) to beat threaded CPU van Herk.
+        arithmetic = uniform_operations / 2;
+    } else if (pass.kind == SM_NDIMAGE_UNIFORM || pass.kind == SM_NDIMAGE_MINIMUM ||
+               pass.kind == SM_NDIMAGE_MAXIMUM) {
+        arithmetic = uniform_operations;
+    } else {
+        arithmetic = (pass.symmetry == Symmetry::none ? pass.size : pass.size / 2 + 1);
+    }
     return arithmetic + (pass.inner == 1 ? 0 : strided_pass_operations);
 }
 
@@ -197,9 +219,14 @@ uint64_t saturating_add(uint64_t a, uint64_t b) {
     return sm_checked_add(a, b, &sum) == SM_OK ? sum : UINT64_MAX;
 }
 
+uint64_t effective_gpu_taps(const Pass& pass) {
+    if (gpu_minmax_use_vanherk(pass)) return 12;
+    return pass.size;
+}
+
 uint64_t gpu_tap_elements(const Plan& plan) {
     uint64_t taps = 0;
-    for (const Pass& pass : plan.passes) taps = saturating_add(taps, pass.size);
+    for (const Pass& pass : plan.passes) taps = saturating_add(taps, effective_gpu_taps(pass));
     return saturating_mul(plan.shape.elements, taps);
 }
 
@@ -215,7 +242,7 @@ uint64_t routing_work(const Plan& plan) {
 uint64_t composite_tap_elements(const CompositePlan& plan) {
     uint64_t taps = 0;
     for (const auto& chain : plan.chains) {
-        for (const Pass& pass : chain) taps = saturating_add(taps, pass.size);
+        for (const Pass& pass : chain) taps = saturating_add(taps, effective_gpu_taps(pass));
     }
     return saturating_mul(plan.shape.elements, taps);
 }
@@ -359,21 +386,27 @@ bool gpu_supports(const Plan& plan) noexcept {
     uint64_t weights = 0;
     for (const Pass& pass : plan.passes) {
         if (pass.length > SM_NDIMAGE_GPU_MAX_EXTENT || pass.size > SM_NDIMAGE_GPU_MAX_EXTENT) return false;
-        weights += pass.size;
+        if (pass.kind == SM_NDIMAGE_CORRELATE || pass.kind == SM_NDIMAGE_UNIFORM) weights += pass.size;
     }
     return weights <= gpu_max_weights && gpu_tap_elements(plan) <= gpu_max_tap_elements;
 }
 
 bool gpu_supports_composite(const CompositePlan& plan) noexcept {
     if (plan.shape.elements > INT32_MAX) return false;
-    // Boolean composite combine uses logical OR and canonical {0,1} semantics
+    // Boolean composite combine uses logical OR / XOR and canonical {0,1} semantics
     // (and 0-pass identity uses != 0), which float32 GPU kernels do not preserve.
     if (plan.out_dtype == SM_BOOL) return false;
+    // Unsigned 32/64-bit subtraction/laplace can underflow modularly, which float32
+    // saturating cast does not match.
+    if ((plan.combine_op == SM_NDIMAGE_COMBINE_SUB || plan.combine_op == SM_NDIMAGE_COMBINE_MORPH_LAPLACE) &&
+        (plan.out_dtype == SM_UINT32 || plan.out_dtype == SM_UINT64)) {
+        return false;
+    }
     uint64_t weights = 0;
     for (const auto& chain : plan.chains) {
         for (const Pass& pass : chain) {
             if (pass.length > SM_NDIMAGE_GPU_MAX_EXTENT || pass.size > SM_NDIMAGE_GPU_MAX_EXTENT) return false;
-            weights += pass.size;
+            if (pass.kind == SM_NDIMAGE_CORRELATE || pass.kind == SM_NDIMAGE_UNIFORM) weights += pass.size;
         }
     }
     return weights <= gpu_max_weights && composite_tap_elements(plan) <= gpu_max_tap_elements;

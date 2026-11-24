@@ -35,7 +35,13 @@ typedef enum sm_ndimage_pass_kind {
     SM_NDIMAGE_CORRELATE = 1,
     /* out[i] = mean of e[i - size/2 - origin .. + size - 1]
      * (scipy.ndimage.uniform_filter1d); weights must be NULL. */
-    SM_NDIMAGE_UNIFORM = 2
+    SM_NDIMAGE_UNIFORM = 2,
+    /* out[i] = min of e[i - size/2 - origin .. + size - 1]
+     * (scipy.ndimage.minimum_filter1d); weights must be NULL. */
+    SM_NDIMAGE_MINIMUM = 3,
+    /* out[i] = max of e[i - size/2 - origin .. + size - 1]
+     * (scipy.ndimage.maximum_filter1d); weights must be NULL. */
+    SM_NDIMAGE_MAXIMUM = 4
 } sm_ndimage_pass_kind;
 
 /* One 1-D pass. Initialize struct_size and abi_version (SM_NDIMAGE_ABI_VERSION)
@@ -133,8 +139,11 @@ sm_status sm_ndimage_dense_filter(sm_context*, const sm_array* input,
                                   sm_array_result* out, sm_route_info* info);
 
 typedef enum sm_ndimage_combine_op {
-    SM_NDIMAGE_COMBINE_SUM = 1,         /* sum_{k=0}^{K-1} chain_k(input) */
-    SM_NDIMAGE_COMBINE_SQRT_SUM_SQ = 2  /* sqrt(sum_{k=0}^{K-1} chain_k(input)^2) */
+    SM_NDIMAGE_COMBINE_SUM = 1,           /* sum_{k=0}^{K-1} chain_k(input) */
+    SM_NDIMAGE_COMBINE_SQRT_SUM_SQ = 2,   /* sqrt(sum_{k=0}^{K-1} chain_k(input)^2) */
+    SM_NDIMAGE_COMBINE_SUB = 3,           /* chain_0(input) - chain_1(input) (K == 2, non-bool) */
+    SM_NDIMAGE_COMBINE_MORPH_LAPLACE = 4, /* ((chain_0(input) + chain_1(input)) - input) - input (K == 2, non-bool) */
+    SM_NDIMAGE_COMBINE_XOR = 5            /* (chain_0(input) != 0) ^ (chain_1(input) != 0) (K == 2, bool) */
 } sm_ndimage_combine_op;
 
 /* One chain of 0..SM_NDIMAGE_MAX_PASSES 1-D passes inside a composite filter.
@@ -149,12 +158,13 @@ typedef struct sm_ndimage_chain {
 } sm_ndimage_chain;
 
 /* Evaluates 1 <= chain_count <= SM_MAX_NDIM chains on `input` and combines
- * them via `combine_op`. SciMetal uses this for laplace, gaussian_laplace, and
- * gaussian_gradient_magnitude. out_dtype may be 0 (same as input) or any real
- * sm_dtype.
+ * them via `combine_op`. SciMetal uses this for laplace, gaussian_laplace,
+ * gaussian_gradient_magnitude, and separable morphological_gradient,
+ * morphological_laplace, white_tophat, and black_tophat. out_dtype may be 0
+ * (same as input) or any real sm_dtype.
  *
- * CPU engine: runs each chain in double precision, fusing combination and sqrt
- * into the final pass store loop (bit-identical to SciPy).
+ * CPU engine: runs each chain in double precision, fusing combination into
+ * the final pass store loop (bit-identical to SciPy).
  * GPU engine: single precision, all chains + combine encoded into one command
  * buffer. */
 sm_status sm_ndimage_composite_filter(sm_context*, const sm_array* input,
@@ -162,6 +172,91 @@ sm_status sm_ndimage_composite_filter(sm_context*, const sm_array* input,
                                       uint32_t combine_op, uint32_t out_dtype,
                                       const sm_route_options* options,
                                       sm_array_result* out, sm_route_info* info);
+
+/* Dense N-D minimum/maximum & grayscale morphology options. Initialize
+ * struct_size and abi_version (SM_NDIMAGE_ABI_VERSION) and zero reserved.
+ *
+ * footprint: C-contiguous product(fshape) bytes (nonzero = active tap). Must
+ *   have at least one active tap. NULL means all-active rectangular footprint.
+ * structure: NULL for flat min/max/erosion/dilation; otherwise C-contiguous
+ *   product(fshape) doubles giving the additive offset per footprint position
+ *   (already negated for erosion, matching SciPy's NI_MinOrMaxFilter `ss`).
+ * out_dtype: 0 (same as input) or any real sm_dtype.
+ * origins[d]: -(fshape[d] / 2) <= origins[d] <= (fshape[d] - 1) / 2. */
+typedef struct sm_ndimage_minmax_options {
+    uint32_t struct_size;
+    uint32_t abi_version;         /* SM_NDIMAGE_ABI_VERSION */
+    uint32_t is_max;              /* 0: minimum/erosion, nonzero: maximum/dilation */
+    uint32_t mode;                /* sm_ndimage_mode */
+    uint32_t out_dtype;           /* 0 (same as input) or any real sm_dtype */
+    uint32_t reserved0;
+    uint32_t fshape[SM_MAX_NDIM]; /* footprint shape along axes 0..ndim-1 */
+    int64_t origins[SM_MAX_NDIM]; /* filter origin along each axis */
+    const uint8_t* footprint;     /* NULL (all-true) or C-contiguous product(fshape) bytes */
+    const double* structure;      /* NULL (flat) or C-contiguous product(fshape) additive offsets */
+    double cval;                  /* fill value of SM_NDIMAGE_CONSTANT */
+    uint64_t reserved[2];
+} sm_ndimage_minmax_options;
+
+/* Multidimensional non-separable minimum/maximum and grayscale erosion/dilation
+ * matching scipy.ndimage's NI_MinOrMaxFilter.
+ *
+ * CPU engine: computes in input dtype with SciPy's exact tap order, cval cast,
+ * structure offset cast, and CASE_FILTER_OUT[_SAFE] store (bit-identical to
+ * SciPy 1.18.1 arm64).
+ * GPU engine: single precision, one command buffer. Exact for flat footprints
+ * on float32, bool, int8/16, uint8/16, and int32/64/uint32/64 with |x| < 2^24;
+ * for float64 inputs under SM_PRECISION_FAST/REFINED, comparisons and output
+ * values carry float32 rounding (error <= 2^-24 * max|input, cval| for flat;
+ * <= 2^-23 * (max|input, cval| + max|structure|) for non-flat). Non-flat
+ * integer/bool calls where structure values are non-integral or could wrap the
+ * input integer type re-route to CPU under AUTO (or return SM_ENOTSUP under
+ * forced GPU). */
+sm_status sm_ndimage_minmax_filter(sm_context*, const sm_array* input,
+                                   const sm_ndimage_minmax_options* minmax_options,
+                                   const sm_route_options* options,
+                                   sm_array_result* out, sm_route_info* info);
+
+/* Multidimensional rank / median / percentile filter options. Initialize
+ * struct_size and abi_version (SM_NDIMAGE_ABI_VERSION) and zero reserved.
+ *
+ * rank: 0 <= rank < active_taps (the 0-indexed order statistic).
+ * footprint: NULL (all-true rectangular footprint of fshape) or C-contiguous
+ *   product(fshape) bytes (nonzero = active tap; at least one active tap).
+ * out_dtype: 0 (same as input) or any real sm_dtype.
+ * origins[d]: -(fshape[d] / 2) <= origins[d] <= (fshape[d] - 1) / 2. */
+typedef struct sm_ndimage_rank_options {
+    uint32_t struct_size;
+    uint32_t abi_version;         /* SM_NDIMAGE_ABI_VERSION */
+    uint32_t rank;                /* 0 <= rank < active_taps */
+    uint32_t mode;                /* sm_ndimage_mode */
+    uint32_t out_dtype;           /* 0 (same as input) or any real sm_dtype */
+    uint32_t reserved0;
+    uint32_t fshape[SM_MAX_NDIM]; /* footprint shape along axes 0..ndim-1 */
+    int64_t origins[SM_MAX_NDIM]; /* filter origin along each axis */
+    const uint8_t* footprint;     /* NULL (all-true) or C-contiguous product(fshape) bytes */
+    double cval;                  /* fill value of SM_NDIMAGE_CONSTANT */
+    uint64_t reserved[2];
+} sm_ndimage_rank_options;
+
+/* Multidimensional rank / median / percentile filter matching scipy.ndimage's
+ * NI_RankFilter.
+ *
+ * CPU engine: threaded across P-cores, exact order statistic in double with
+ * SciPy's input-type cval cast and CASE_FILTER_OUT[_SAFE] output conversion
+ * (bit-identical to SciPy 1.18.1 arm64 on finite inputs; uses SciPy's exact
+ * NI_Select when NaNs are present).
+ * GPU engine: single precision, one command buffer. Uses dedicated tiled
+ * register-only sorting/selection networks for 2-D 3x3, 5x5, and 7x7 medians,
+ * and Forgetful Selection for arbitrary N-D footprints and ranks with
+ * min(rank, K - 1 - rank) + 2 <= 64 (covering all footprints up to 127 taps,
+ * including 11x11 and 3x3x3). Exact for float32, bool, int8/16, uint8/16, and
+ * representable (|x| < 2^24) int32/64/uint32/64; for float64 under FAST/REFINED,
+ * values are float32-rounded (absolute error <= 2^-24 * max|input, cval|). */
+sm_status sm_ndimage_rank_filter(sm_context*, const sm_array* input,
+                                 const sm_ndimage_rank_options* rank_options,
+                                 const sm_route_options* options,
+                                 sm_array_result* out, sm_route_info* info);
 
 #ifdef __cplusplus
 }

@@ -11,10 +11,10 @@ from .. import _native
 SM_NDIMAGE_ABI_VERSION = 1
 SM_NDIMAGE_MAX_PASSES = 32
 SM_NDIMAGE_MAX_WINDOW = 1 << 30
-CORRELATE, UNIFORM = 1, 2
+CORRELATE, UNIFORM, MINIMUM, MAXIMUM = 1, 2, 3, 4
 # Boundary modes: SciPy's NI_ExtendMode codes.
 NEAREST, WRAP, REFLECT, MIRROR, CONSTANT = range(5)
-COMBINE_SUM, COMBINE_SQRT_SUM_SQ = 1, 2
+COMBINE_SUM, COMBINE_SQRT_SUM_SQ, COMBINE_SUB, COMBINE_MORPH_LAPLACE, COMBINE_XOR = 1, 2, 3, 4, 5
 
 
 class Pass(ctypes.Structure):
@@ -39,6 +39,28 @@ class Chain(ctypes.Structure):
     _fields_ = [("struct_size", ctypes.c_uint32), ("abi_version", ctypes.c_uint32),
                 ("pass_count", ctypes.c_uint32), ("reserved0", ctypes.c_uint32),
                 ("passes", ctypes.POINTER(Pass)),
+                ("reserved", ctypes.c_uint64 * 2)]
+
+
+class MinMaxOptions(ctypes.Structure):
+    _fields_ = [("struct_size", ctypes.c_uint32), ("abi_version", ctypes.c_uint32),
+                ("is_max", ctypes.c_uint32), ("mode", ctypes.c_uint32),
+                ("out_dtype", ctypes.c_uint32), ("reserved0", ctypes.c_uint32),
+                ("fshape", ctypes.c_uint32 * _native.SM_MAX_NDIM),
+                ("origins", ctypes.c_int64 * _native.SM_MAX_NDIM),
+                ("footprint", ctypes.c_void_p), ("structure", ctypes.c_void_p),
+                ("cval", ctypes.c_double),
+                ("reserved", ctypes.c_uint64 * 2)]
+
+
+class RankOptions(ctypes.Structure):
+    _fields_ = [("struct_size", ctypes.c_uint32), ("abi_version", ctypes.c_uint32),
+                ("rank", ctypes.c_uint32), ("mode", ctypes.c_uint32),
+                ("out_dtype", ctypes.c_uint32), ("reserved0", ctypes.c_uint32),
+                ("fshape", ctypes.c_uint32 * _native.SM_MAX_NDIM),
+                ("origins", ctypes.c_int64 * _native.SM_MAX_NDIM),
+                ("footprint", ctypes.c_void_p),
+                ("cval", ctypes.c_double),
                 ("reserved", ctypes.c_uint64 * 2)]
 
 
@@ -78,6 +100,16 @@ def library() -> ctypes.CDLL:
                         ctypes.c_void_p, ctypes.POINTER(_native.Array), ctypes.POINTER(Chain), ctypes.c_uint32,
                         ctypes.c_uint32, ctypes.c_uint32, ctypes.POINTER(_native.RouteOptions),
                         ctypes.POINTER(_native.ArrayResult), ctypes.POINTER(_native.RouteInfo)]
+                if hasattr(lib, "sm_ndimage_minmax_filter"):
+                    lib.sm_ndimage_minmax_filter.argtypes = [
+                        ctypes.c_void_p, ctypes.POINTER(_native.Array), ctypes.POINTER(MinMaxOptions),
+                        ctypes.POINTER(_native.RouteOptions), ctypes.POINTER(_native.ArrayResult),
+                        ctypes.POINTER(_native.RouteInfo)]
+                if hasattr(lib, "sm_ndimage_rank_filter"):
+                    lib.sm_ndimage_rank_filter.argtypes = [
+                        ctypes.c_void_p, ctypes.POINTER(_native.Array), ctypes.POINTER(RankOptions),
+                        ctypes.POINTER(_native.RouteOptions), ctypes.POINTER(_native.ArrayResult),
+                        ctypes.POINTER(_native.RouteInfo)]
                 _declared = True
     return lib
 
@@ -210,6 +242,92 @@ def composite_filter(function: str, array: np.ndarray, chains, combine_op: int, 
     except (ValueError, MemoryError) as refusal:
         raise _native.NotAccelerated(f"the native filter refused the call: {refusal}") from None
     del held, keep
+    out = _native.to_numpy(result)
+    _native.record_route(function, info, input_dtype=array.dtype)
+    return out
+
+
+def minmax_filter(function: str, array: np.ndarray, is_max: bool, fshape, origins,
+                  footprint: np.ndarray | None, structure: np.ndarray | None,
+                  mode: int, cval: float, out_dtype=None) -> np.ndarray:
+    """Apply an N-D dense minimum/maximum or grayscale erosion/dilation filter."""
+    lib = library()
+    if not hasattr(lib, "sm_ndimage_minmax_filter"):
+        raise _native.NotAccelerated("the native library was built without sm_ndimage_minmax_filter")
+    descriptor, held = _native.as_native(array)
+    out_code = 0 if out_dtype is None else _native.native_dtype(out_dtype)
+    if out_dtype is not None and out_code is None:
+        raise _native.NotAccelerated(f"no native path for output dtype {out_dtype}")
+    fp_u8 = None
+    if footprint is not None:
+        fp_u8 = np.require(footprint, dtype=np.uint8, requirements=("C", "A"))
+    st_f64 = None
+    if structure is not None:
+        st_f64 = np.require(structure, dtype=np.float64, requirements=("C", "A"))
+    mm_opts = MinMaxOptions(
+        struct_size=ctypes.sizeof(MinMaxOptions),
+        abi_version=SM_NDIMAGE_ABI_VERSION,
+        is_max=1 if is_max else 0,
+        mode=mode,
+        out_dtype=out_code,
+        footprint=fp_u8.ctypes.data if fp_u8 is not None else 0,
+        structure=st_f64.ctypes.data if st_f64 is not None else 0,
+        cval=cval,
+    )
+    for d in range(array.ndim):
+        mm_opts.fshape[d] = fshape[d]
+        mm_opts.origins[d] = origins[d]
+    options = _native.route_options()
+    info = _native.new_route_info()
+    result = _native.ArrayResult()
+    try:
+        _native.check(lib.sm_ndimage_minmax_filter(
+            _native.context(), ctypes.byref(descriptor), ctypes.byref(mm_opts),
+            ctypes.byref(options), ctypes.byref(result), ctypes.byref(info)))
+    except (ValueError, MemoryError) as refusal:
+        raise _native.NotAccelerated(f"the native filter refused the call: {refusal}") from None
+    del held, fp_u8, st_f64
+    out = _native.to_numpy(result)
+    _native.record_route(function, info, input_dtype=array.dtype)
+    return out
+
+
+def rank_filter(function: str, array: np.ndarray, rank: int, fshape, origins,
+                footprint: np.ndarray | None, mode: int, cval: float,
+                out_dtype=None) -> np.ndarray:
+    """Apply an N-D rank / median / percentile filter."""
+    lib = library()
+    if not hasattr(lib, "sm_ndimage_rank_filter"):
+        raise _native.NotAccelerated("the native library was built without sm_ndimage_rank_filter")
+    descriptor, held = _native.as_native(array)
+    out_code = 0 if out_dtype is None else _native.native_dtype(out_dtype)
+    if out_dtype is not None and out_code is None:
+        raise _native.NotAccelerated(f"no native path for output dtype {out_dtype}")
+    fp_u8 = None
+    if footprint is not None:
+        fp_u8 = np.require(footprint, dtype=np.uint8, requirements=("C", "A"))
+    rk_opts = RankOptions(
+        struct_size=ctypes.sizeof(RankOptions),
+        abi_version=SM_NDIMAGE_ABI_VERSION,
+        rank=rank,
+        mode=mode,
+        out_dtype=out_code,
+        footprint=fp_u8.ctypes.data if fp_u8 is not None else 0,
+        cval=cval,
+    )
+    for d in range(array.ndim):
+        rk_opts.fshape[d] = fshape[d]
+        rk_opts.origins[d] = origins[d]
+    options = _native.route_options()
+    info = _native.new_route_info()
+    result = _native.ArrayResult()
+    try:
+        _native.check(lib.sm_ndimage_rank_filter(
+            _native.context(), ctypes.byref(descriptor), ctypes.byref(rk_opts),
+            ctypes.byref(options), ctypes.byref(result), ctypes.byref(info)))
+    except (ValueError, MemoryError) as refusal:
+        raise _native.NotAccelerated(f"the native filter refused the call: {refusal}") from None
+    del held, fp_u8
     out = _native.to_numpy(result)
     _native.record_route(function, info, input_dtype=array.dtype)
     return out
